@@ -1,0 +1,4855 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fluid Identity: Local Photo Organizer</title>
+    <script src="https://cdn.jsdelivr.net/npm/idb-keyval@6/dist/umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- TS 파일 재생을 위한 mpegts.js -->
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #0f0f11;
+            --surface-color: rgba(255, 255, 255, 0.05);
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --accent-color: #FF5C00;
+            --text-primary: #ffffff;
+            --text-secondary: #888888;
+            --col-count: 5;
+            --gap-size: 16px;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            /* Prevent full page scroll */
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Utility */
+        .hidden {
+            display: none !important;
+        }
+
+        .glass {
+            background: var(--surface-color);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+        }
+
+        /* Glassmorphism Header */
+        header.glass {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 60px;
+            background: rgba(15, 15, 17, 0.8);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--glass-border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            z-index: 100;
+        }
+
+        .brand {
+            font-weight: 700;
+            font-size: 1.2rem;
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        .brand:hover {
+            color: var(--accent-color);
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        button {
+            background: var(--surface-color);
+            border: 1px solid var(--glass-border);
+            color: var(--text-primary);
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        button.primary {
+            background: var(--accent-color);
+            border-color: var(--accent-color);
+            color: #fff;
+        }
+
+        button.primary:hover {
+            background: #ff7525;
+        }
+
+        /* Search & Tags */
+        #search-container {
+            position: relative;
+            margin-right: 1rem;
+        }
+
+        #search-input {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid var(--glass-border);
+            color: white;
+            padding: 0.5rem 1rem 0.5rem 2.5rem;
+            /* Space for icon */
+            border-radius: 20px;
+            width: 200px;
+            transition: all 0.3s;
+            font-size: 0.9rem;
+        }
+
+        #search-input:focus {
+            background: rgba(255, 255, 255, 0.15);
+            width: 300px;
+            outline: none;
+            border-color: var(--accent-color);
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #888;
+            pointer-events: none;
+        }
+
+        #header-tags {
+            display: flex;
+            gap: 5px;
+            margin-right: 15px;
+        }
+
+        .tag-badge {
+            font-size: 0.8rem;
+            padding: 2px 8px;
+            background: rgba(255, 92, 0, 0.2);
+            color: var(--accent-color);
+            border: 1px solid rgba(255, 92, 0, 0.3);
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .tag-badge:hover {
+            background: var(--accent-color);
+            color: white;
+        }
+
+        /* Workspace & Masonry */
+        #workspace {
+            margin-top: 60px;
+            height: calc(100vh - 60px);
+            overflow-y: auto;
+            padding: 20px;
+            box-sizing: border-box;
+            position: relative;
+        }
+
+        /* Empty State */
+        #empty-state {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: var(--text-secondary);
+            opacity: 0.5;
+        }
+
+        #empty-state h2 {
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+        }
+
+        /* Masonry Grid */
+        #gallery {
+            display: grid;
+            grid-template-columns: repeat(var(--col-count), 1fr);
+            gap: var(--gap-size);
+            align-items: start;
+            width: 100%;
+        }
+
+        .item {
+            aspect-ratio: 1;
+            background: #252528;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 2px solid transparent;
+            /* Reserve space for border */
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            background: #2a2a2d;
+        }
+
+        .item.selected {
+            border-color: var(--accent-color);
+            background: rgba(255, 92, 0, 0.1);
+        }
+
+        .item.selected .select-checkbox {
+            opacity: 1;
+            /* Always show when selected */
+            background: var(--accent-color);
+            border-color: var(--accent-color);
+        }
+
+        .item.selected .select-checkbox::after {
+            content: '✓';
+            color: white;
+            font-size: 14px;
+            display: block;
+            text-align: center;
+            line-height: 20px;
+        }
+
+        /* Checkbox Overlay */
+        .select-checkbox {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            width: 20px;
+            height: 20px;
+            border: 2px solid white;
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 4px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.2s, background 0.2s;
+            z-index: 20;
+            /* Above video */
+        }
+
+        .item:hover .select-checkbox {
+            opacity: 1;
+        }
+
+        /* Toast Notification */
+        #toast-container {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 9999;
+            pointer-events: none;
+        }
+
+        .toast {
+            background: rgba(30, 30, 30, 0.9);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            border: 1px solid #444;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            animation: fadeIn 0.3s ease-out;
+            font-size: 0.9rem;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Split Item Layout */
+        .media-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            width: 100%;
+            height: 100%;
+            /* Fallback */
+            min-height: 0;
+            /* Flexbox scrolling fix */
+        }
+
+        .item-info {
+            height: 36px;
+            background: rgba(30, 30, 30, 0.95);
+            border-top: 1px solid #333;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 8px;
+            font-size: 0.8rem;
+            flex-shrink: 0;
+        }
+
+        .item-title {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: #ddd;
+            margin-right: 5px;
+            flex: 1;
+        }
+
+        .item-controls {
+            display: flex;
+            gap: 4px;
+        }
+
+        .icon-btn {
+            background: transparent;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            padding: 2px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .icon-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+
+        /* Generic Media Styling inside Container */
+        .media-container img,
+        .media-container video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .video-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        .item img {
+            width: 100%;
+            height: auto;
+            display: block;
+            object-fit: cover;
+        }
+
+        /* Folder/Memo Card Styles */
+        .item.folder {
+            aspect-ratio: 1/1;
+            /* Folders are square */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 0;
+            cursor: pointer;
+            position: relative;
+            /* Context for absolute positioning */
+        }
+
+        .folder-preview {
+            width: 100%;
+            height: 100%;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 2px;
+            padding: 2px;
+            background: #000;
+        }
+
+        .folder-preview img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0.8;
+        }
+
+        .folder-info {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            box-sizing: border-box;
+            /* Include padding in width */
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            /* Slightly darker */
+            backdrop-filter: blur(5px);
+            border-top: 1px solid var(--glass-border);
+            z-index: 5;
+        }
+
+        .folder-title {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: #fff;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .folder-meta {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        /* Memo Editor Overlay */
+        #memo-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(10px);
+            z-index: 200;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .editor-modal {
+            background: #1e1e20;
+            width: 90%;
+            height: 90%;
+            max-width: 1200px;
+            border-radius: 16px;
+            border: 1px solid var(--glass-border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .editor-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #252528;
+        }
+
+        .editor-body {
+            flex: 1;
+            display: flex;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        .editor-images {
+            flex: 2;
+            background: #000;
+            overflow: hidden;
+            /* Contain huge images */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+
+        .editor-images img {
+            width: auto;
+            height: auto;
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            border-radius: 8px;
+        }
+
+        .editor-text {
+            flex: 1;
+            background: #1e1e20;
+            border-left: 1px solid #333;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            min-width: 300px;
+        }
+
+        textarea#memo-content {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #ddd;
+            font-size: 1rem;
+            line-height: 1.6;
+            resize: none;
+            outline: none;
+            font-family: inherit;
+        }
+
+        /* Markdown Styling */
+        .markdown-body {
+            flex: 1;
+            overflow-y: auto;
+            color: #ddd;
+            font-size: 1rem;
+            line-height: 1.6;
+            padding-right: 10px;
+        }
+
+        .markdown-body h1,
+        .markdown-body h2,
+        .markdown-body h3 {
+            color: white;
+            border-bottom: 1px solid #444;
+            padding-bottom: 0.3em;
+        }
+
+        .markdown-body a {
+            color: var(--accent-color);
+        }
+
+        .markdown-body code {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+
+        .markdown-body pre {
+            background: #111;
+            padding: 10px;
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+
+        .markdown-body blockquote {
+            border-left: 4px solid #444;
+            padding-left: 10px;
+            color: #888;
+        }
+
+        .markdown-body ul,
+        .markdown-body ol {
+            padding-left: 20px;
+        }
+
+        .memo-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .small-btn {
+            background: transparent;
+            border: 1px solid #444;
+            color: #888;
+            font-size: 0.8rem;
+            padding: 2px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .small-btn:hover {
+            border-color: #666;
+            color: white;
+        }
+
+        #memo-container {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        /* Drag Over State */
+        .item.folder.drag-over {
+            border: 2px dashed var(--accent-color);
+            background: rgba(255, 92, 0, 0.2);
+        }
+
+        /* Lightbox Nav Buttons */
+        .nav-btn {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            border: none;
+            padding: 1rem;
+            cursor: pointer;
+            z-index: 10;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: background 0.2s;
+        }
+
+        .nav-btn:hover {
+            background: var(--accent-color);
+        }
+
+        #btn-prev {
+            left: 10px;
+        }
+
+        #btn-next {
+            right: 10px;
+        }
+
+        /* Tag Cloud Modal */
+        #tag-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 300;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .tag-modal-content {
+            background: #1e1e20;
+            padding: 2rem;
+            border-radius: 16px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            border: 1px solid var(--glass-border);
+        }
+
+        .tag-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .tag-cloud {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .tag-chip {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 6px 12px;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: 0.2s;
+            font-size: 0.9rem;
+        }
+
+        .tag-chip:hover {
+            background: var(--accent-color);
+            color: white;
+        }
+
+        /* Toast Notification */
+        #toast-container {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 9999;
+            pointer-events: none;
+        }
+
+        .toast {
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid var(--accent-color);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            margin-top: 10px;
+            opacity: 0;
+            animation: fadeInOut 3s forwards;
+            backdrop-filter: blur(4px);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+            font-size: 0.95rem;
+        }
+
+        @keyframes fadeInOut {
+            0% {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+
+            10% {
+                opacity: 1;
+                transform: translateY(0);
+            }
+
+            90% {
+                opacity: 1;
+                transform: translateY(0);
+            }
+
+            100% {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+        }
+
+        /* Shortcuts Modal */
+        .shortcuts-modal {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(18, 18, 18, 0.95);
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 30px;
+            z-index: 10001;
+            /* Above everything */
+            width: 400px;
+            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(10px);
+            display: none;
+        }
+
+        .shortcuts-modal.visible {
+            display: block;
+            animation: popIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+
+        /* Lasso Selection Box */
+        #lasso-box {
+            position: fixed;
+            border: 2px dashed var(--accent-color);
+            background: rgba(255, 92, 0, 0.1);
+            pointer-events: none;
+            z-index: 1000;
+            display: none;
+        }
+
+        /* Breadcrumb Navigation */
+        .breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-right: 1rem;
+            max-width: 400px;
+            overflow: hidden;
+        }
+
+        .breadcrumb-item {
+            color: var(--text-secondary);
+            cursor: pointer;
+            white-space: nowrap;
+            transition: color 0.2s;
+        }
+
+        .breadcrumb-item:hover {
+            color: var(--accent-color);
+        }
+
+        .breadcrumb-item.current {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .breadcrumb-separator {
+            color: #555;
+        }
+
+        /* Sort Dropdown */
+        .sort-dropdown {
+            position: relative;
+            display: inline-block;
+        }
+
+        .sort-btn {
+            background: var(--surface-color);
+            border: 1px solid var(--glass-border);
+            color: var(--text-primary);
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .sort-menu {
+            position: absolute;
+            top: 100%;
+            right: 0;
+            background: #1e1e20;
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            padding: 5px 0;
+            min-width: 150px;
+            z-index: 200;
+            display: none;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        }
+
+        .sort-menu.show {
+            display: block;
+        }
+
+        .sort-option {
+            padding: 8px 15px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .sort-option:hover {
+            background: rgba(255,255,255,0.1);
+            color: var(--text-primary);
+        }
+
+        .sort-option.active {
+            color: var(--accent-color);
+        }
+
+        /* Star Rating */
+        .star-rating {
+            position: absolute;
+            bottom: 40px;
+            left: 5px;
+            display: flex;
+            gap: 2px;
+            opacity: 0;
+            transition: opacity 0.2s;
+            z-index: 15;
+        }
+
+        .item:hover .star-rating {
+            opacity: 1;
+        }
+
+        .star-rating .star {
+            cursor: pointer;
+            font-size: 14px;
+            color: #555;
+            transition: color 0.1s;
+        }
+
+        .star-rating .star.filled {
+            color: #ffd700;
+        }
+
+        .star-rating .star:hover {
+            color: #ffd700;
+        }
+
+        /* Trash Panel */
+        #trash-panel {
+            position: fixed;
+            top: 60px;
+            right: 0;
+            width: 350px;
+            height: calc(100vh - 60px);
+            background: #1a1a1c;
+            border-left: 1px solid var(--glass-border);
+            z-index: 150;
+            display: none;
+            flex-direction: column;
+        }
+
+        #trash-panel.show {
+            display: flex;
+        }
+
+        .trash-header {
+            padding: 15px;
+            border-bottom: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .trash-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+
+        .trash-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+
+        .trash-item img {
+            width: 50px;
+            height: 50px;
+            object-fit: cover;
+            border-radius: 4px;
+        }
+
+        .trash-item-info {
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .trash-item-name {
+            font-size: 0.85rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .trash-actions {
+            display: flex;
+            gap: 5px;
+        }
+
+        /* Batch Rename Modal */
+        #batch-rename-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.8);
+            z-index: 300;
+            display: none;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #batch-rename-modal.show {
+            display: flex;
+        }
+
+        .batch-rename-content {
+            background: #1e1e20;
+            padding: 25px;
+            border-radius: 12px;
+            width: 450px;
+            border: 1px solid var(--glass-border);
+        }
+
+        .batch-rename-content h3 {
+            margin-top: 0;
+            margin-bottom: 20px;
+        }
+
+        .batch-rename-content input {
+            width: 100%;
+            padding: 10px;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid #444;
+            border-radius: 6px;
+            color: white;
+            font-size: 1rem;
+            margin-bottom: 10px;
+            box-sizing: border-box;
+        }
+
+        .batch-rename-preview {
+            background: #111;
+            padding: 10px;
+            border-radius: 6px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 0.85rem;
+            color: #888;
+            margin-bottom: 15px;
+        }
+
+        .batch-rename-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        /* === TAG CHIP UI === */
+        .tag-input-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding: 8px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid #444;
+            border-radius: 8px;
+            min-height: 40px;
+            align-items: center;
+        }
+
+        .tag-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            background: rgba(255, 92, 0, 0.2);
+            border: 1px solid rgba(255, 92, 0, 0.4);
+            border-radius: 16px;
+            font-size: 0.85rem;
+            color: var(--accent-color);
+            cursor: default;
+            animation: tagPop 0.2s ease;
+        }
+
+        @keyframes tagPop {
+            0% { transform: scale(0.8); opacity: 0; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        .tag-chip .remove-tag {
+            cursor: pointer;
+            opacity: 0.6;
+            font-size: 14px;
+            margin-left: 2px;
+        }
+
+        .tag-chip .remove-tag:hover {
+            opacity: 1;
+            color: #ff6b6b;
+        }
+
+        .tag-input-field {
+            flex: 1;
+            min-width: 100px;
+            background: transparent;
+            border: none;
+            outline: none;
+            color: white;
+            font-size: 0.9rem;
+        }
+
+        .tag-suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: #1e1e20;
+            border: 1px solid #444;
+            border-radius: 8px;
+            max-height: 150px;
+            overflow-y: auto;
+            z-index: 100;
+            display: none;
+        }
+
+        .tag-suggestions.show {
+            display: block;
+        }
+
+        .tag-suggestion-item {
+            padding: 8px 12px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            color: #ccc;
+        }
+
+        .tag-suggestion-item:hover {
+            background: rgba(255, 92, 0, 0.2);
+            color: var(--accent-color);
+        }
+
+        .tag-presets {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-top: 8px;
+        }
+
+        .tag-preset {
+            padding: 3px 8px;
+            background: rgba(255,255,255,0.1);
+            border: 1px dashed #555;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            color: #888;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .tag-preset:hover {
+            border-color: var(--accent-color);
+            color: var(--accent-color);
+        }
+
+        /* Auto-save indicator */
+        .save-indicator {
+            font-size: 0.75rem;
+            color: #666;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .save-indicator.saving {
+            color: var(--accent-color);
+        }
+
+        .save-indicator.saved {
+            color: #4caf50;
+        }
+
+        /* === VIDEO TIMELINE MARKERS === */
+        .video-timeline-container {
+            position: relative;
+            width: 100%;
+            padding: 10px 0;
+            margin-top: 10px;
+        }
+
+        .video-timeline {
+            position: relative;
+            height: 40px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            cursor: pointer;
+            overflow: visible;
+        }
+
+        .timeline-progress {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-color), #ff8c42);
+            border-radius: 4px;
+            width: 0%;
+            transition: width 0.1s;
+        }
+
+        .timeline-marker {
+            position: absolute;
+            top: -5px;
+            width: 4px;
+            height: 50px;
+            background: #ffd700;
+            border-radius: 2px;
+            cursor: pointer;
+            z-index: 10;
+            transition: transform 0.2s;
+        }
+
+        .timeline-marker:hover {
+            transform: scaleX(2);
+            background: #fff;
+        }
+
+        .timeline-marker::after {
+            content: attr(data-time);
+            position: absolute;
+            bottom: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 10px;
+            color: #ffd700;
+            white-space: nowrap;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .timeline-marker:hover::after {
+            opacity: 1;
+        }
+
+        .timeline-marker.category-important { background: #ff4444; }
+        .timeline-marker.category-fun { background: #44ff44; }
+        .timeline-marker.category-reference { background: #4488ff; }
+
+        .timeline-time {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: #888;
+            margin-top: 5px;
+        }
+
+        /* Marker Quick Add Controls */
+        .marker-controls {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        .marker-btn {
+            padding: 6px 12px;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid #444;
+            border-radius: 6px;
+            color: #ccc;
+            font-size: 0.8rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            transition: all 0.2s;
+        }
+
+        .marker-btn:hover {
+            background: var(--accent-color);
+            border-color: var(--accent-color);
+            color: white;
+        }
+
+        .marker-btn kbd {
+            background: rgba(0,0,0,0.3);
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-size: 0.7rem;
+        }
+
+        /* Category selector */
+        .category-selector {
+            display: flex;
+            gap: 5px;
+        }
+
+        .category-btn {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .category-btn:hover {
+            transform: scale(1.2);
+        }
+
+        .category-btn.active {
+            border-color: white;
+        }
+
+        .category-btn.important { background: #ff4444; }
+        .category-btn.fun { background: #44ff44; }
+        .category-btn.reference { background: #4488ff; }
+        .category-btn.default { background: #ffd700; }
+
+        /* Quick memo popup */
+        .quick-memo-popup {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #1e1e20;
+            border: 1px solid var(--accent-color);
+            border-radius: 12px;
+            padding: 20px;
+            z-index: 1000;
+            width: 400px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+            display: none;
+        }
+
+        .quick-memo-popup.show {
+            display: block;
+            animation: popIn 0.2s ease;
+        }
+
+        @keyframes popIn {
+            0% { transform: translate(-50%, -50%) scale(0.9); opacity: 0; }
+            100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+        }
+
+        .quick-memo-popup input,
+        .quick-memo-popup textarea {
+            width: 100%;
+            padding: 10px;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid #444;
+            border-radius: 6px;
+            color: white;
+            font-size: 0.9rem;
+            margin-bottom: 10px;
+            box-sizing: border-box;
+        }
+
+        .quick-memo-popup textarea {
+            height: 80px;
+            resize: none;
+        }
+
+        /* Video Skip Settings */
+        .skip-settings {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: 10px;
+            padding: 5px 10px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 6px;
+            font-size: 0.8rem;
+        }
+
+        .skip-settings label {
+            color: #888;
+        }
+
+        .skip-settings input[type="number"] {
+            width: 50px;
+            padding: 4px;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid #444;
+            border-radius: 4px;
+            color: white;
+            text-align: center;
+        }
+
+        .shortcut-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 15px;
+            align-items: center;
+        }
+
+        .kbd {
+            background: #333;
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-family: monospace;
+            font-weight: bold;
+            color: #fff;
+            box-shadow: 0 2px 0 #222;
+        }
+    </style>
+</head>
+
+<body>
+
+    <header class="glass">
+        <div class="brand" onclick="goHome()">Fluid Identity</div>
+        <div class="controls">
+            <!-- Breadcrumb Navigation -->
+            <div id="breadcrumb" class="breadcrumb"></div>
+
+            <!-- Header Tag Bar -->
+            <div id="header-tags"></div>
+
+            <!-- Search Bar -->
+            <div id="search-container">
+                <span class="search-icon">🔍</span>
+                <input type="text" id="search-input" placeholder="Search files...">
+            </div>
+
+            <!-- Sort Dropdown -->
+            <div class="sort-dropdown">
+                <button class="sort-btn" id="btn-sort">
+                    <span>정렬</span>
+                    <span>▼</span>
+                </button>
+                <div class="sort-menu" id="sort-menu">
+                    <div class="sort-option active" data-sort="name-asc">이름 (A-Z)</div>
+                    <div class="sort-option" data-sort="name-desc">이름 (Z-A)</div>
+                    <div class="sort-option" data-sort="date-desc">날짜 (최신순)</div>
+                    <div class="sort-option" data-sort="date-asc">날짜 (오래된순)</div>
+                    <div class="sort-option" data-sort="size-desc">크기 (큰순)</div>
+                    <div class="sort-option" data-sort="size-asc">크기 (작은순)</div>
+                    <div class="sort-option" data-sort="rating-desc">별점 (높은순)</div>
+                </div>
+            </div>
+
+            <button id="btn-back" class="hidden" style="margin-right: 5px;">⬅ Back</button>
+            <span id="path-display" class="hidden" style="font-size: 0.8rem; color: #888; margin-right: 1rem;">No Workspace Open</span>
+
+            <!-- Tags Input -->
+            <input type="text" id="input-tags" placeholder="#tags (space or comma separated)..."
+                style="background: rgba(255,255,255,0.05); border: 1px solid #444; color: var(--accent-color); padding: 6px; border-radius: 4px; font-size: 0.9rem;">
+
+            <script>
+                // Spacebar listener for tags
+                document.getElementById('input-tags').addEventListener('keydown', (e) => {
+                    if (e.key === ' ' || e.key === 'Enter') {
+                        e.preventDefault();
+                        let val = e.target.value;
+                        if (val && !val.trim().endsWith(',')) {
+                            e.target.value = val.trim() + ', ';
+                        }
+                    }
+                });
+            </script>
+
+            <div id="new-folder-form" class="hidden" style="display: flex; gap: 5px;">
+                <input type="text" id="new-folder-input" placeholder="Name..."
+                    style="background: rgba(255,255,255,0.1); border: 1px solid #444; color: white; padding: 4px 8px; border-radius: 4px; width: 100px;">
+                <button id="btn-create-confirm" style="background: var(--accent-color); padding: 4px 8px;">OK</button>
+                <button id="btn-create-cancel" style="background: transparent; padding: 4px 8px;">X</button>
+            </div>
+
+            <button id="btn-batch-rename" class="hidden" style="margin-right: 5px;">📝 일괄변경</button>
+            <button id="btn-trash" class="hidden" style="margin-right: 5px;">🗑️ 휴지통</button>
+            <button id="btn-new-folder" class="hidden" style="margin-right: 10px;">New Folder</button>
+            <button id="btn-backup" class="hidden" style="margin-right: 10px; border-color: #444; color: #aaa;">💾
+                Backup</button>
+            <button id="btn-open" class="primary">Open Workspace</button>
+        </div>
+    </header>
+
+    <!-- Lasso Selection Box -->
+    <div id="lasso-box"></div>
+
+    <!-- Trash Panel -->
+    <div id="trash-panel">
+        <div class="trash-header">
+            <h3 style="margin:0;">🗑️ 휴지통</h3>
+            <div>
+                <button id="btn-empty-trash" style="background: #ff4444; border: none; padding: 5px 10px; border-radius: 4px; color: white; cursor: pointer; font-size: 0.8rem;">비우기</button>
+                <button id="btn-close-trash" style="background: transparent; border: 1px solid #444; padding: 5px 10px; border-radius: 4px; color: #888; cursor: pointer;">✕</button>
+            </div>
+        </div>
+        <div class="trash-list" id="trash-list"></div>
+    </div>
+
+    <!-- Batch Rename Modal -->
+    <div id="batch-rename-modal">
+        <div class="batch-rename-content">
+            <h3>📝 일괄 이름 변경</h3>
+            <p style="color: #888; font-size: 0.85rem; margin-bottom: 15px;">패턴: {n}=번호, {name}=원래이름, {date}=날짜</p>
+            <input type="text" id="rename-pattern" placeholder="예: 여행사진_{n}" value="Photo_{n}">
+            <input type="number" id="rename-start" placeholder="시작 번호" value="1" min="1" style="width: 100px;">
+            <div class="batch-rename-preview" id="rename-preview"></div>
+            <div class="batch-rename-buttons">
+                <button id="btn-cancel-rename" style="background: transparent; border: 1px solid #444;">취소</button>
+                <button id="btn-apply-rename" class="primary">적용</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="workspace">
+        <div id="gallery"></div>
+        <div id="empty-state">
+            <h2>Start Organizing</h2>
+            <p>Open a local folder to begin.</p>
+            <p style="font-size: 0.8em; color: #666;">(Ctrl + Wheel to Zoom)</p>
+        </div>
+    </div>
+
+    <!-- Image Editor Overlay -->
+    <div id="memo-overlay" class="hidden">
+        <div class="editor-modal">
+            <div class="editor-header">
+                <span id="editor-filename" style="font-size: 1.1rem; font-weight: bold; color: white;">Image.jpg</span>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <!-- Rotation Buttons -->
+                    <button id="btn-rotate-left" title="왼쪽으로 90° 회전"
+                        style="background: rgba(255,255,255,0.1); border: 1px solid #444; color: white; padding: 6px 10px; border-radius: 4px; cursor: pointer;">↺</button>
+                    <button id="btn-rotate-right" title="오른쪽으로 90° 회전"
+                        style="background: rgba(255,255,255,0.1); border: 1px solid #444; color: white; padding: 6px 10px; border-radius: 4px; cursor: pointer;">↻</button>
+                    <div style="width: 1px; height: 20px; background: #444;"></div>
+                    <button id="btn-delete-file"
+                        style="background: rgba(255, 50, 50, 0.2); color: #ff6b6b; border: 1px solid #ff6b6b; padding: 4px 12px; border-radius: 4px; cursor: pointer;">🗑️
+                        삭제</button>
+                    <button id="btn-close-memo">저장 & 닫기</button>
+                </div>
+            </div>
+            <div class="editor-body">
+                <div class="editor-images" id="memo-images-container"
+                    style="display:flex; justify-content:center; align-items:center; background: black; position: relative;">
+
+                    <button id="btn-prev" class="nav-btn">❮</button>
+                    <!-- Single Image View -->
+                    <img id="editor-img-preview" src=""
+                        style="width:auto; height:auto; max-width:100%; max-height:100%; object-fit:contain;">
+                    <button id="btn-next" class="nav-btn">❯</button>
+
+                </div>
+                <div class="editor-text">
+                    <!-- Tab Bar -->
+                    <div id="memo-tab-bar"
+                        style="display: flex; gap: 2px; border-bottom: 1px solid #444; margin-bottom: 15px; overflow-x: auto; padding-bottom: 2px;">
+                        <!-- Tabs injected here -->
+                    </div>
+
+                    <!-- Editor Header Buttons -->
+                    <div class="memo-header">
+                        <span style="font-size: 0.8rem; color: #666;">Multi-Memo Storage (Virtual FS)</span>
+                        <div style="display: flex; gap: 10px;">
+                            <button id="btn-toggle-edit" class="small-btn">✎ Edit</button>
+                        </div>
+                    </div>
+
+                    <!-- Structured Input Container -->
+                    <div id="memo-container">
+                        <!-- 1. VIEW MODE -->
+                        <div id="memo-view" class="markdown-body"></div>
+
+                        <!-- 2. EDIT MODE FORM -->
+                        <div id="memo-form" class="hidden"
+                            style="display: flex; flex-direction: column; height: 100%; gap: 10px;">
+                            <!-- Auto-save indicator -->
+                            <div class="save-indicator" id="save-indicator">
+                                <span id="save-status">●</span>
+                                <span id="save-text">저장됨</span>
+                            </div>
+                            <!-- Title Input -->
+                            <input type="text" id="input-title" placeholder="메모 제목"
+                                style="background: rgba(255,255,255,0.05); border: 1px solid #444; color: white; padding: 8px; border-radius: 4px; font-size: 1.1rem; font-weight: bold;">
+                            <!-- Tag Chip Container -->
+                            <div style="position: relative;">
+                                <div class="tag-input-container" id="tag-chip-container">
+                                    <input type="text" class="tag-input-field" id="tag-input-field" placeholder="태그 입력 후 Enter...">
+                                </div>
+                                <div class="tag-suggestions" id="tag-suggestions"></div>
+                            </div>
+                            <!-- Tag Presets -->
+                            <div class="tag-presets" id="tag-presets">
+                                <span style="font-size: 0.75rem; color: #666; margin-right: 5px;">빠른 태그:</span>
+                            </div>
+                            <!-- Hidden field for compatibility -->
+                            <input type="hidden" id="input-tags" value="">
+                            <!-- Body Textarea -->
+                            <textarea id="memo-content" placeholder="메모 작성 (마크다운 지원)..."
+                                style="flex: 1; background: rgba(255,255,255,0.03); border: 1px solid #333; border-radius: 6px; outline: none; resize: none; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; font-size: 1rem; line-height: 1.7; padding: 10px;"></textarea>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tag Cloud Modal -->
+    <div id="tag-modal" class="hidden">
+        <div class="tag-modal-content">
+            <div class="tag-modal-header">
+                <h3>All Tags</h3>
+                <button id="btn-close-tags" style="padding:4px 8px;">✕</button>
+            </div>
+            <div id="tag-cloud-container" class="tag-cloud">
+                <!-- Tags injected here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Memo Popup for Highlights -->
+    <div class="quick-memo-popup" id="quick-memo-popup">
+        <h4 style="margin: 0 0 15px 0; color: var(--accent-color);">📍 마커 메모</h4>
+        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+            <span style="color: #888; font-size: 0.85rem;">카테고리:</span>
+            <div class="category-selector">
+                <div class="category-btn default active" data-category="default" title="기본"></div>
+                <div class="category-btn important" data-category="important" title="중요"></div>
+                <div class="category-btn fun" data-category="fun" title="재미"></div>
+                <div class="category-btn reference" data-category="reference" title="참고"></div>
+            </div>
+        </div>
+        <input type="text" id="quick-memo-title" placeholder="마커 제목 (선택)">
+        <textarea id="quick-memo-text" placeholder="메모 내용..."></textarea>
+        <input type="hidden" id="quick-memo-time">
+        <input type="hidden" id="quick-memo-category" value="default">
+        <div style="display: flex; justify-content: flex-end; gap: 10px;">
+            <button onclick="closeQuickMemo()" style="background: transparent; border: 1px solid #444;">취소</button>
+            <button onclick="saveQuickMemo()" class="primary">저장</button>
+        </div>
+    </div>
+
+
+    <script>
+    </script>
+    <script>
+        /**
+         * Core Application Logic
+         * Handles File System Access, Rendering, and Interactions.
+         */
+
+        // State
+        let rootHandle = null;
+        let currentHandle = null;
+        let dirStack = []; // Stack of parent handles
+        let allEntries = []; // Current Folder source
+        let filteredEntries = []; // Display list
+        let globalSearchIndex = []; // Global Flat Index {name, handle, file, memo, tags, path}
+        let activeImageItem = null; // Sidecar state
+
+        // New Feature States
+        let currentSort = 'name-asc'; // Sort state
+        let trashItems = []; // Trash bin
+        let fileRatings = {}; // {filename: rating} stored in IDB
+        let breadcrumbPath = []; // Array of {name, handle}
+        let skipSeconds = 10; // Video skip seconds (J/L keys)
+
+        // Lasso selection state
+        let isLassoing = false;
+        let lassoStartX = 0;
+        let lassoStartY = 0;
+
+        // Keyboard navigation state
+        let focusedIndex = -1;
+
+        // Global reference for highlight reload
+        let globalLoadHighlights = null;
+
+        // DOM Elements
+        const gallery = document.getElementById('gallery');
+        const emptyState = document.getElementById('empty-state');
+        const btnOpen = document.getElementById('btn-open');
+        const btnBack = document.getElementById('btn-back');
+        const pathDisplay = document.getElementById('path-display');
+        const memoOverlay = document.getElementById('memo-overlay');
+
+        // === 6. Persistence & Discovery (Phase 5) ===
+
+        // IDB Key
+        const DB_KEY_HANDLE = 'ppu_root_handle';
+
+        // Initialize Persistence on Load
+        // Initialize
+        const workspace = document.getElementById('workspace');
+
+        // Global Drag & Drop Import
+        workspace.ondragover = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            workspace.style.background = 'rgba(255, 92, 0, 0.05)';
+        };
+
+        workspace.ondragleave = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            workspace.style.background = '';
+        };
+
+        workspace.ondrop = async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            workspace.style.background = '';
+
+            // 1. Files from System
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                if (!currentHandle) {
+                    alert("Open a workspace folder first!");
+                    return;
+                }
+                const files = Array.from(e.dataTransfer.files);
+                showToast(`${files.length}개 파일 가져오는 중...`);
+                await importFilesToFolder(files, currentHandle);
+                // Small delay to ensure file system is ready
+                await new Promise(r => setTimeout(r, 300));
+                await loadDirectory(currentHandle);
+                showToast(`${files.length}개 파일 추가됨`);
+            }
+        };
+
+        window.addEventListener('DOMContentLoaded', async () => {
+            // Restore Handle
+            try {
+                if (window.idbKeyval) {
+                    const handle = await idbKeyval.get(DB_KEY_HANDLE);
+                    if (handle) {
+                        // Permission Check needed?
+                        // We can't auto-open without gesture usually, 
+                        // but file system API might persist permission depending on browser.
+                        // Chrome usually requires re-verification.
+
+                        // Show a "Resume Workspace" button or modify Open button
+                        btnOpen.innerText = `Re-open "${handle.name}"`;
+
+                        // Override click to use restored handle
+                        btnOpen.onclick = async () => {
+                            try {
+                                // Verify Permission
+                                if ((await handle.queryPermission({ mode: 'readwrite' })) !== 'granted') {
+                                    if ((await handle.requestPermission({ mode: 'readwrite' })) !== 'granted') {
+                                        alert("Permission denied.");
+                                        return;
+                                    }
+                                }
+
+                                rootHandle = handle;
+                                currentHandle = rootHandle;
+                                dirStack = [];
+                                breadcrumbPath = [];
+                                await loadRatings();
+                                await loadThumbnailCache();
+                                await loadDirectory(currentHandle);
+                                emptyState.classList.add('hidden');
+                                document.getElementById('btn-new-folder').classList.remove('hidden');
+                                document.getElementById('btn-trash').classList.remove('hidden');
+                                document.getElementById('btn-batch-rename').classList.remove('hidden');
+                                document.getElementById('btn-backup').classList.remove('hidden');
+                                updateNavigationUI();
+                                scanGlobalRecursively(rootHandle);
+
+                                // Restore standard Open behavior after success
+                                btnOpen.onclick = openDirectoryPicker;
+                                btnOpen.innerText = "Change Folder";
+                            } catch (e) {
+                                console.error("Restore failed", e);
+                                openDirectoryPicker(); // Fallback
+                            }
+                        };
+                        return; // Skip standard init
+                    }
+                }
+            } catch (e) { console.error("IDB Error", e); }
+
+
+
+            // Standard Init
+            btnOpen.onclick = openDirectoryPicker;
+        });
+
+        async function goHome() {
+            if (!rootHandle) return;
+            currentHandle = rootHandle;
+            dirStack = [];
+            breadcrumbPath = [];
+            await loadDirectory(currentHandle);
+            updateNavigationUI();
+        }
+
+        // Memo Editor State & Logic
+        let memoTabs = []; // Array of { title, tags, content }
+        let activeTabIndex = 0;
+        let isEditMode = false;
+
+        // DOM Elements
+        const memoTabBar = document.getElementById('memo-tab-bar');
+        const memoForm = document.getElementById('memo-form');
+        const inputTitle = document.getElementById('input-title');
+        const inputTags = document.getElementById('input-tags');
+        const memoContentInput = document.getElementById('memo-content'); // Body
+        const memoView = document.getElementById('memo-view');
+        const btnToggleEdit = document.getElementById('btn-toggle-edit');
+
+        // Tag Input UX: Space -> Comma
+        inputTags.addEventListener('keydown', (e) => {
+            if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                const val = inputTags.value;
+                if (val && !val.trim().endsWith(',')) {
+                    inputTags.value = val.trim() + ', ';
+                }
+            }
+        });
+
+        btnToggleEdit.onclick = () => {
+            isEditMode = !isEditMode;
+            updateEditorMode();
+        };
+
+        // --- 1. Parser Engine ---
+        function parseMemos(rawText) {
+            if (!rawText.includes('===TAB::')) {
+                return [{ title: "Default", tags: "", content: rawText }];
+            }
+
+            const tabs = [];
+            const parts = rawText.split('===TAB::');
+
+            for (let i = 1; i < parts.length; i++) {
+                const part = parts[i];
+                const firstLineEnd = part.indexOf('\n');
+                const tabName = part.substring(0, firstLineEnd).trim();
+                let body = part.substring(firstLineEnd + 1).trim();
+
+                let tags = "";
+                let realTitle = tabName;
+
+                const titleMatch = body.match(/^#TITLE:\s*(.*)$/m);
+                if (titleMatch) {
+                    realTitle = titleMatch[1];
+                    body = body.replace(titleMatch[0], '').trim();
+                }
+
+                const tagsMatch = body.match(/^#TAGS:\s*(.*)$/m);
+                if (tagsMatch) {
+                    tags = tagsMatch[1];
+                    body = body.replace(tagsMatch[0], '').trim();
+                }
+
+                tabs.push({
+                    title: realTitle,
+                    tags: tags,
+                    content: body
+                });
+            }
+            return tabs;
+        }
+
+        function serializeMemos(tabs) {
+            if (!tabs || tabs.length === 0) return "";
+            return tabs.map(tab => {
+                let out = `===TAB::${tab.title || 'Note'}===\n`;
+                if (tab.title) out += `#TITLE: ${tab.title}\n`;
+                if (tab.tags) out += `#TAGS: ${tab.tags}\n`;
+                out += `${tab.content}\n`;
+                return out;
+            }).join('\n\n');
+        }
+
+        // --- 2. Tab UI Management ---
+        function renderTabs() {
+            memoTabBar.innerHTML = '';
+            memoTabs.forEach((tab, index) => {
+                const btn = document.createElement('button');
+                btn.className = `tab-btn ${index === activeTabIndex ? 'active' : ''}`;
+                btn.innerText = tab.title || "Note " + (index + 1);
+                // Style fix for active state if CSS missing
+                if (index === activeTabIndex) {
+                    btn.style.borderBottom = '2px solid var(--accent-color)';
+                    btn.style.color = 'white';
+                } else {
+                    btn.style.borderBottom = '2px solid transparent';
+                    btn.style.color = '#888';
+                }
+                btn.style.background = 'transparent';
+                btn.style.border = 'none';
+                btn.style.padding = '6px 12px';
+                btn.style.cursor = 'pointer';
+                btn.style.fontSize = '0.9rem';
+
+                btn.onclick = () => switchTab(index);
+                btn.ondblclick = () => renameTab(index); // Double click rename
+
+                // Context Menu Delete
+                btn.oncontextmenu = (e) => {
+                    e.preventDefault();
+                    if (confirm(`Delete tab "${tab.title}"?`)) deleteTab(index);
+                };
+                memoTabBar.appendChild(btn);
+            });
+
+            // Add Button
+            const addBtn = document.createElement('button');
+            addBtn.innerText = '+';
+            addBtn.style.color = 'var(--accent-color)';
+            addBtn.style.background = 'transparent';
+            addBtn.style.border = 'none';
+            addBtn.style.fontSize = '1.2rem';
+            addBtn.style.cursor = 'pointer';
+            addBtn.onclick = addNewTab;
+            memoTabBar.appendChild(addBtn);
+        }
+
+        function switchTab(index) {
+            syncFormToData();
+            activeTabIndex = index;
+            renderTabs();
+            loadTabToUI();
+            renderActiveView();
+        }
+
+        function addNewTab() {
+            syncFormToData();
+            memoTabs.push({ title: "New Note", tags: "", content: "" });
+            activeTabIndex = memoTabs.length - 1;
+            renderTabs();
+            loadTabToUI();
+            isEditMode = true;
+            updateEditorMode();
+            inputTitle.focus();
+        }
+
+        function deleteTab(index) {
+            if (memoTabs.length <= 1) {
+                alert("Cannot delete the last tab.");
+                return;
+            }
+            memoTabs.splice(index, 1);
+            if (activeTabIndex >= memoTabs.length) activeTabIndex = memoTabs.length - 1;
+            renderTabs();
+            loadTabToUI();
+            renderActiveView();
+        }
+
+        function renameTab(index) {
+            const newName = prompt("Rename tab:", memoTabs[index].title);
+            if (newName) {
+                memoTabs[index].title = newName;
+                renderTabs();
+                loadTabToUI(); // Update title input if active
+            }
+        }
+
+        // --- 3. Data <-> UI Sync ---
+        function loadTabToUI() {
+            const tab = memoTabs[activeTabIndex];
+            if (!tab) return;
+            inputTitle.value = tab.title || "";
+            inputTags.value = tab.tags || "";
+            memoContentInput.value = tab.content || "";
+
+            // Load tags into new chip UI
+            if (typeof loadTagsFromString === 'function') {
+                loadTagsFromString(tab.tags || "");
+            }
+
+            // Reset save indicator
+            const indicator = document.getElementById('save-indicator');
+            if (indicator) {
+                indicator.className = 'save-indicator saved';
+                document.getElementById('save-status').innerText = '●';
+                document.getElementById('save-text').innerText = '저장됨';
+            }
+        }
+
+        function syncFormToData() {
+            if (activeTabIndex < 0 || activeTabIndex >= memoTabs.length) return;
+            const tab = memoTabs[activeTabIndex];
+            tab.title = inputTitle.value;
+            // Sync tags from the chip UI
+            tab.tags = inputTags.value;
+            tab.content = memoContentInput.value;
+        }
+
+        function renderActiveView() {
+            const tab = memoTabs[activeTabIndex];
+            if (!tab) return; // Guard
+
+            // Capsulate Tags
+            let tagsHtml = "";
+            if (tab.tags) {
+                tagsHtml = tab.tags.split(',').map(t => {
+                    const tag = t.trim();
+                    if (!tag) return "";
+                    const color = typeof getTagColor === 'function' ? getTagColor(tag) : '#444';
+                    return `<span style="background:${color}; padding:2px 8px; border-radius:12px; font-size:0.8rem; margin-right:4px; color:white;">#${tag}</span>`;
+                }).join('');
+            }
+
+            const titleHtml = tab.title ? `<h1 style="border-bottom:1px solid #444; padding-bottom:5px; margin-top:0;">${tab.title}</h1>` : '';
+
+            // Markdown Process (marked must be available)
+            let bodyHtml = "";
+            if (typeof marked !== 'undefined') {
+                bodyHtml = marked.parse(tab.content || "");
+            } else {
+                bodyHtml = `<pre>${tab.content || ""}</pre>`;
+            }
+
+            memoView.innerHTML = `
+                ${titleHtml}
+                <div style="margin-bottom: 20px;">${tagsHtml}</div>
+                ${bodyHtml}
+            `;
+        }
+
+        function updateEditorMode() {
+            if (isEditMode) {
+                memoView.classList.add('hidden');
+                memoForm.classList.remove('hidden');
+                btnToggleEdit.innerText = "👁 Preview";
+            } else {
+                syncFormToData();
+                memoView.classList.remove('hidden');
+                memoForm.classList.add('hidden');
+                btnToggleEdit.innerText = "✎ Edit";
+                renderTabs();
+                renderActiveView();
+            }
+        }
+
+        async function saveCurrentMemo() {
+            if (!activeImageItem) return;
+            syncFormToData(); // Flush UI to State
+
+            const finalText = serializeMemos(memoTabs);
+            const item = activeImageItem;
+            item.memo = finalText; // Update Cache
+
+            try {
+                const parentDir = item.parentHandle || currentHandle;
+                const sidecarName = item.name + '.txt';
+                const fileHandle = await parentDir.getFileHandle(sidecarName, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(finalText);
+                await writable.close();
+                console.log("Saved Memos");
+            } catch (e) {
+                console.error("Failed to save memo", e);
+            }
+        }
+
+        async function openDirectoryPicker() {
+            try {
+                rootHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+
+                // Save Handle
+                if (window.idbKeyval) {
+                    await idbKeyval.set(DB_KEY_HANDLE, rootHandle);
+                }
+
+                currentHandle = rootHandle;
+                dirStack = []; // Reset stack
+                breadcrumbPath = []; // Reset breadcrumb
+                await loadRatings(); // Load saved ratings
+                await loadThumbnailCache(); // Load cached thumbnails
+                await loadDirectory(currentHandle);
+
+                emptyState.classList.add('hidden');
+                btnOpen.innerText = "Change Folder";
+                document.getElementById('btn-new-folder').classList.remove('hidden');
+                document.getElementById('btn-trash').classList.remove('hidden');
+                document.getElementById('btn-batch-rename').classList.remove('hidden');
+                updateNavigationUI();
+
+                // Show Backup Button
+                document.getElementById('btn-backup').classList.remove('hidden');
+
+                scanGlobalRecursively(rootHandle);
+
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        // Backup Logic
+        document.getElementById('btn-backup').onclick = async () => {
+            await exportBackup();
+        };
+
+        async function exportBackup() {
+            if (!rootHandle) return;
+            const backupData = {
+                timestamp: new Date().toISOString(),
+                source: rootHandle.name,
+                items: []
+            };
+
+            showToast("Generating Backup...");
+
+            // Use globalSearchIndex as source to avoid re-scanning
+            // But we need content.
+            for (const item of globalSearchIndex) {
+                // Push metadata + content
+                backupData.items.push({
+                    path: item.path,
+                    name: item.name,
+                    kind: item.kind,
+                    memo: item.memo, // Raw text
+                    tags: item.tags
+                });
+            }
+
+            // Save JSON file
+            try {
+                const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: `backup_${rootHandle.name}_${new Date().toISOString().slice(0, 10)}.json`,
+                });
+                const writable = await handle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+                showToast("Backup Saved!");
+            } catch (e) {
+                console.error("Backup failed", e); // User cancelled or error
+            }
+        }
+
+        // Tag Aggregation & UI
+        let globalTagCounts = {}; // { "#tag": count }
+
+        function updateTagUI() {
+            // 1. Calculate Counts
+            globalTagCounts = {};
+            globalSearchIndex.forEach(item => {
+                if (item.tags) {
+                    item.tags.forEach(tag => {
+                        globalTagCounts[tag] = (globalTagCounts[tag] || 0) + 1;
+                    });
+                }
+            });
+
+            // 2. Sort by Count
+            const sortedTags = Object.entries(globalTagCounts)
+                .sort((a, b) => b[1] - a[1]) // Descending
+                .map(entry => entry[0]);
+
+            const headerContainer = document.getElementById('header-tags');
+            const modalContainer = document.getElementById('tag-cloud-container');
+
+            headerContainer.innerHTML = '';
+            modalContainer.innerHTML = '';
+
+            // 3. Header: Top 5
+            const topTags = sortedTags.slice(0, 5);
+            topTags.forEach(tag => {
+                const badge = createTagBadge(tag, globalTagCounts[tag]);
+                headerContainer.appendChild(badge);
+            });
+
+            // "More" Button
+            if (sortedTags.length > 5) {
+                const moreBtn = document.createElement('div');
+                moreBtn.className = 'tag-badge';
+                moreBtn.style.background = 'rgba(255,255,255,0.1)';
+                moreBtn.style.border = '1px dashed #666';
+                moreBtn.style.color = '#ccc';
+                moreBtn.innerText = `+${sortedTags.length - 5} More`;
+                moreBtn.onclick = () => {
+                    document.getElementById('tag-modal').classList.remove('hidden');
+                };
+                headerContainer.appendChild(moreBtn);
+            }
+
+            // 4. Modal: All Tags
+            sortedTags.forEach(tag => {
+                const chip = document.createElement('div');
+                chip.className = 'tag-chip';
+                chip.innerText = `${tag} (${globalTagCounts[tag]})`;
+                chip.onclick = () => {
+                    applyTagSearch(tag);
+                    document.getElementById('tag-modal').classList.add('hidden');
+                };
+                modalContainer.appendChild(chip);
+            });
+        }
+
+        function createTagBadge(tag, count) {
+            const el = document.createElement('div');
+            el.className = 'tag-badge';
+            el.innerText = tag; // Badge style doesn't usually show count to save space
+            el.onclick = () => applyTagSearch(tag);
+            return el;
+        }
+
+        function applyTagSearch(tag) {
+            const searchInput = document.getElementById('search-input');
+            searchInput.value = tag;
+            searchInput.dispatchEvent(new Event('input')); // Trigger search
+        }
+
+        // Tag Modal Close
+        document.getElementById('btn-close-tags').onclick = () => {
+            document.getElementById('tag-modal').classList.add('hidden');
+        };
+
+        // Update Scan to refresh UI
+        // We need to call updateTagUI() periodically or after scan finishes.
+        // Let's create a debounced updater in the scanner or just call it at end.
+
+
+
+        // --- 0. Helpers & File Ops ---
+
+        // Color Generator (Pastel/Neon Hash)
+        function getTagColor(text) {
+            let hash = 0;
+            for (let i = 0; i < text.length; i++) {
+                hash = text.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            const h = Math.abs(hash) % 360;
+            return `hsla(${h}, 85%, 60%, 0.4)`; // Slightly more opaque for visibility
+        }
+
+        function isMedia(name) {
+            return /\.(jpg|jpeg|png|gif|webp|bmp|mp4|webm|mov|mkv|ts|m2ts|mts)$/i.test(name);
+        }
+
+        // Alias for compatibility
+        const isImage = isMedia;
+
+        async function getFolderPreviews(dirHandle) {
+            const previews = [];
+            for await (const entry of dirHandle.values()) {
+                if (entry.kind === 'file' && isMedia(entry.name)) {
+                    try {
+                        const file = await entry.getFile();
+                        previews.push(file);
+                        if (previews.length >= 4) break;
+                    } catch (e) { }
+                }
+            }
+            return previews;
+        }
+
+        async function moveFileToFolder(fileName, targetDirHandle) {
+            let item = allEntries.find(i => i.name === fileName);
+            if (!item) item = globalSearchIndex.find(i => i.name === fileName);
+
+            if (!item) return;
+
+            try {
+                const newFileHandle = await targetDirHandle.getFileHandle(fileName, { create: true });
+                const writable = await newFileHandle.createWritable();
+                const file = await item.handle.getFile();
+                await writable.write(file);
+                await writable.close();
+
+                if (item.parentHandle) {
+                    try {
+                        const sidecarName = fileName + '.txt';
+                        const oldSidecar = await item.parentHandle.getFileHandle(sidecarName);
+                        const newSidecar = await targetDirHandle.getFileHandle(sidecarName, { create: true });
+                        const sWritable = await newSidecar.createWritable();
+                        const sFile = await oldSidecar.getFile();
+                        await sWritable.write(sFile);
+                        await sWritable.close();
+                        await item.parentHandle.removeEntry(sidecarName);
+                    } catch (e) { }
+                    await item.parentHandle.removeEntry(fileName);
+                }
+            } catch (e) { console.error("Move failed:", e); }
+        }
+
+        async function importFilesToFolder(fileList, targetDirHandle) {
+            for (const file of fileList) {
+                try {
+                    const fileHandle = await targetDirHandle.getFileHandle(file.name, { create: true });
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(file);
+                    await writable.close();
+                } catch (e) { console.error("Import failed for", file.name, e); }
+            }
+        }
+
+        async function renameFolder(oldName, handle) {
+            const newName = prompt("Rename folder to:", oldName);
+            if (!newName || newName === oldName) return;
+            alert("Folder rename requires manual file moving in this prototype.");
+        }
+
+        async function deleteFolder(name, handle) {
+            if (confirm(`Delete folder "${name}"? This cannot be undone.`)) {
+                try {
+                    await currentHandle.removeEntry(name, { recursive: true });
+                    await loadDirectory(currentHandle);
+                } catch (e) { alert("Delete failed: " + e.message); }
+            }
+        }
+
+        // === 1. File System Access ===
+
+        // Global Scanner
+        async function scanGlobalRecursively(handle, path = "") {
+            // First time clear logic handled by caller or state reset? 
+            // Better to incrementally add or clear once.
+            if (path === "") {
+                globalSearchIndex = [];
+                console.log("Starting Global Scan...");
+            }
+
+            for await (const entry of handle.values()) {
+                if (entry.kind === 'file') {
+                    const isHighlight = entry.name.includes('_highlight_') && entry.name.endsWith('.jpg');
+
+                    if (isImage(entry.name)) {
+                        // We store lightweight ref first
+                        const item = {
+                            kind: isHighlight ? 'highlight' : 'file',
+                            name: entry.name,
+                            handle: entry,
+                            parentHandle: handle, // Critical for Sidecar Save
+                            path: path + "/" + entry.name,
+                            memo: "",
+                            tags: []
+                        };
+
+                        // Async Sidebar Check
+                        try {
+                            const sidecarName = entry.name + '.txt';
+                            const sidecarHandle = await handle.getFileHandle(sidecarName);
+                            const file = await sidecarHandle.getFile();
+                            const text = await file.text();
+
+                            // Parse Tags & Memo
+                            item.memo = text.toLowerCase();
+                            item.tags = (text.match(/#[^\s#]+/g) || []).map(t => t.toLowerCase());
+
+                            // For Multi-Tab Memos (Main Files), we also want to index content from tabs?
+                            // Yes, simple text search includes full raw text which contains tab content.
+                        } catch (e) {
+                            // No sidebar
+                        }
+
+                        globalSearchIndex.push(item);
+                    }
+                } else if (entry.kind === 'directory') {
+                    // Recurse
+                    if (!entry.name.startsWith('.')) {
+                        await scanGlobalRecursively(entry, path + "/" + entry.name);
+                    }
+                }
+            }
+            // Update UI
+            updateTagUI();
+
+            if (path === "") console.log("Global Scan Complete. Items:", globalSearchIndex.length);
+        }
+
+        // Navigation Logic
+        async function navigateToFolder(folderHandle) {
+            dirStack.push(currentHandle); // Push current to stack
+            breadcrumbPath.push({ name: folderHandle.name, handle: folderHandle });
+            currentHandle = folderHandle;
+            await loadDirectory(currentHandle);
+            updateNavigationUI();
+        }
+
+        async function navigateBack() {
+            if (dirStack.length === 0) return;
+            currentHandle = dirStack.pop(); // Pop parent
+            breadcrumbPath.pop();
+            await loadDirectory(currentHandle);
+            updateNavigationUI();
+        }
+
+        function updateNavigationUI() {
+            // Update Path Display (Mock)
+            pathDisplay.innerText = currentHandle.name;
+
+            // Show/Hide Back Button
+            if (dirStack.length > 0) {
+                btnBack.classList.remove('hidden');
+            } else {
+                btnBack.classList.add('hidden');
+            }
+
+            // Update Breadcrumb
+            updateBreadcrumb();
+        }
+
+        // === BREADCRUMB NAVIGATION ===
+        function updateBreadcrumb() {
+            const breadcrumb = document.getElementById('breadcrumb');
+            breadcrumb.innerHTML = '';
+
+            if (!rootHandle) return;
+
+            // Build path from dirStack + current
+            const fullPath = [...breadcrumbPath];
+
+            // Root
+            const rootItem = document.createElement('span');
+            rootItem.className = 'breadcrumb-item' + (fullPath.length === 0 ? ' current' : '');
+            rootItem.innerText = '🏠 ' + rootHandle.name;
+            rootItem.onclick = () => goHome();
+            breadcrumb.appendChild(rootItem);
+
+            fullPath.forEach((item, index) => {
+                const sep = document.createElement('span');
+                sep.className = 'breadcrumb-separator';
+                sep.innerText = ' › ';
+                breadcrumb.appendChild(sep);
+
+                const crumb = document.createElement('span');
+                crumb.className = 'breadcrumb-item' + (index === fullPath.length - 1 ? ' current' : '');
+                crumb.innerText = item.name;
+                crumb.onclick = async () => {
+                    // Navigate to this level
+                    breadcrumbPath = breadcrumbPath.slice(0, index + 1);
+                    dirStack = dirStack.slice(0, index + 1);
+                    currentHandle = item.handle;
+                    await loadDirectory(currentHandle);
+                    updateNavigationUI();
+                };
+                breadcrumb.appendChild(crumb);
+            });
+        }
+
+        btnBack.addEventListener('click', navigateBack);
+
+        // === SORT FUNCTIONALITY ===
+        const sortBtn = document.getElementById('btn-sort');
+        const sortMenu = document.getElementById('sort-menu');
+
+        sortBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            sortMenu.classList.toggle('show');
+        });
+
+        document.addEventListener('click', () => {
+            sortMenu.classList.remove('show');
+        });
+
+        sortMenu.addEventListener('click', async (e) => {
+            const option = e.target.closest('.sort-option');
+            if (!option) return;
+
+            document.querySelectorAll('.sort-option').forEach(o => o.classList.remove('active'));
+            option.classList.add('active');
+            currentSort = option.dataset.sort;
+
+            applySort();
+            await renderGallery();
+        });
+
+        function applySort() {
+            const [field, order] = currentSort.split('-');
+
+            filteredEntries.sort((a, b) => {
+                // Folders always first
+                if (a.kind === 'directory' && b.kind !== 'directory') return -1;
+                if (a.kind !== 'directory' && b.kind === 'directory') return 1;
+
+                let comparison = 0;
+
+                switch(field) {
+                    case 'name':
+                        comparison = a.name.localeCompare(b.name);
+                        break;
+                    case 'date':
+                        const dateA = a.file?.lastModified || 0;
+                        const dateB = b.file?.lastModified || 0;
+                        comparison = dateA - dateB;
+                        break;
+                    case 'size':
+                        const sizeA = a.file?.size || 0;
+                        const sizeB = b.file?.size || 0;
+                        comparison = sizeA - sizeB;
+                        break;
+                    case 'rating':
+                        const ratingA = fileRatings[a.name] || 0;
+                        const ratingB = fileRatings[b.name] || 0;
+                        comparison = ratingA - ratingB;
+                        break;
+                }
+
+                return order === 'desc' ? -comparison : comparison;
+            });
+        }
+
+        // === LASSO SELECTION ===
+        const lassoBox = document.getElementById('lasso-box');
+
+        workspace.addEventListener('mousedown', (e) => {
+            // Only start lasso if clicking on empty space in workspace
+            if (e.target === workspace || e.target === gallery || e.target.id === 'workspace') {
+                if (!e.ctrlKey && !e.shiftKey) {
+                    // Clear selection when clicking empty space
+                    selectedItems.clear();
+                }
+
+                isLassoing = true;
+                lassoStartX = e.clientX;
+                lassoStartY = e.clientY;
+
+                lassoBox.style.left = lassoStartX + 'px';
+                lassoBox.style.top = lassoStartY + 'px';
+                lassoBox.style.width = '0';
+                lassoBox.style.height = '0';
+                lassoBox.style.display = 'block';
+            }
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isLassoing) return;
+
+            const currentX = e.clientX;
+            const currentY = e.clientY;
+
+            const left = Math.min(lassoStartX, currentX);
+            const top = Math.min(lassoStartY, currentY);
+            const width = Math.abs(currentX - lassoStartX);
+            const height = Math.abs(currentY - lassoStartY);
+
+            lassoBox.style.left = left + 'px';
+            lassoBox.style.top = top + 'px';
+            lassoBox.style.width = width + 'px';
+            lassoBox.style.height = height + 'px';
+
+            // Check intersections
+            const lassoRect = { left, top, right: left + width, bottom: top + height };
+
+            document.querySelectorAll('#gallery .item').forEach((el, index) => {
+                const rect = el.getBoundingClientRect();
+                const itemRect = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+
+                if (rectsIntersect(lassoRect, itemRect)) {
+                    el.classList.add('selected');
+                    if (filteredEntries[index]) selectedItems.add(filteredEntries[index]);
+                } else if (!e.ctrlKey) {
+                    el.classList.remove('selected');
+                    if (filteredEntries[index]) selectedItems.delete(filteredEntries[index]);
+                }
+            });
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isLassoing) {
+                isLassoing = false;
+                lassoBox.style.display = 'none';
+                renderGallery(false); // Update UI
+            }
+        });
+
+        function rectsIntersect(a, b) {
+            return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
+        }
+
+        // === TRASH FUNCTIONALITY ===
+        const trashPanel = document.getElementById('trash-panel');
+        const trashList = document.getElementById('trash-list');
+        const btnTrash = document.getElementById('btn-trash');
+        const btnCloseTrash = document.getElementById('btn-close-trash');
+        const btnEmptyTrash = document.getElementById('btn-empty-trash');
+
+        btnTrash.addEventListener('click', () => {
+            trashPanel.classList.toggle('show');
+            renderTrashList();
+        });
+
+        btnCloseTrash.addEventListener('click', () => {
+            trashPanel.classList.remove('show');
+        });
+
+        btnEmptyTrash.addEventListener('click', async () => {
+            if (!confirm('휴지통을 비우시겠습니까? 영구 삭제됩니다.')) return;
+
+            for (const item of trashItems) {
+                try {
+                    if (item.handle) await item.handle.remove();
+                } catch(e) { console.error(e); }
+            }
+            trashItems = [];
+            renderTrashList();
+            showToast('휴지통을 비웠습니다');
+        });
+
+        function renderTrashList() {
+            trashList.innerHTML = '';
+
+            if (trashItems.length === 0) {
+                trashList.innerHTML = '<p style="text-align:center; color:#666; padding:20px;">휴지통이 비어있습니다</p>';
+                return;
+            }
+
+            trashItems.forEach((item, index) => {
+                const el = document.createElement('div');
+                el.className = 'trash-item';
+
+                const img = document.createElement('img');
+                if (item.url) img.src = item.url;
+                else img.style.background = '#333';
+
+                const info = document.createElement('div');
+                info.className = 'trash-item-info';
+                info.innerHTML = `<div class="trash-item-name">${item.name}</div>
+                    <div style="font-size:0.75rem; color:#666;">${new Date(item.deletedAt).toLocaleDateString()}</div>`;
+
+                const actions = document.createElement('div');
+                actions.className = 'trash-actions';
+
+                const restoreBtn = document.createElement('button');
+                restoreBtn.className = 'icon-btn';
+                restoreBtn.innerHTML = '↩️';
+                restoreBtn.title = '복원';
+                restoreBtn.onclick = async () => {
+                    await restoreFromTrash(index);
+                };
+
+                const deleteBtn = document.createElement('button');
+                deleteBtn.className = 'icon-btn';
+                deleteBtn.innerHTML = '❌';
+                deleteBtn.title = '영구삭제';
+                deleteBtn.onclick = async () => {
+                    await permanentDelete(index);
+                };
+
+                actions.appendChild(restoreBtn);
+                actions.appendChild(deleteBtn);
+
+                el.appendChild(img);
+                el.appendChild(info);
+                el.appendChild(actions);
+                trashList.appendChild(el);
+            });
+        }
+
+        async function moveToTrash(item) {
+            try {
+                // Store file data before removal
+                let url = '';
+                if (item.file) {
+                    url = URL.createObjectURL(item.file);
+                }
+
+                trashItems.push({
+                    name: item.name,
+                    handle: item.handle,
+                    parentHandle: item.parentHandle,
+                    file: item.file,
+                    url: url,
+                    deletedAt: Date.now()
+                });
+
+                showToast(`"${item.name}" 휴지통으로 이동`);
+                return true;
+            } catch(e) {
+                console.error('Move to trash failed:', e);
+                return false;
+            }
+        }
+
+        async function restoreFromTrash(index) {
+            const item = trashItems[index];
+            if (!item) return;
+
+            try {
+                // Re-create the file in original location
+                if (item.parentHandle && item.file) {
+                    const newHandle = await item.parentHandle.getFileHandle(item.name, { create: true });
+                    const writable = await newHandle.createWritable();
+                    await writable.write(item.file);
+                    await writable.close();
+                }
+
+                trashItems.splice(index, 1);
+                renderTrashList();
+                await loadDirectory(currentHandle);
+                showToast(`"${item.name}" 복원됨`);
+            } catch(e) {
+                console.error('Restore failed:', e);
+                showToast('복원 실패');
+            }
+        }
+
+        async function permanentDelete(index) {
+            if (!confirm('영구 삭제하시겠습니까?')) return;
+
+            trashItems.splice(index, 1);
+            renderTrashList();
+            showToast('영구 삭제됨');
+        }
+
+        // === THUMBNAIL CACHING ===
+        const DB_KEY_THUMBNAILS = 'ppu_thumbnails';
+        let thumbnailCache = {};
+
+        async function loadThumbnailCache() {
+            try {
+                if (window.idbKeyval) {
+                    const cache = await idbKeyval.get(DB_KEY_THUMBNAILS);
+                    if (cache) thumbnailCache = cache;
+                }
+            } catch(e) { console.error('Load thumbnail cache failed:', e); }
+        }
+
+        async function saveThumbnailCache() {
+            try {
+                if (window.idbKeyval) {
+                    // Limit cache size to 500 items
+                    const keys = Object.keys(thumbnailCache);
+                    if (keys.length > 500) {
+                        const toDelete = keys.slice(0, keys.length - 500);
+                        toDelete.forEach(k => delete thumbnailCache[k]);
+                    }
+                    await idbKeyval.set(DB_KEY_THUMBNAILS, thumbnailCache);
+                }
+            } catch(e) { console.error('Save thumbnail cache failed:', e); }
+        }
+
+        async function getCachedThumbnail(file, maxSize = 300) {
+            const cacheKey = `${file.name}_${file.size}_${file.lastModified}`;
+
+            if (thumbnailCache[cacheKey]) {
+                return thumbnailCache[cacheKey];
+            }
+
+            // Generate thumbnail
+            try {
+                const isVideo = /\.(mp4|webm|mov|mkv|ts|m2ts|mts)$/i.test(file.name);
+
+                if (isVideo) {
+                    // For videos, we can't easily cache thumbnails, return null
+                    return null;
+                }
+
+                const img = new Image();
+                const url = URL.createObjectURL(file);
+
+                await new Promise((resolve, reject) => {
+                    img.onload = resolve;
+                    img.onerror = reject;
+                    img.src = url;
+                });
+
+                URL.revokeObjectURL(url);
+
+                // Calculate thumbnail dimensions
+                let width = img.width;
+                let height = img.height;
+                if (width > maxSize || height > maxSize) {
+                    if (width > height) {
+                        height = (height / width) * maxSize;
+                        width = maxSize;
+                    } else {
+                        width = (width / height) * maxSize;
+                        height = maxSize;
+                    }
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+
+                const thumbnailData = canvas.toDataURL('image/jpeg', 0.7);
+                thumbnailCache[cacheKey] = thumbnailData;
+
+                // Debounced save
+                clearTimeout(window._thumbSaveTimeout);
+                window._thumbSaveTimeout = setTimeout(saveThumbnailCache, 2000);
+
+                return thumbnailData;
+            } catch(e) {
+                console.error('Thumbnail generation failed:', e);
+                return null;
+            }
+        }
+
+        // === VIRTUAL SCROLLING ===
+        let virtualScrollEnabled = true;
+        let visibleRange = { start: 0, end: 50 };
+        const ITEMS_PER_PAGE = 50;
+        const BUFFER_SIZE = 10;
+
+        function setupVirtualScroll() {
+            const workspaceEl = document.getElementById('workspace');
+
+            workspaceEl.addEventListener('scroll', () => {
+                if (!virtualScrollEnabled || filteredEntries.length <= ITEMS_PER_PAGE) return;
+
+                const scrollTop = workspaceEl.scrollTop;
+                const containerHeight = workspaceEl.clientHeight;
+                const items = document.querySelectorAll('#gallery .item');
+                if (items.length === 0) return;
+
+                const itemHeight = items[0].offsetHeight + 16; // Including gap
+                const cols = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--col-count'));
+                const rowHeight = itemHeight;
+                const visibleRows = Math.ceil(containerHeight / rowHeight) + BUFFER_SIZE;
+
+                const startRow = Math.max(0, Math.floor(scrollTop / rowHeight) - BUFFER_SIZE);
+                const startIndex = startRow * cols;
+                const endIndex = Math.min(filteredEntries.length, startIndex + (visibleRows * cols));
+
+                if (startIndex !== visibleRange.start || endIndex !== visibleRange.end) {
+                    visibleRange = { start: startIndex, end: endIndex };
+                    // Don't re-render, just lazy load visible items
+                }
+            });
+        }
+
+        setupVirtualScroll();
+
+        // === STAR RATING SYSTEM ===
+        const DB_KEY_RATINGS = 'ppu_file_ratings';
+
+        async function loadRatings() {
+            try {
+                if (window.idbKeyval) {
+                    const ratings = await idbKeyval.get(DB_KEY_RATINGS);
+                    if (ratings) fileRatings = ratings;
+                }
+            } catch(e) { console.error('Load ratings failed:', e); }
+        }
+
+        async function saveRatings() {
+            try {
+                if (window.idbKeyval) {
+                    await idbKeyval.set(DB_KEY_RATINGS, fileRatings);
+                }
+            } catch(e) { console.error('Save ratings failed:', e); }
+        }
+
+        async function setRating(fileName, rating) {
+            fileRatings[fileName] = rating;
+            await saveRatings();
+        }
+
+        function createStarRating(item) {
+            const container = document.createElement('div');
+            container.className = 'star-rating';
+
+            const currentRating = fileRatings[item.name] || 0;
+
+            for (let i = 1; i <= 5; i++) {
+                const star = document.createElement('span');
+                star.className = 'star' + (i <= currentRating ? ' filled' : '');
+                star.innerText = '★';
+                star.onclick = async (e) => {
+                    e.stopPropagation();
+                    await setRating(item.name, i);
+                    // Update visual
+                    container.querySelectorAll('.star').forEach((s, idx) => {
+                        s.classList.toggle('filled', idx < i);
+                    });
+                };
+                container.appendChild(star);
+            }
+
+            return container;
+        }
+
+        // === BATCH RENAME ===
+        const batchRenameModal = document.getElementById('batch-rename-modal');
+        const btnBatchRename = document.getElementById('btn-batch-rename');
+        const renamePattern = document.getElementById('rename-pattern');
+        const renameStart = document.getElementById('rename-start');
+        const renamePreview = document.getElementById('rename-preview');
+
+        btnBatchRename.addEventListener('click', () => {
+            if (selectedItems.size === 0) {
+                showToast('파일을 먼저 선택하세요');
+                return;
+            }
+            batchRenameModal.classList.add('show');
+            updateRenamePreview();
+        });
+
+        document.getElementById('btn-cancel-rename').addEventListener('click', () => {
+            batchRenameModal.classList.remove('show');
+        });
+
+        renamePattern.addEventListener('input', updateRenamePreview);
+        renameStart.addEventListener('input', updateRenamePreview);
+
+        function updateRenamePreview() {
+            const pattern = renamePattern.value || 'File_{n}';
+            const start = parseInt(renameStart.value) || 1;
+            const items = Array.from(selectedItems).filter(i => i.kind === 'file');
+
+            let html = '';
+            items.slice(0, 10).forEach((item, index) => {
+                const ext = item.name.split('.').pop();
+                const nameWithoutExt = item.name.replace('.' + ext, '');
+                const newName = pattern
+                    .replace('{n}', String(start + index).padStart(3, '0'))
+                    .replace('{name}', nameWithoutExt)
+                    .replace('{date}', new Date().toISOString().slice(0, 10))
+                    + '.' + ext;
+                html += `<div>${item.name} → ${newName}</div>`;
+            });
+
+            if (items.length > 10) {
+                html += `<div>... 외 ${items.length - 10}개</div>`;
+            }
+
+            renamePreview.innerHTML = html || '<div>선택된 파일 없음</div>';
+        }
+
+        document.getElementById('btn-apply-rename').addEventListener('click', async () => {
+            const pattern = renamePattern.value || 'File_{n}';
+            const start = parseInt(renameStart.value) || 1;
+            const items = Array.from(selectedItems).filter(i => i.kind === 'file');
+
+            showToast('이름 변경 중...');
+
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                try {
+                    const ext = item.name.split('.').pop();
+                    const nameWithoutExt = item.name.replace('.' + ext, '');
+                    const newName = pattern
+                        .replace('{n}', String(start + i).padStart(3, '0'))
+                        .replace('{name}', nameWithoutExt)
+                        .replace('{date}', new Date().toISOString().slice(0, 10))
+                        + '.' + ext;
+
+                    // Copy file with new name
+                    const parentDir = item.parentHandle || currentHandle;
+                    const newHandle = await parentDir.getFileHandle(newName, { create: true });
+                    const writable = await newHandle.createWritable();
+                    const fileData = await item.handle.getFile();
+                    await writable.write(fileData);
+                    await writable.close();
+
+                    // Copy sidecar if exists
+                    try {
+                        const oldSidecar = await parentDir.getFileHandle(item.name + '.txt');
+                        const newSidecar = await parentDir.getFileHandle(newName + '.txt', { create: true });
+                        const sw = await newSidecar.createWritable();
+                        const sf = await oldSidecar.getFile();
+                        await sw.write(sf);
+                        await sw.close();
+                        await oldSidecar.remove();
+                    } catch(e) {}
+
+                    // Delete old file
+                    await item.handle.remove();
+
+                } catch(e) {
+                    console.error('Rename failed for', item.name, e);
+                }
+            }
+
+            batchRenameModal.classList.remove('show');
+            selectedItems.clear();
+            await loadDirectory(currentHandle);
+            showToast('이름 변경 완료!');
+        });
+
+        // === IMAGE ROTATION ===
+        async function rotateImage(item, degrees) {
+            showToast('이미지 회전 중...');
+
+            try {
+                const file = item.file || await item.handle.getFile();
+                const img = new Image();
+
+                await new Promise((resolve, reject) => {
+                    img.onload = resolve;
+                    img.onerror = reject;
+                    img.src = URL.createObjectURL(file);
+                });
+
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+
+                if (degrees === 90 || degrees === -90 || degrees === 270) {
+                    canvas.width = img.height;
+                    canvas.height = img.width;
+                } else {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                }
+
+                ctx.translate(canvas.width / 2, canvas.height / 2);
+                ctx.rotate(degrees * Math.PI / 180);
+                ctx.drawImage(img, -img.width / 2, -img.height / 2);
+
+                const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95));
+
+                const parentDir = item.parentHandle || currentHandle;
+                const writable = await item.handle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+
+                // Update cache
+                item.file = new File([blob], item.name, { type: 'image/jpeg' });
+
+                showToast('회전 완료!');
+                return true;
+            } catch(e) {
+                console.error('Rotation failed:', e);
+                showToast('회전 실패');
+                return false;
+            }
+        }
+
+        // === KEYBOARD NAVIGATION ===
+        function setupKeyboardNavigation() {
+            document.addEventListener('keydown', (e) => {
+                // Skip if in input field or overlay open
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+                if (!document.getElementById('memo-overlay').classList.contains('hidden')) return;
+
+                const items = document.querySelectorAll('#gallery .item');
+                if (items.length === 0) return;
+
+                const cols = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--col-count'));
+
+                switch(e.key) {
+                    case 'ArrowRight':
+                        e.preventDefault();
+                        focusedIndex = Math.min(focusedIndex + 1, items.length - 1);
+                        break;
+                    case 'ArrowLeft':
+                        e.preventDefault();
+                        focusedIndex = Math.max(focusedIndex - 1, 0);
+                        break;
+                    case 'ArrowDown':
+                        e.preventDefault();
+                        focusedIndex = Math.min(focusedIndex + cols, items.length - 1);
+                        break;
+                    case 'ArrowUp':
+                        e.preventDefault();
+                        focusedIndex = Math.max(focusedIndex - cols, 0);
+                        break;
+                    case 'Enter':
+                        e.preventDefault();
+                        if (focusedIndex >= 0 && filteredEntries[focusedIndex]) {
+                            const item = filteredEntries[focusedIndex];
+                            if (item.kind === 'directory') {
+                                navigateToFolder(item.handle);
+                            } else {
+                                openImageEditor(item);
+                            }
+                        }
+                        break;
+                    case ' ': // Space to select
+                        e.preventDefault();
+                        if (focusedIndex >= 0 && filteredEntries[focusedIndex]) {
+                            const item = filteredEntries[focusedIndex];
+                            if (selectedItems.has(item)) {
+                                selectedItems.delete(item);
+                            } else {
+                                selectedItems.add(item);
+                            }
+                            renderGallery(false);
+                        }
+                        break;
+                    case 'a':
+                        if (e.ctrlKey) {
+                            e.preventDefault();
+                            filteredEntries.forEach(item => selectedItems.add(item));
+                            renderGallery(false);
+                        }
+                        break;
+                    case 'Escape':
+                        selectedItems.clear();
+                        focusedIndex = -1;
+                        renderGallery(false);
+                        break;
+                    case 'Delete':
+                        if (selectedItems.size > 0) {
+                            // Handled by existing delete logic
+                        }
+                        break;
+                    case 'Backspace':
+                        if (dirStack.length > 0) {
+                            navigateBack();
+                        }
+                        break;
+                }
+
+                // Update focus visual
+                items.forEach((el, i) => {
+                    el.style.outline = i === focusedIndex ? '2px solid var(--accent-color)' : 'none';
+                });
+
+                // Scroll focused item into view
+                if (focusedIndex >= 0 && items[focusedIndex]) {
+                    items[focusedIndex].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            });
+        }
+
+        setupKeyboardNavigation();
+
+        async function loadDirectory(dirHandle) {
+            gallery.innerHTML = '';
+            // Clear current view lists
+            allEntries = [];
+            filteredEntries = [];
+            pathDisplay.innerText = dirHandle.name;
+
+            // Reset scroll
+            document.getElementById('workspace').scrollTop = 0;
+
+            for await (const entry of dirHandle.values()) {
+                if (entry.kind === 'file') {
+                    if (isImage(entry.name)) {
+                        // Filter out Highlights
+                        if (entry.name.includes('_highlight_')) continue;
+
+                        // For current view, we load file objects for thumbnails
+                        try {
+                            const file = await entry.getFile();
+                            allEntries.push({
+                                kind: 'file',
+                                handle: entry,
+                                parentHandle: dirHandle,
+                                file: file,
+                                name: entry.name,
+                                memo: "",
+                                tags: []
+                            });
+                        } catch (e) {
+                            // Still add entry with null file - will lazy load later
+                            console.warn("File not ready, adding with lazy load:", entry.name, e);
+                            allEntries.push({
+                                kind: 'file',
+                                handle: entry,
+                                parentHandle: dirHandle,
+                                file: null, // Will be loaded when needed
+                                name: entry.name,
+                                memo: "",
+                                tags: []
+                            });
+                        }
+                    }
+                } else if (entry.kind === 'directory') {
+                    allEntries.push({ kind: 'directory', handle: entry, name: entry.name });
+                }
+            }
+
+            // Sort: Folders first, then files
+            allEntries.sort((a, b) => {
+                if (a.kind === b.kind) return a.name.localeCompare(b.name);
+                return a.kind === 'directory' ? -1 : 1;
+            });
+
+            // Initial Filter
+            filteredEntries = [...allEntries];
+            await renderGallery();
+        }
+
+        // Lazy Loader Instance
+        const lazyLoader = new IntersectionObserver(async (entries, observer) => {
+            for (const entry of entries) {
+                if (entry.isIntersecting) {
+                    const el = entry.target;
+                    observer.unobserve(el); // Load only once
+
+                    try {
+                        // Case 1: File (Image/Video)
+                        if (el._item && el._item.kind === 'file') {
+                            const item = el._item;
+
+                            // 1. Fetch File if missing
+                            if (!item.file) {
+                                item.file = await item.handle.getFile();
+                            }
+
+                            // 2. Try to use cached thumbnail first (for images)
+                            if (el.tagName === 'IMG') {
+                                const cachedThumb = await getCachedThumbnail(item.file);
+                                if (cachedThumb) {
+                                    el.src = cachedThumb;
+                                } else {
+                                    el.src = URL.createObjectURL(item.file);
+                                }
+                            } else if (el.tagName === 'VIDEO') {
+                                // TS files can't be played directly in browser - show placeholder
+                                const isTsFile = /\.(ts|m2ts|mts)$/i.test(item.name);
+                                if (isTsFile) {
+                                    // Replace video with a placeholder for TS files
+                                    const placeholder = document.createElement('div');
+                                    placeholder.className = 'ts-placeholder';
+                                    placeholder.innerHTML = `
+                                        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;background:#1a1a2e;color:#667eea;">
+                                            <div style="font-size:2rem;">📼</div>
+                                            <div style="font-size:0.7rem;margin-top:5px;">TS</div>
+                                        </div>
+                                    `;
+                                    placeholder.style.width = '100%';
+                                    placeholder.style.height = '100%';
+                                    el.replaceWith(placeholder);
+                                } else {
+                                    el.src = URL.createObjectURL(item.file);
+                                    el.load(); // Trigger metadata load
+                                }
+                            }
+                        }
+                        // Case 2: Folder Preview
+                        else if (el.classList.contains('folder-preview') && el._handle) {
+                            const previews = await getFolderPreviews(el._handle);
+                            el.innerHTML = ''; // Clear skeleton
+
+                            previews.forEach(file => {
+                                const url = URL.createObjectURL(file);
+                                const isVideo = /\.(mp4|webm|mov|mkv|ts|m2ts|mts)$/i.test(file.name);
+                                const isTsFile = /\.(ts|m2ts|mts)$/i.test(file.name);
+
+                                if (isTsFile) {
+                                    // TS placeholder for folder preview
+                                    const tsPh = document.createElement('div');
+                                    tsPh.style.cssText = 'display:flex;align-items:center;justify-content:center;background:#1a1a2e;color:#667eea;font-size:0.8rem;';
+                                    tsPh.innerText = '📼';
+                                    el.appendChild(tsPh);
+                                } else if (isVideo) {
+                                    const pVid = document.createElement('video');
+                                    pVid.src = url;
+                                    pVid.muted = true;
+                                    pVid.preload = 'metadata';
+                                    pVid.style.objectFit = 'cover';
+                                    pVid.style.width = '100%';
+                                    pVid.style.height = '100%';
+                                    el.appendChild(pVid);
+                                } else {
+                                    const pImg = document.createElement('img');
+                                    pImg.src = url;
+                                    el.appendChild(pImg);
+                                }
+                            });
+
+                            // Fill empty if < 4
+                            for (let i = 0; i < 4 - previews.length; i++) {
+                                const empty = document.createElement('div');
+                                empty.style.background = '#222';
+                                el.appendChild(empty);
+                            }
+                        }
+                    } catch (e) {
+                        console.error("Lazy load failed", e);
+                    }
+                }
+            }
+        });
+
+        // Multi-Selection State
+        let selectedItems = new Set();
+        let lastSelectedIndex = -1;
+
+        async function renderGallery(isSearchMode = false) {
+            gallery.innerHTML = '';
+            lazyLoader.disconnect();
+
+            // Helper to handle selection click
+            const handleItemClick = (e, item, index) => {
+                const isCtrl = e.ctrlKey || e.metaKey;
+                const isShift = e.shiftKey;
+
+                if (isCtrl) {
+                    toggleItemSelection(item);
+                    lastSelectedIndex = index;
+                    return;
+                }
+
+                if (isShift && lastSelectedIndex !== -1) {
+                    const start = Math.min(lastSelectedIndex, index);
+                    const end = Math.max(lastSelectedIndex, index);
+                    for (let i = start; i <= end; i++) {
+                        selectedItems.add(filteredEntries[i]);
+                    }
+                    renderGallery(false);
+                    return;
+                }
+
+                openImageEditor(item);
+            };
+
+            // Toggle Helper
+            const toggleItemSelection = (item) => {
+                if (selectedItems.has(item)) selectedItems.delete(item);
+                else selectedItems.add(item);
+                renderGallery(false);
+            };
+
+            filteredEntries.forEach((item, index) => {
+                const el = document.createElement('div');
+                el.className = 'item';
+                if (selectedItems.has(item)) el.classList.add('selected');
+                el.draggable = true;
+
+                // 1. Media Container
+                const mediaContainer = document.createElement('div');
+                mediaContainer.className = 'media-container';
+
+                // Checkbox UI
+                const checkbox = document.createElement('div');
+                checkbox.className = 'select-checkbox';
+                checkbox.onclick = (e) => {
+                    e.stopPropagation();
+                    toggleItemSelection(item);
+                    lastSelectedIndex = index;
+                };
+                mediaContainer.appendChild(checkbox);
+
+                // Star Rating (for files only)
+                if (item.kind === 'file') {
+                    const starRating = createStarRating(item);
+                    mediaContainer.appendChild(starRating);
+                }
+
+                if (item.kind === 'file') {
+                    // Added ts support
+                    const isVideo = /\.(mp4|webm|mov|mkv|ts|m2ts|mts)$/i.test(item.name);
+
+                    if (isVideo) {
+                        const video = document.createElement('video');
+                        video.muted = true;
+                        video.preload = 'metadata';
+                        video.style.pointerEvents = 'none';
+                        video._item = item;
+
+                        // Hover Logic
+                        el.onmouseover = () => { if (video.readyState > 0) video.play().catch(() => { }); };
+                        el.onmouseout = () => { video.pause(); video.currentTime = 0; };
+
+                        const badge = document.createElement('div');
+                        badge.className = 'video-badge';
+                        badge.innerText = '▶';
+                        badge.style.pointerEvents = 'none';
+
+                        mediaContainer.appendChild(video);
+                        mediaContainer.appendChild(badge);
+                        lazyLoader.observe(video);
+                    } else {
+                        const img = document.createElement('img');
+                        img._item = item;
+                        mediaContainer.appendChild(img);
+                        lazyLoader.observe(img);
+                    }
+
+                    // Highlight Visuals
+                    if (item.kind === 'highlight') {
+                        el.style.border = '2px solid var(--accent-color)';
+                        const highlightBadge = document.createElement('div');
+                        highlightBadge.className = 'video-badge'; // reuse style
+                        highlightBadge.innerText = '★'; // Star for highlight
+                        highlightBadge.style.background = 'var(--accent-color)';
+                        highlightBadge.style.pointerEvents = 'none';
+                        mediaContainer.appendChild(highlightBadge);
+                    }
+
+                    // Drag Logic (Files and Highlights)
+                    el.ondragstart = (e) => {
+                        e.dataTransfer.setData('application/json', JSON.stringify({ kind: item.kind, name: item.name }));
+                        e.dataTransfer.effectAllowed = 'move';
+                        el.classList.add('dragging');
+                    };
+
+                } else { // This is for 'directory'
+                    // Folder Logic
+                    el.classList.add('folder');
+                    const previewContainer = document.createElement('div');
+                    previewContainer.className = 'folder-preview';
+                    previewContainer._handle = item.handle;
+                    previewContainer.innerHTML = '<div style="color:#444;">...</div>';
+
+                    mediaContainer.appendChild(previewContainer);
+                    lazyLoader.observe(previewContainer);
+
+                    // Drop Logic
+                    el.ondragover = (e) => { e.preventDefault(); el.style.borderColor = 'var(--accent-color)'; };
+                    el.ondragleave = () => { el.style.borderColor = 'transparent'; };
+                    el.ondrop = async (e) => {
+                        e.preventDefault(); e.stopPropagation();
+                        el.style.borderColor = 'transparent';
+
+                        showToast("Processing Drop...");
+
+                        if (e.dataTransfer.files.length > 0) {
+                            await importFilesToFolder(Array.from(e.dataTransfer.files), item.handle);
+                            await loadDirectory(currentHandle);
+                        }
+                        const data = e.dataTransfer.getData('application/json');
+                        if (data) {
+                            const { name } = JSON.parse(data);
+                            await moveFileToFolder(name, item.handle);
+                            await loadDirectory(currentHandle);
+                        }
+                    };
+                }
+
+                el.ondragend = () => el.classList.remove('dragging');
+
+                // 2. Info Bar
+                const info = document.createElement('div');
+                info.className = 'item-info';
+
+                const title = document.createElement('span');
+                title.className = 'item-title';
+                title.innerText = item.name;
+                title.title = item.name;
+
+                const controls = document.createElement('div');
+                controls.className = 'item-controls';
+
+                const btnRename = document.createElement('button');
+                btnRename.className = 'icon-btn';
+                btnRename.innerHTML = '✏️';
+                btnRename.title = "Rename";
+                btnRename.onclick = (e) => {
+                    e.stopPropagation();
+                    if (item.kind === 'directory') renameFolder(item.name, item.handle);
+                    else alert("File renaming not implemented yet.");
+                };
+
+                const btnDelete = document.createElement('button');
+                btnDelete.className = 'icon-btn';
+                btnDelete.innerHTML = '🗑️';
+                btnDelete.title = "휴지통으로 이동";
+                btnDelete.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (item.kind === 'directory') deleteFolder(item.name, item.handle);
+                    else {
+                        // Move to trash instead of permanent delete
+                        await moveToTrash(item);
+                        // Remove from current view only (keep file for restore)
+                        allEntries = allEntries.filter(i => i.name !== item.name);
+                        filteredEntries = filteredEntries.filter(i => i.name !== item.name);
+                        await renderGallery();
+                    }
+                };
+
+                controls.appendChild(btnRename);
+                controls.appendChild(btnDelete);
+                info.appendChild(title);
+                info.appendChild(controls);
+
+                // Assemble Item
+                el.appendChild(mediaContainer);
+                el.appendChild(info);
+
+                // Click Handler setup
+                if (item.kind === 'directory') {
+                    el.onclick = (e) => {
+                        if (e.ctrlKey || e.shiftKey) handleItemClick(e, item, index);
+                        else navigateToFolder(item.handle);
+                    };
+                } else {
+                    el.onclick = (e) => handleItemClick(e, item, index);
+                }
+
+                gallery.appendChild(el);
+            });
+
+            // --- Multi-Selection UI (Floating Toolbar) ---
+            let fab = document.getElementById('fab-actions');
+            if (!fab) {
+                fab = document.createElement('div');
+                fab.id = 'fab-actions';
+                fab.style.cssText = "position:fixed; bottom:30px; left:50%; transform:translateX(-50%); background:rgba(20,20,20,0.9); border:1px solid #444; border-radius:30px; padding:10px 20px; display:flex; gap:15px; box-shadow:0 5px 20px rgba(0,0,0,0.5); z-index:1000; transition: transform 0.3s, opacity 0.3s; opacity:0; pointer-events:none;";
+                document.body.appendChild(fab);
+            }
+
+            if (selectedItems.size > 0) {
+                fab.style.opacity = '1';
+                fab.style.transform = 'translateX(-50%) translateY(0)';
+                fab.style.pointerEvents = 'auto';
+                fab.innerHTML = `
+                    <span style="color:#ccc; align-self:center; font-weight:bold;">${selectedItems.size} Selected</span>
+                    <button id="btn-multi-delete" style="background:#ff4444; color:white; border:none; padding:8px 16px; border-radius:20px; cursor:pointer; font-weight:bold;">Delete</button>
+                    <button id="btn-clear-sel" style="background:#444; color:white; border:none; padding:8px 16px; border-radius:20px; cursor:pointer;">Cancel</button>
+                `;
+
+                document.getElementById('btn-multi-delete').onclick = async () => {
+                    if (confirm(`Delete ${selectedItems.size} items? This cannot be undone.`)) {
+                        showToast("Deleting items...");
+                        for (const item of selectedItems) {
+                            try {
+                                await item.handle.remove();
+                                if (item.kind === 'file') {
+                                    try {
+                                        const sc = await item.parentHandle.getFileHandle(item.name + '.txt');
+                                        await sc.remove();
+                                    } catch (e) { }
+                                    // Also try to delete highlights folder or files? 
+                                    // (Ideally highlights are clean, but we won't scan for them now to be safe/fast)
+                                }
+                            } catch (e) { console.error(e); }
+                        }
+                        selectedItems.clear();
+                        showToast("Deletion Complete");
+                        await loadDirectory(currentHandle);
+                    }
+                };
+
+                document.getElementById('btn-clear-sel').onclick = () => {
+                    selectedItems.clear();
+                    renderGallery(false);
+                };
+
+            } else {
+                fab.style.opacity = '0';
+                fab.style.transform = 'translateX(-50%) translateY(20px)';
+                fab.style.pointerEvents = 'none';
+            }
+        }
+
+        // Global Delete Key Handler for Multi-Selection
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Delete' && selectedItems.size > 0 && document.getElementById('memo-overlay').classList.contains('hidden')) {
+                const btn = document.getElementById('btn-multi-delete');
+                if (btn) btn.click();
+            }
+        });
+        const styleSheet = document.createElement("style");
+        styleSheet.innerText = "@keyframes spin { to { transform: rotate(360deg); } }";
+        document.head.appendChild(styleSheet);
+
+        // Toast Container Injection (if not exists)
+        if (!document.getElementById('toast-container')) {
+            const tc = document.createElement('div');
+            tc.id = 'toast-container';
+            document.body.appendChild(tc);
+        }
+
+        function showToast(message, duration = 3000) {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+
+            const el = document.createElement('div');
+            el.className = 'toast';
+            el.innerHTML = `<span style="width:16px;height:16px;border:2px solid #888;border-top-color:#fff;border-radius:50%;animation:spin 1s linear infinite;display:inline-block;"></span><span>${message}</span>`;
+
+            container.appendChild(el);
+
+            // Auto-remove
+            setTimeout(() => {
+                el.style.opacity = '0';
+                setTimeout(() => el.remove(), 300);
+            }, duration);
+        }
+
+        // ==========================================
+        //  Sidecar Memo System (Rich Text)
+        // ==========================================
+
+        async function openImageEditor(item) {
+            // Save previous if exists
+            if (activeImageItem && activeImageItem.name !== item.name) {
+                await saveCurrentMemo();
+            }
+
+            activeImageItem = item;
+            document.getElementById('memo-overlay').classList.remove('hidden');
+
+            // Reset Mode
+            isEditMode = false;
+            // Ensure preview is visible by default state setup, but updateEditorMode calls it too.
+            // Problem: activeImageItem is set, but openImageEditor is async.
+            // Just call updateEditorMode AFTER loading tabs.
+
+            // Set Title & Image
+            document.getElementById('editor-filename').innerText = item.name;
+            const imgContainer = document.getElementById('memo-images-container');
+            const imgPreview = document.getElementById('editor-img-preview');
+
+            // Force show image initially (reset state)
+            imgPreview.classList.remove('hidden');
+            imgPreview.style.display = 'block';
+
+            // Clear previous video if any
+            const prevVideo = document.getElementById('editor-video-preview');
+            if (prevVideo) prevVideo.remove();
+            imgPreview.classList.remove('hidden');
+
+            // Handle potentially missing file blob (lazy load)
+            if (!item.file) {
+                try { item.file = await item.handle.getFile(); } catch (e) {
+                    console.error("Failed to load file:", e);
+                    showToast("Failed to load file. It may be deleted.");
+                    return;
+                }
+            }
+
+            if (!item.file) return; // Safety exit
+
+            let fileUrl;
+            try {
+                fileUrl = URL.createObjectURL(item.file);
+            } catch (e) {
+                console.error("Failed to create URL:", e);
+                return;
+            }
+
+            // Updated Regex for .ts support
+            const isVideo = /\.(mp4|webm|mov|mkv|ts|m2ts|mts)$/i.test(item.name);
+            const isTsFile = /\.(ts|m2ts|mts)$/i.test(item.name);
+
+            if (isVideo) {
+                imgPreview.classList.add('hidden'); // Hide img
+                imgContainer.style.display = 'flex';
+                imgContainer.style.flexDirection = 'column';
+
+                // Remove existing timeline if any
+                const existingTimeline = document.getElementById('video-timeline-container');
+                if (existingTimeline) existingTimeline.remove();
+
+                // Destroy previous mpegts player
+                if (typeof destroyMpegtsPlayer === 'function') destroyMpegtsPlayer();
+
+                const video = document.createElement('video');
+                video.id = 'editor-video-preview';
+                video.className = 'editor-video';
+                video.controls = true;
+                video.style.width = '100%';
+                video.style.height = 'auto'; // Let flex handle height
+                video.style.flex = '1'; // Take remaining space
+                video.style.minHeight = '0'; // Prevent overflow
+                video.style.objectFit = 'contain';
+
+                imgContainer.appendChild(video);
+
+                // Create video timeline after video loads - attach BEFORE loading video
+                let timelineCreated = false;
+                const createTimelineOnce = () => {
+                    if (!timelineCreated && typeof createVideoTimeline === 'function') {
+                        timelineCreated = true;
+                        createVideoTimeline(video, imgContainer, isTsFile);
+                    }
+                };
+                video.addEventListener('loadedmetadata', createTimelineOnce);
+
+                // Error handling for video playback
+                video.onerror = () => {
+                    console.error("Video playback error", video.error);
+                    if (isTsFile) {
+                        showToast("TS 파일 재생 오류. 브라우저가 지원하지 않을 수 있습니다.");
+                    } else {
+                        showToast("비디오 포맷이 지원되지 않습니다.");
+                    }
+                };
+
+                // Handle TS files with mpegts.js
+                if (isTsFile && typeof playTsFile === 'function') {
+                    const success = await playTsFile(item.file, video);
+                    if (!success) {
+                        video.src = fileUrl;
+                        video.load();
+                    }
+                    // For TS files, also try creating timeline after a delay (mpegts.js might not fire loadedmetadata)
+                    setTimeout(() => {
+                        if (!timelineCreated && video.duration > 0) {
+                            createTimelineOnce();
+                        }
+                    }, 1000);
+                } else {
+                    video.src = fileUrl;
+                    video.autoplay = true;
+                }
+
+                // --- Upgrade: Highlight System V2 ---
+
+                // 1. New CSS Injection (Ideally move to <style>, but lazy inject for now)
+                if (!document.getElementById('highlight-css')) {
+                    const hStyle = document.createElement('style');
+                    hStyle.id = 'highlight-css';
+                    hStyle.innerHTML = `
+                        #highlight-strip {
+                            display: flex; gap: 10px; overflow-x: auto; 
+                            padding: 10px; background: rgba(0,0,0,0.3); backdrop-filter: blur(10px); 
+                            margin-top: 10px; height: auto; align-items: flex-start;
+                            border-radius: 8px; border: 1px solid rgba(255,255,255,0.1);
+                            width: 100%; box-sizing: border-box; /* Full Width */
+                        }
+                        #highlight-strip::-webkit-scrollbar { height: 6px; }
+                        #highlight-strip::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 3px; }
+                        
+                        .highlight-card {
+                            flex-shrink: 0; width: 150px; /* Fixed card width */
+                            position: relative; overflow: hidden; border-radius: 6px; 
+                            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+                            transition: transform 0.2s; cursor: pointer; display: flex; flex-direction: column;
+                        }
+                        .highlight-card:hover { transform: translateY(-2px); border-color: var(--accent-color); }
+                        .highlight-thumb { width: 100%; height: auto; aspect-ratio: 16/9; object-fit: cover; }
+                        .highlight-meta { padding: 6px; font-size: 11px; color: #ccc; background: rgba(0,0,0,0.6); }
+                        .highlight-time { font-weight: bold; color: var(--accent-color); margin-bottom: 2px; }
+                        .highlight-memo { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.8; font-size: 10px; }
+                        .highlight-actions { 
+                            position: absolute; top: 0; right: 0; display: flex; 
+                            opacity: 0; transition: opacity 0.2s; background: rgba(0,0,0,0.8);
+                        }
+                        .highlight-card:hover .highlight-actions { opacity: 1; }
+                        .h-btn { border: none; background: transparent; color: white; cursor: pointer; padding: 4px; }
+                        .h-btn:hover { color: var(--accent-color); background: rgba(255,255,255,0.1); }
+                        .h-btn.del:hover { color: #ff6b6b; }
+                    `;
+                    document.head.appendChild(hStyle);
+                }
+
+                // 2. Clear & Setup Containers
+                const existingStrip = document.getElementById('highlight-strip');
+                if (existingStrip) existingStrip.remove();
+
+                const highlightStrip = document.createElement('div');
+                highlightStrip.id = 'highlight-strip';
+                imgContainer.appendChild(highlightStrip); // Insert INSIDE, below video
+
+                const btnCapture = document.createElement('button');
+                btnCapture.id = 'btn-capture-highlight'; // Added ID for cleanup
+                btnCapture.innerText = "📸 Capture";
+                btnCapture.className = "tab-btn";
+                btnCapture.style.cssText = "position:absolute; top:20px; right:20px; z-index:100; background:rgba(0,0,0,0.6); backdrop-filter:blur(4px); color:white; border:1px solid rgba(255,255,255,0.3); box-shadow: 0 2px 5px rgba(0,0,0,0.5);";
+                imgContainer.appendChild(btnCapture);
+
+                // 3. Capture Handler (with Auto Memo)
+                btnCapture.onclick = async () => {
+                    const t = video.currentTime;
+                    const canvas = document.createElement('canvas');
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    canvas.getContext('2d').drawImage(video, 0, 0);
+
+                    canvas.toBlob(async (blob) => {
+                        const timestampID = Math.floor(t * 100);
+                        const baseName = `${item.name.split('.')[0]}_highlight_${timestampID}`;
+                        const jpgName = baseName + ".jpg";
+                        const txtName = baseName + ".txt"; // Sidecar for Highlight Memo
+
+                        try {
+                            const parentDir = item.parentHandle || currentHandle;
+
+                            // Save Image
+                            const imgHandle = await parentDir.getFileHandle(jpgName, { create: true });
+                            const writableImg = await imgHandle.createWritable();
+                            await writableImg.write(blob);
+                            await writableImg.close();
+
+                            // Save Empty Memo (for consistency)
+                            const txtHandle = await parentDir.getFileHandle(txtName, { create: true });
+                            const writableTxt = await txtHandle.createWritable();
+                            await writableTxt.write(""); // Start empty
+                            await writableTxt.close();
+
+                            showToast(`Captured @ ${t.toFixed(1)}s`);
+                            loadHighlights();
+                        } catch (e) {
+                            console.error(e);
+                            showToast("Capture Failed");
+                        }
+                    }, 'image/jpeg', 0.85);
+                };
+
+                // 4. Load & Render (The "Pretty" Part)
+                const loadHighlights = async () => {
+                    // Assign to global for external access
+                    globalLoadHighlights = loadHighlights;
+                    highlightStrip.innerHTML = "";
+                    try {
+                        const parentDir = item.parentHandle || currentHandle;
+                        const prefix = item.name.split('.')[0] + "_highlight_";
+
+                        const highlights = [];
+                        const entries = [];
+                        for await (const entry of parentDir.values()) entries.push(entry);
+
+                        // 1. Identify JPEG highlights
+                        for (const entry of entries) {
+                            if (entry.kind === 'file' && entry.name.startsWith(prefix) && entry.name.endsWith('.jpg')) {
+                                const parts = entry.name.replace(prefix, '').replace('.jpg', '');
+                                const time = parseInt(parts) / 100;
+
+                                // 2. Try to find matching TXT memo
+                                let memo = "";
+                                try {
+                                    const txtName = entry.name.replace('.jpg', '.txt');
+                                    const txtHandle = await parentDir.getFileHandle(txtName);
+                                    const txtFile = await txtHandle.getFile();
+                                    memo = await txtFile.text();
+                                } catch (e) { }
+
+                                const file = await entry.getFile();
+                                highlights.push({ time, file, memo, handle: entry, name: entry.name });
+                            }
+                        }
+
+                        highlights.sort((a, b) => a.time - b.time);
+
+                        // Hide if empty
+                        if (highlights.length === 0) {
+                            highlightStrip.style.display = 'none';
+                            highlightStrip.innerHTML = "";
+                            return;
+                        } else {
+                            highlightStrip.style.display = 'flex';
+                        }
+
+                        highlightStrip.innerHTML = ""; // Clear for render
+
+                        highlights.forEach(h => {
+                            const card = document.createElement('div');
+                            card.className = 'highlight-card';
+
+                            // Image
+                            const thumb = document.createElement('img');
+                            thumb.className = 'highlight-thumb';
+                            thumb.src = URL.createObjectURL(h.file);
+
+                            // Meta
+                            const meta = document.createElement('div');
+                            meta.className = 'highlight-meta';
+                            const timeStr = new Date(h.time * 1000).toISOString().substr(14, 5); // MM:SS format
+                            meta.innerHTML = `<div class="highlight-time">⏱ ${timeStr}</div><div class="highlight-memo">${h.memo || "No memo..."}</div>`;
+
+                            // Actions Overlay
+                            const actions = document.createElement('div');
+                            actions.className = 'highlight-actions';
+
+                            const btnEdit = document.createElement('button');
+                            btnEdit.className = 'h-btn';
+                            btnEdit.innerHTML = '✎';
+                            btnEdit.title = "Edit Note";
+                            btnEdit.onclick = async (e) => {
+                                e.stopPropagation();
+                                const newMemo = prompt("Edit Highlight Note:", h.memo);
+                                if (newMemo !== null) {
+                                    try {
+                                        const txtName = h.name.replace('.jpg', '.txt');
+                                        const hTxt = await parentDir.getFileHandle(txtName, { create: true });
+                                        const w = await hTxt.createWritable();
+                                        await w.write(newMemo);
+                                        await w.close();
+                                        loadHighlights();
+                                    } catch (err) { console.error(err); }
+                                }
+                            };
+
+                            const btnDel = document.createElement('button');
+                            btnDel.className = 'h-btn del';
+                            btnDel.innerHTML = '🗑';
+                            btnDel.title = "Delete Highlight";
+                            btnDel.onclick = async (e) => {
+                                e.stopPropagation();
+                                if (confirm("Delete this highlight?")) {
+                                    try {
+                                        await h.handle.remove(); // Delete JPG
+                                        try {
+                                            const txtName = h.name.replace('.jpg', '.txt');
+                                            const hTxt = await parentDir.getFileHandle(txtName);
+                                            await hTxt.remove(); // Delete TXT
+                                        } catch (e) { }
+                                        loadHighlights();
+                                    } catch (err) { showToast("Delete Failed"); }
+                                }
+                            };
+
+                            actions.appendChild(btnEdit);
+                            actions.appendChild(btnDel);
+
+                            card.appendChild(thumb);
+                            card.appendChild(meta);
+                            card.appendChild(actions);
+
+                            // Seek on click
+                            card.onclick = () => {
+                                video.currentTime = h.time;
+                                video.play();
+                                showToast(`Jump to ${timeStr}`);
+                            };
+
+                            highlightStrip.appendChild(card);
+                        });
+
+                    } catch (e) { console.error(e); }
+                };
+
+                loadHighlights(); // Initial load
+            } else {
+                imgPreview.src = fileUrl;
+            }
+
+            // Load & Parse Text
+            let rawText = "";
+            try {
+                const parentDir = item.parentHandle || currentHandle;
+                const sidecarName = item.name + '.txt';
+                const fileHandle = await parentDir.getFileHandle(sidecarName);
+                const file = await fileHandle.getFile();
+                rawText = await file.text();
+            } catch (e) {
+                // No memo file exists yet
+            }
+
+            // Core Change: Parse into Tabs
+            memoTabs = parseMemos(rawText);
+            if (memoTabs.length === 0) memoTabs.push({ title: "Draft", tags: "", content: "" });
+
+            activeTabIndex = 0;
+            isEditMode = false; // Start in View Mode
+
+            renderTabs();
+            loadTabToUI();
+            updateEditorMode(); // Will render View
+        }
+
+        // Rotation Button Handlers
+        document.getElementById('btn-rotate-left').onclick = async () => {
+            if (!activeImageItem) return;
+            const isVideo = /\.(mp4|webm|mov|mkv|ts|m2ts|mts)$/i.test(activeImageItem.name);
+            if (isVideo) {
+                showToast('비디오는 회전할 수 없습니다');
+                return;
+            }
+            await rotateImage(activeImageItem, -90);
+            // Refresh preview
+            const imgPreview = document.getElementById('editor-img-preview');
+            if (activeImageItem.file) {
+                imgPreview.src = URL.createObjectURL(activeImageItem.file);
+            }
+        };
+
+        document.getElementById('btn-rotate-right').onclick = async () => {
+            if (!activeImageItem) return;
+            const isVideo = /\.(mp4|webm|mov|mkv|ts|m2ts|mts)$/i.test(activeImageItem.name);
+            if (isVideo) {
+                showToast('비디오는 회전할 수 없습니다');
+                return;
+            }
+            await rotateImage(activeImageItem, 90);
+            // Refresh preview
+            const imgPreview = document.getElementById('editor-img-preview');
+            if (activeImageItem.file) {
+                imgPreview.src = URL.createObjectURL(activeImageItem.file);
+            }
+        };
+
+        document.getElementById('btn-close-memo').onclick = async () => {
+            await saveCurrentMemo();
+            document.getElementById('memo-overlay').classList.add('hidden');
+
+            // Stop Video
+            const video = document.getElementById('editor-video-preview');
+            if (video) {
+                video.pause();
+                video.src = "";
+                video.remove();
+            }
+
+            // Clean up Highlights
+            const strip = document.getElementById('highlight-strip');
+            if (strip) strip.remove();
+
+            const btnCap = document.getElementById('btn-capture-highlight');
+            if (btnCap) btnCap.remove();
+
+            // Clean up any other buttons injected
+            // (Note: We didn't ID the button well in previous step, let's fix that or rely on parent clearing if we appened to a container that gets cleared. 
+            // In OpenImageEditor we appended btnCapture to imgContainer.
+            // Ideally we should give it an ID. I'll assume I update OpenImageEditor to give ID or clear imgContainer children except default?)
+            // Actually, imgContainer contains imgPreview. We shouldn't clear everything.
+            // Let's rely on selecting by class or text if ID missing, or BETTER:
+            // Update the OpenImageEditor to set an ID for the button.
+
+            // For now, let's select by class/text since we didn't add ID in previous step?
+            // Wait, previous step: `btnCapture.className = "tab-btn"; ... imgContainer.appendChild(btnCapture);`
+            // It has no ID. I should have added one. 
+            // I will select it via:
+            const buttons = document.querySelectorAll('#memo-images-container button');
+            buttons.forEach(b => {
+                if (b.innerText.includes('Capture')) b.remove();
+            });
+
+            document.getElementById('editor-img-preview').classList.remove('hidden');
+
+            activeImageItem = null;
+        };
+
+        // Delete Button Logic (Lightbox)
+        document.getElementById('btn-delete-file').onclick = async (e) => {
+            e.stopPropagation();
+            if (!activeImageItem) return;
+            if (!confirm(`Are you sure you want to delete "${activeImageItem.name}"?`)) return;
+
+            try {
+                showToast("Deleting file...");
+                await activeImageItem.handle.remove();
+                try {
+                    const parentDir = activeImageItem.parentHandle || currentHandle;
+                    const sidecarName = activeImageItem.name + '.txt';
+                    const sidecarHandle = await parentDir.getFileHandle(sidecarName);
+                    await sidecarHandle.remove();
+                } catch (err) { }
+
+                document.getElementById('memo-overlay').classList.add('hidden');
+
+                const video = document.getElementById('editor-video-preview');
+                if (video) { video.pause(); video.remove(); }
+
+                await loadDirectory(currentHandle);
+                activeImageItem = null;
+
+            } catch (err) {
+                console.error("Delete Error", err);
+                showToast("Delete failed: " + err.message);
+            }
+        };
+
+
+        // Memo Overlay Click Close
+        document.getElementById('memo-overlay').onclick = (e) => {
+            if (e.target === document.getElementById('memo-overlay')) {
+                document.getElementById('btn-close-memo').click();
+            }
+        };
+
+        // Lightbox Navigation
+        async function navigateImage(offset) {
+            if (!activeImageItem) return;
+            await saveCurrentMemo();
+            const visibleImages = filteredEntries.filter(item => item.kind === 'file');
+            if (visibleImages.length <= 1) return;
+            const currentIndex = visibleImages.findIndex(item => item.name === activeImageItem.name);
+            if (currentIndex === -1) return;
+            let newIndex = currentIndex + offset;
+            if (newIndex < 0) newIndex = visibleImages.length - 1;
+            if (newIndex >= visibleImages.length) newIndex = 0;
+            await openImageEditor(visibleImages[newIndex]);
+        }
+
+        document.getElementById('btn-prev').addEventListener('click', () => navigateImage(-1));
+        document.getElementById('btn-next').addEventListener('click', () => navigateImage(1));
+
+        // Keyboard Shortcuts (Modified for Video Seek)
+        document.addEventListener('keydown', (e) => {
+            const overlay = document.getElementById('memo-overlay');
+            if (overlay.classList.contains('hidden')) {
+                // Global Shortcuts (e.g. Find)
+                if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+                    e.preventDefault();
+                    searchInput.focus();
+                }
+                return;
+            }
+
+            // Lightbox Shortcuts
+            if (e.key === 'Escape') {
+                document.getElementById('btn-close-memo').click();
+                return;
+            }
+
+            // Video Seek vs Navigation
+            const video = document.getElementById('editor-video-preview');
+            const isCtrl = e.ctrlKey || e.metaKey;
+
+            if (e.key === 'ArrowLeft') {
+                if (video && !isCtrl) {
+                    e.preventDefault();
+                    video.currentTime = Math.max(0, video.currentTime - skipSeconds);
+                    showToast(`⏪ -${skipSeconds}s`, 500);
+                } else {
+                    navigateImage(-1);
+                }
+            }
+
+            if (e.key === 'ArrowRight') {
+                if (video && !isCtrl) {
+                    e.preventDefault();
+                    video.currentTime = Math.min(video.duration, video.currentTime + skipSeconds);
+                    showToast(`⏩ +${skipSeconds}s`, 500);
+                } else {
+                    navigateImage(1);
+                }
+            }
+
+            // Play/Pause with Space
+            if (e.key === ' ' && e.target.tagName !== 'TEXTAREA' && e.target.tagName !== 'INPUT') {
+                e.preventDefault();
+                if (video) {
+                    if (video.paused) { video.play(); showToast("▶ Play", 500); }
+                    else { video.pause(); showToast("⏸ Pause", 500); }
+                }
+            }
+        });
+
+        // === 6. Interaction (Zoom) ===
+        document.addEventListener('wheel', (e) => {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                const root = document.documentElement;
+                let currentCols = parseInt(getComputedStyle(root).getPropertyValue('--col-count'));
+                if (e.deltaY > 0) { if (currentCols < 10) currentCols++; }
+                else { if (currentCols > 1) currentCols--; }
+                root.style.setProperty('--col-count', currentCols);
+            }
+        }, { passive: false });
+    </script>
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
+
+    <!-- Shortcuts Modal -->
+    <div id="shortcuts-modal" class="shortcuts-modal">
+        <h2 style="margin-top:0; border-bottom:1px solid #444; padding-bottom:10px;">Keyboard Shortcuts</h2>
+        <div class="shortcut-item"><span>Search</span> <span class="kbd">/</span></div>
+        <div class="shortcut-item"><span>Previous Image</span> <span class="kbd">←</span></div>
+        <div class="shortcut-item"><span>Next Image</span> <span class="kbd">→</span></div>
+        <div class="shortcut-item"><span>Edit Memo</span> <span class="kbd">E</span></div>
+        <div class="shortcut-item"><span>Close Editor</span> <span class="kbd">Esc</span></div>
+        <div class="shortcut-item"><span>Help</span> <span class="kbd">?</span></div>
+        <div style="text-align: center; margin-top: 20px; color: #666; font-size: 0.8rem;">Press '?' to toggle this menu
+        </div>
+    </div>
+
+    <script>
+        // --- Toast System ---
+        function showToast(message) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = 'toast';
+            toast.innerText = message;
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
+
+        // --- Keyboard Shortcuts & Global Events ---
+        document.addEventListener('keydown', (e) => {
+            // Ignore if input focused
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                if (e.key === 'Escape' && e.target.tagName === 'INPUT') e.target.blur();
+                return;
+            }
+
+            if (e.key === '/') {
+                e.preventDefault();
+                document.getElementById('search-input').focus();
+            }
+            if (e.key === '?' && e.shiftKey) {
+                e.preventDefault();
+                const modal = document.getElementById('shortcuts-modal');
+                modal.classList.toggle('visible');
+            }
+            // Add 'e' for Edit toggle if editor open?
+            if (e.key.toLowerCase() === 'e' && activeImageItem && document.getElementById('editor-overlay').classList.contains('visible')) {
+                e.preventDefault();
+                document.getElementById('btn-toggle-edit').click();
+            }
+        });
+    </script>
+
+    <script>
+        // ========================================
+        // === NEW FEATURES: Tag Chip, Timeline, TS Playback ===
+        // ========================================
+
+        // === TAG CHIP UI SYSTEM ===
+        let currentTags = [];
+        let allKnownTags = []; // For autocomplete
+        let tagPresets = ['중요', '나중에', '좋아요', '작업중', '완료'];
+        const DB_KEY_TAG_PRESETS = 'ppu_tag_presets';
+
+        // Load presets from IDB
+        async function loadTagPresets() {
+            try {
+                if (window.idbKeyval) {
+                    const saved = await idbKeyval.get(DB_KEY_TAG_PRESETS);
+                    if (saved) tagPresets = saved;
+                }
+            } catch(e) {}
+            renderTagPresets();
+        }
+
+        async function saveTagPresets() {
+            try {
+                if (window.idbKeyval) {
+                    await idbKeyval.set(DB_KEY_TAG_PRESETS, tagPresets);
+                }
+            } catch(e) {}
+        }
+
+        function renderTagPresets() {
+            const container = document.getElementById('tag-presets');
+            if (!container) return;
+
+            container.innerHTML = '<span style="font-size: 0.75rem; color: #666; margin-right: 5px;">빠른 태그:</span>';
+
+            tagPresets.forEach(tag => {
+                const el = document.createElement('span');
+                el.className = 'tag-preset';
+                el.innerText = '#' + tag;
+                el.onclick = () => addTag(tag);
+                container.appendChild(el);
+            });
+        }
+
+        function renderTagChips() {
+            const container = document.getElementById('tag-chip-container');
+            const input = document.getElementById('tag-input-field');
+            if (!container) return;
+
+            // Remove existing chips
+            container.querySelectorAll('.tag-chip').forEach(c => c.remove());
+
+            // Add chips before input
+            currentTags.forEach(tag => {
+                const chip = document.createElement('span');
+                chip.className = 'tag-chip';
+                chip.innerHTML = `#${tag} <span class="remove-tag" data-tag="${tag}">×</span>`;
+                container.insertBefore(chip, input);
+            });
+
+            // Update hidden input for compatibility
+            document.getElementById('input-tags').value = currentTags.map(t => '#' + t).join(', ');
+
+            // Trigger auto-save
+            triggerAutoSave();
+        }
+
+        function addTag(tag) {
+            tag = tag.replace(/^#/, '').trim();
+            if (!tag || currentTags.includes(tag)) return;
+
+            currentTags.push(tag);
+            renderTagChips();
+
+            // Add to known tags if new
+            if (!allKnownTags.includes(tag)) {
+                allKnownTags.push(tag);
+            }
+
+            // Clear input
+            document.getElementById('tag-input-field').value = '';
+            hideSuggestions();
+        }
+
+        function removeTag(tag) {
+            currentTags = currentTags.filter(t => t !== tag);
+            renderTagChips();
+        }
+
+        function showSuggestions(query) {
+            const container = document.getElementById('tag-suggestions');
+            if (!query) {
+                hideSuggestions();
+                return;
+            }
+
+            const matches = allKnownTags.filter(t =>
+                t.toLowerCase().includes(query.toLowerCase()) && !currentTags.includes(t)
+            ).slice(0, 5);
+
+            if (matches.length === 0) {
+                hideSuggestions();
+                return;
+            }
+
+            container.innerHTML = '';
+            matches.forEach(tag => {
+                const el = document.createElement('div');
+                el.className = 'tag-suggestion-item';
+                el.innerText = '#' + tag;
+                el.onclick = () => addTag(tag);
+                container.appendChild(el);
+            });
+
+            container.classList.add('show');
+        }
+
+        function hideSuggestions() {
+            const container = document.getElementById('tag-suggestions');
+            if (container) container.classList.remove('show');
+        }
+
+        // Tag input event listeners
+        document.addEventListener('DOMContentLoaded', () => {
+            const tagInput = document.getElementById('tag-input-field');
+            const chipContainer = document.getElementById('tag-chip-container');
+
+            if (tagInput) {
+                tagInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ',') {
+                        e.preventDefault();
+                        addTag(tagInput.value);
+                    } else if (e.key === 'Backspace' && !tagInput.value && currentTags.length > 0) {
+                        removeTag(currentTags[currentTags.length - 1]);
+                    }
+                });
+
+                tagInput.addEventListener('input', (e) => {
+                    showSuggestions(e.target.value);
+                });
+
+                tagInput.addEventListener('blur', () => {
+                    setTimeout(hideSuggestions, 200);
+                });
+            }
+
+            if (chipContainer) {
+                chipContainer.addEventListener('click', (e) => {
+                    if (e.target.classList.contains('remove-tag')) {
+                        removeTag(e.target.dataset.tag);
+                    }
+                });
+            }
+
+            loadTagPresets();
+        });
+
+        // Load tags from string
+        function loadTagsFromString(tagString) {
+            currentTags = [];
+            if (!tagString) return;
+
+            const tags = tagString.split(/[,\s]+/).map(t => t.replace(/^#/, '').trim()).filter(t => t);
+            currentTags = [...new Set(tags)];
+
+            // Update known tags
+            currentTags.forEach(t => {
+                if (!allKnownTags.includes(t)) allKnownTags.push(t);
+            });
+
+            renderTagChips();
+        }
+
+        // === AUTO-SAVE SYSTEM ===
+        let autoSaveTimeout = null;
+        let isSaving = false;
+
+        function triggerAutoSave() {
+            const indicator = document.getElementById('save-indicator');
+            const status = document.getElementById('save-status');
+            const text = document.getElementById('save-text');
+
+            if (indicator) {
+                indicator.className = 'save-indicator';
+                status.innerText = '○';
+                text.innerText = '변경됨';
+            }
+
+            clearTimeout(autoSaveTimeout);
+            autoSaveTimeout = setTimeout(async () => {
+                await performAutoSave();
+            }, 2000);
+        }
+
+        async function performAutoSave() {
+            if (isSaving || !activeImageItem) return;
+
+            const indicator = document.getElementById('save-indicator');
+            const status = document.getElementById('save-status');
+            const text = document.getElementById('save-text');
+
+            isSaving = true;
+
+            if (indicator) {
+                indicator.className = 'save-indicator saving';
+                status.innerText = '◐';
+                text.innerText = '저장 중...';
+            }
+
+            try {
+                await saveCurrentMemo();
+
+                if (indicator) {
+                    indicator.className = 'save-indicator saved';
+                    status.innerText = '●';
+                    text.innerText = '저장됨';
+                }
+            } catch(e) {
+                console.error('Auto-save failed:', e);
+                if (indicator) {
+                    indicator.className = 'save-indicator';
+                    status.innerText = '✕';
+                    text.innerText = '저장 실패';
+                }
+            }
+
+            isSaving = false;
+        }
+
+        // Add auto-save triggers to memo inputs
+        document.addEventListener('DOMContentLoaded', () => {
+            const titleInput = document.getElementById('input-title');
+            const contentInput = document.getElementById('memo-content');
+
+            if (titleInput) {
+                titleInput.addEventListener('input', triggerAutoSave);
+            }
+            if (contentInput) {
+                contentInput.addEventListener('input', triggerAutoSave);
+            }
+        });
+
+        // === QUICK MEMO POPUP ===
+        let pendingHighlightData = null;
+
+        function openQuickMemo(time, category = 'default') {
+            pendingHighlightData = { time, category };
+
+            document.getElementById('quick-memo-time').value = time;
+            document.getElementById('quick-memo-category').value = category;
+            document.getElementById('quick-memo-title').value = '';
+            document.getElementById('quick-memo-text').value = '';
+
+            // Update category buttons
+            document.querySelectorAll('.quick-memo-popup .category-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.category === category);
+            });
+
+            document.getElementById('quick-memo-popup').classList.add('show');
+            document.getElementById('quick-memo-title').focus();
+        }
+
+        function closeQuickMemo() {
+            document.getElementById('quick-memo-popup').classList.remove('show');
+            pendingHighlightData = null;
+        }
+
+        async function saveQuickMemo() {
+            if (!pendingHighlightData || !activeImageItem) {
+                closeQuickMemo();
+                return;
+            }
+
+            const time = parseFloat(document.getElementById('quick-memo-time').value);
+            const category = document.getElementById('quick-memo-category').value;
+            const title = document.getElementById('quick-memo-title').value;
+            const memo = document.getElementById('quick-memo-text').value;
+
+            const video = document.getElementById('editor-video-preview');
+            if (!video) {
+                closeQuickMemo();
+                return;
+            }
+
+            // Capture screenshot
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+
+            canvas.toBlob(async (blob) => {
+                const timestampID = Math.floor(time * 100);
+                const baseName = `${activeImageItem.name.split('.')[0]}_highlight_${timestampID}`;
+                const jpgName = baseName + ".jpg";
+                const txtName = baseName + ".txt";
+
+                try {
+                    const parentDir = activeImageItem.parentHandle || currentHandle;
+
+                    // Save image
+                    const imgHandle = await parentDir.getFileHandle(jpgName, { create: true });
+                    const writableImg = await imgHandle.createWritable();
+                    await writableImg.write(blob);
+                    await writableImg.close();
+
+                    // Save memo with category
+                    const memoContent = JSON.stringify({ title, memo, category, time });
+                    const txtHandle = await parentDir.getFileHandle(txtName, { create: true });
+                    const writableTxt = await txtHandle.createWritable();
+                    await writableTxt.write(memoContent);
+                    await writableTxt.close();
+
+                    showToast(`마커 저장됨 @ ${formatTime(time)}`);
+
+                    // Refresh timeline and highlights
+                    if (globalLoadHighlights) {
+                        await globalLoadHighlights();
+                    }
+                    updateVideoTimeline(video);
+
+                } catch(e) {
+                    console.error('Save highlight failed:', e);
+                    showToast('저장 실패');
+                }
+
+                closeQuickMemo();
+            }, 'image/jpeg', 0.85);
+        }
+
+        // Category button clicks
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('.quick-memo-popup .category-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('.quick-memo-popup .category-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    document.getElementById('quick-memo-category').value = btn.dataset.category;
+                });
+            });
+        });
+
+        // === VIDEO TIMELINE WITH MARKERS ===
+        let currentHighlights = [];
+
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        async function updateVideoTimeline(video) {
+            if (!video || !activeImageItem) return;
+
+            const container = document.getElementById('video-timeline-container');
+            if (!container) return;
+
+            const duration = video.duration || 0;
+            const currentTime = video.currentTime || 0;
+
+            // Update progress
+            const progress = container.querySelector('.timeline-progress');
+            if (progress) {
+                progress.style.width = (currentTime / duration * 100) + '%';
+            }
+
+            // Update time display
+            const timeDisplay = container.querySelector('.timeline-time');
+            if (timeDisplay) {
+                timeDisplay.innerHTML = `<span>${formatTime(currentTime)}</span><span>${formatTime(duration)}</span>`;
+            }
+
+            // Load and render markers
+            await loadHighlightMarkers();
+        }
+
+        async function loadHighlightMarkers() {
+            if (!activeImageItem) return;
+
+            const timeline = document.querySelector('.video-timeline');
+            const video = document.getElementById('editor-video-preview');
+            if (!timeline || !video) return;
+
+            // Clear existing markers
+            timeline.querySelectorAll('.timeline-marker').forEach(m => m.remove());
+
+            try {
+                const parentDir = activeImageItem.parentHandle || currentHandle;
+                const prefix = activeImageItem.name.split('.')[0] + "_highlight_";
+                const duration = video.duration || 1;
+
+                currentHighlights = [];
+
+                for await (const entry of parentDir.values()) {
+                    if (entry.kind === 'file' && entry.name.startsWith(prefix) && entry.name.endsWith('.jpg')) {
+                        const parts = entry.name.replace(prefix, '').replace('.jpg', '');
+                        const time = parseInt(parts) / 100;
+
+                        let category = 'default';
+                        let memo = '';
+
+                        try {
+                            const txtName = entry.name.replace('.jpg', '.txt');
+                            const txtHandle = await parentDir.getFileHandle(txtName);
+                            const txtFile = await txtHandle.getFile();
+                            const content = await txtFile.text();
+
+                            try {
+                                const data = JSON.parse(content);
+                                category = data.category || 'default';
+                                memo = data.memo || data.title || '';
+                            } catch(e) {
+                                memo = content;
+                            }
+                        } catch(e) {}
+
+                        currentHighlights.push({ time, category, memo, name: entry.name });
+
+                        // Create marker
+                        const marker = document.createElement('div');
+                        marker.className = `timeline-marker category-${category}`;
+                        marker.style.left = (time / duration * 100) + '%';
+                        marker.dataset.time = formatTime(time);
+                        marker.title = memo || formatTime(time);
+
+                        marker.onclick = (e) => {
+                            e.stopPropagation();
+                            video.currentTime = time;
+                            video.play();
+                            showToast(`이동: ${formatTime(time)}`);
+                        };
+
+                        timeline.appendChild(marker);
+                    }
+                }
+            } catch(e) {
+                console.error('Load markers failed:', e);
+            }
+        }
+
+        function createVideoTimeline(video, container, isTsFile = false) {
+            // isTsFile is now passed as parameter for reliability
+
+            // Create timeline HTML
+            const timelineHtml = `
+                <div class="video-timeline-container" id="video-timeline-container">
+                    <div class="video-timeline" id="video-timeline">
+                        <div class="timeline-progress"></div>
+                    </div>
+                    <div class="timeline-time">
+                        <span>0:00</span>
+                        <span>0:00</span>
+                    </div>
+                    <div class="marker-controls">
+                        <button class="marker-btn" id="btn-add-marker">
+                            📍 마커 추가 <kbd>M</kbd>
+                        </button>
+                        <button class="marker-btn" id="btn-quick-capture">
+                            📸 빠른 캡처 <kbd>C</kbd>
+                        </button>
+                        <div class="skip-settings">
+                            <label>이동:</label>
+                            <input type="number" id="skip-seconds-input" value="${skipSeconds}" min="1" max="60">
+                            <label>초</label>
+                        </div>
+                        <div class="category-selector" style="margin-left: auto;">
+                            <div class="category-btn default active" data-cat="default" title="기본"></div>
+                            <div class="category-btn important" data-cat="important" title="중요"></div>
+                            <div class="category-btn fun" data-cat="fun" title="재미"></div>
+                            <div class="category-btn reference" data-cat="reference" title="참고"></div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Insert before highlight strip
+            const strip = container.querySelector('#highlight-strip');
+            if (strip) {
+                strip.insertAdjacentHTML('beforebegin', timelineHtml);
+            } else {
+                container.insertAdjacentHTML('beforeend', timelineHtml);
+            }
+
+            // Timeline click to seek
+            const timeline = document.getElementById('video-timeline');
+            timeline.addEventListener('click', (e) => {
+                const rect = timeline.getBoundingClientRect();
+                const percent = (e.clientX - rect.left) / rect.width;
+                video.currentTime = percent * video.duration;
+            });
+
+            // Update progress on timeupdate
+            video.addEventListener('timeupdate', () => {
+                updateVideoTimeline(video);
+            });
+
+            // Marker button handlers
+            let selectedCategory = 'default';
+
+            document.querySelectorAll('.marker-controls .category-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('.marker-controls .category-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    selectedCategory = btn.dataset.cat;
+                });
+            });
+
+            document.getElementById('btn-add-marker')?.addEventListener('click', () => {
+                openQuickMemo(video.currentTime, selectedCategory);
+            });
+
+            document.getElementById('btn-quick-capture')?.addEventListener('click', async () => {
+                // Quick capture without memo popup
+                const time = video.currentTime;
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0);
+
+                canvas.toBlob(async (blob) => {
+                    const timestampID = Math.floor(time * 100);
+                    const baseName = `${activeImageItem.name.split('.')[0]}_highlight_${timestampID}`;
+                    const jpgName = baseName + ".jpg";
+
+                    try {
+                        const parentDir = activeImageItem.parentHandle || currentHandle;
+                        const imgHandle = await parentDir.getFileHandle(jpgName, { create: true });
+                        const writableImg = await imgHandle.createWritable();
+                        await writableImg.write(blob);
+                        await writableImg.close();
+
+                        showToast(`캡처됨 @ ${formatTime(time)}`);
+                        if (typeof loadHighlights === 'function') loadHighlights();
+                        updateVideoTimeline(video);
+                    } catch(e) {
+                        showToast('캡처 실패');
+                    }
+                }, 'image/jpeg', 0.85);
+            });
+
+            // Skip seconds input handler - use 'input' for immediate updates
+            const skipInput = document.getElementById('skip-seconds-input');
+            if (skipInput) {
+                skipInput.addEventListener('input', (e) => {
+                    const val = parseInt(e.target.value);
+                    if (val >= 1 && val <= 60) {
+                        skipSeconds = val;
+                    }
+                });
+                // Also show toast on blur
+                skipInput.addEventListener('blur', () => {
+                    showToast(`이동 간격: ${skipSeconds}초`);
+                });
+            }
+
+            // Load initial markers
+            setTimeout(() => loadHighlightMarkers(), 500);
+        }
+
+        // === TS FILE PLAYBACK WITH MPEGTS.JS ===
+        let mpegtsPlayer = null;
+
+        function destroyMpegtsPlayer() {
+            if (mpegtsPlayer) {
+                mpegtsPlayer.pause();
+                mpegtsPlayer.unload();
+                mpegtsPlayer.detachMediaElement();
+                mpegtsPlayer.destroy();
+                mpegtsPlayer = null;
+            }
+        }
+
+        async function playTsFile(file, videoElement) {
+            destroyMpegtsPlayer();
+
+            showToast('TS 파일 로딩 중...');
+
+            try {
+                // 파일을 ArrayBuffer로 읽기
+                const arrayBuffer = await file.arrayBuffer();
+                const uint8Array = new Uint8Array(arrayBuffer);
+
+                // mpegts.js로 변환 재생
+                if (typeof mpegts !== 'undefined' && mpegts.isSupported()) {
+                    // CustomLoader를 사용하여 ArrayBuffer 직접 전달
+                    class ArrayBufferLoader extends mpegts.BaseLoader {
+                        constructor(seekHandler, config) {
+                            super('arraybuffer-loader');
+                            this._seekHandler = seekHandler;
+                            this._config = config;
+                            this._needStash = false;
+                        }
+
+                        static isSupported() {
+                            return true;
+                        }
+
+                        destroy() {
+                            super.destroy();
+                        }
+
+                        open(dataSource, range) {
+                            this._status = 1; // kConnecting
+                            const data = dataSource._arrayBuffer;
+
+                            setTimeout(() => {
+                                this._status = 2; // kBuffering
+                                if (this._onDataArrival) {
+                                    this._onDataArrival(data, 0, data.byteLength);
+                                }
+                                this._status = 0; // kComplete
+                                if (this._onComplete) {
+                                    this._onComplete(0, data.byteLength);
+                                }
+                            }, 0);
+                        }
+
+                        abort() {
+                            this._status = 0;
+                        }
+                    }
+
+                    // CustomLoader 등록
+                    mpegts.LoggingControl.enableVerbose = false;
+
+                    mpegtsPlayer = mpegts.createPlayer({
+                        type: 'mpegts',
+                        isLive: false,
+                        hasAudio: true,
+                        hasVideo: true,
+                        _arrayBuffer: uint8Array.buffer
+                    }, {
+                        enableWorker: false,
+                        enableStashBuffer: true,
+                        stashInitialSize: 128 * 1024,
+                        customLoader: ArrayBufferLoader
+                    });
+
+                    mpegtsPlayer.attachMediaElement(videoElement);
+
+                    mpegtsPlayer.on(mpegts.Events.ERROR, (type, detail) => {
+                        console.error('mpegts error:', type, detail);
+                        // 에러 시 blob URL로 폴백
+                        videoElement.src = URL.createObjectURL(file);
+                    });
+
+                    mpegtsPlayer.load();
+                    showToast('TS 재생 준비 완료');
+                    return true;
+                }
+            } catch (e) {
+                console.error('mpegts.js failed:', e);
+            }
+
+            // 폴백: 직접 blob URL (Edge, 일부 크롬에서 작동할 수 있음)
+            try {
+                videoElement.src = URL.createObjectURL(file);
+                videoElement.onerror = () => {
+                    showToast('TS 재생 불가: MP4로 변환 필요');
+                };
+                return true;
+            } catch(e) {
+                console.error('TS playback error:', e);
+                showToast('TS 파일을 재생할 수 없습니다. MP4로 변환해 주세요.');
+                return false;
+            }
+        }
+
+        // === VIDEO KEYBOARD SHORTCUTS ===
+        document.addEventListener('keydown', async (e) => {
+            const overlay = document.getElementById('memo-overlay');
+            if (overlay.classList.contains('hidden')) return;
+
+            const video = document.getElementById('editor-video-preview');
+            if (!video) return;
+
+            // Don't capture if in input
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+            const quickMemo = document.getElementById('quick-memo-popup');
+            if (quickMemo.classList.contains('show')) return;
+
+            switch(e.key.toLowerCase()) {
+                case 'm': // Add marker with memo
+                    e.preventDefault();
+                    const cat = document.querySelector('.marker-controls .category-btn.active')?.dataset.cat || 'default';
+                    openQuickMemo(video.currentTime, cat);
+                    break;
+
+                case 'c': // Quick capture
+                    e.preventDefault();
+                    document.getElementById('btn-quick-capture')?.click();
+                    break;
+
+                case 'j': // Rewind
+                    e.preventDefault();
+                    video.currentTime = Math.max(0, video.currentTime - skipSeconds);
+                    showToast(`⏪ -${skipSeconds}초`);
+                    break;
+
+                case 'l': // Forward
+                    e.preventDefault();
+                    video.currentTime = Math.min(video.duration, video.currentTime + skipSeconds);
+                    showToast(`⏩ +${skipSeconds}초`);
+                    break;
+
+                case 'k': // Play/Pause
+                    e.preventDefault();
+                    if (video.paused) {
+                        video.play();
+                        showToast('▶ 재생');
+                    } else {
+                        video.pause();
+                        showToast('⏸ 일시정지');
+                    }
+                    break;
+
+                case ',': // Previous frame
+                    if (!video.paused) video.pause();
+                    video.currentTime -= 1/30;
+                    break;
+
+                case '.': // Next frame
+                    if (!video.paused) video.pause();
+                    video.currentTime += 1/30;
+                    break;
+            }
+        });
+
+        // Escape to close quick memo
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                const quickMemo = document.getElementById('quick-memo-popup');
+                if (quickMemo.classList.contains('show')) {
+                    closeQuickMemo();
+                    e.stopPropagation();
+                }
+            }
+        });
+
+        console.log('New features loaded: Tag Chip UI, Video Timeline, TS Playback');
+    </script>
+</body>
+
+</html>
