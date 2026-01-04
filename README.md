@@ -52,12 +52,11 @@
 - **Vanilla JavaScript** - 프레임워크 없음
 - **File System Access API** - 로컬 파일 접근
 - **IndexedDB** - 설정/캐시 저장
-- **mpegts.js** - TS 파일 재생
 
 ## 📋 지원 포맷
 
 - **이미지**: JPG, PNG, GIF, WebP, BMP
-- **영상**: MP4, WebM, MOV, MKV
+- **영상**: MP4, WebM, MOV
 
 ## 📄 라이선스
 
