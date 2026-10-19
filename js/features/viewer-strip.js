@@ -537,9 +537,7 @@
         scope: 'viewer',
         keys: ['I'],
         when: open,
-        run: (a) => {
-            // While the video editor is open, the I key marks the in point (NLE convention) — one key, one command
-            if (a?.event && V.isPanelOpen('editor') && App.commands.isEnabled('video.markIn')) return App.commands.run('video.markIn');
+        run: () => {
             App.settings.set('viewer.info', !infoOn());
             ensureInfo();
             renderInfo();

@@ -1,40 +1,31 @@
 /*
- * Video editor panel (E) in the viewer's right dock:
- *   In/Out points (I/O, Shift+I/O to jump, Alt+X to clear) -> "구간 추가" (Enter) into a segment bin that can
- *   hold segments from several videos; reorder (drag or Alt+↑/↓), preview (one or all), delete.
- *   Actions run on the local server (docs/server-api.md, App.server.video.* — feature-detected):
- *     잘라내기 (trim: fast = stream copy, accurate = re-encode), 구간 합치기 (concat), 회전/뒤집기 (transform).
- *   Without the server the actions stay disabled and the panel explains how to start it.
+ * Video file output for the in-viewer editor (video-edit.js) and the "회전·반전을 파일에 적용" action.
+ * Round 2 retired the old editor panel (E): cutting now happens on the seek bar; this file turns the pieces into files.
  *
- *   Every file the server makes is ONE undo step (Ctrl+Z moves it to the app trash, Ctrl+Y brings it back).
+ *   saveKept(path)    '남은 부분 이어서 새 파일로' — one kept piece → trim, several → concat
+ *   savePieces(path)  '조각마다 새 파일로' — one new file per kept piece (piece memo/chips go onto the new file)
+ *   toClips(path)     '보관함에 담기' — App.clips.add(kept pieces) as ONE undo step (hidden when App.clips is missing)
  *
- *   App.videoEditor — { isOpen, segments, marksFor(path), markIn(), markOut(), addSegment(), trim(), concat(), transform(),
- *                       canApplyViewTransform(entry), applyViewTransform(entry) — bake the viewer's rotation/flip }
+ * Engines: the local server (docs/server-api.md, App.server.video.* raw style: POST → job → wait) when it's ready;
+ *   otherwise the browser-only lossless engine (video-lossless.js: keyframe-aligned packet copy, MP4/MOV/WebM/MKV).
+ *   When neither can do it, a small inline notice offers '서버 켜기' (App.server.showSetup) — no big panel.
+ * Originals are never touched. Every created file is ONE undo step (Ctrl+Z moves it to the app trash, Ctrl+Y brings it
+ * back). Option video.archiveOriginal: afterwards the original moves to '<folder>/원본 보관' (App.fs.move — undoable).
+ *
+ * App.videoEditor — { saveKept, savePieces, toClips, serverState, busy,
+ *                     canApplyViewTransform(entry), applyViewTransform(entry) — bake the viewer's rotation/flip (server) }
  */
 (() => {
     'use strict';
-    const { h, path: P, clamp, escapeHtml, formatCount } = App.util;
+    const { h, path: P, escapeHtml } = App.util;
     const ui = App.ui;
     const V = App.viewer;
-    const fmt = (t, precise = true) => (V.fmtTime ? V.fmtTime(t, precise) : String(t));
-    // Lengths: "2.4초" for short clips, "1:05" beyond a minute
-    const fmtLen = (sec) => (sec < 60 ? `${(Math.round(Math.max(0, sec) * 10) / 10).toFixed(1)}초` : fmt(sec, false));
+    const fmt = (t, precise = false) => (V.fmtTime ? V.fmtTime(t, precise) : String(t));
+    const r3 = (t) => Math.round(t * 1000) / 1000;
+    const ARCHIVE_DIR = '원본 보관';
+    const fmtSec = (s) => (s < 60 ? `${Math.round(s * 10) / 10}초` : fmt(s));
 
-    const marks = new Map(); // path -> { in, out } (session only)
-    const segments = []; // { id, path, name, start, end }
-    let selectedId = null;
-    let body = null;
-    let busy = null; // { label, progress, cancel }
-    let transformOp = null;
-    let transformMode = 'metadata';
-
-    const TRANSFORMS = [
-        { op: 'rotate90', label: '90°', icon: 'rotate-cw', tip: '오른쪽으로 90° 회전' },
-        { op: 'rotate180', label: '180°', icon: 'refresh', tip: '180° 회전' },
-        { op: 'rotate270', label: '270°', icon: 'rotate-ccw', tip: '왼쪽으로 90° 회전' },
-        { op: 'hflip', label: '좌우', icon: 'flip-h', tip: '좌우 뒤집기' },
-        { op: 'vflip', label: '상하', icon: 'flip-v', tip: '상하 뒤집기' },
-    ];
+    let busy = null; // { label }
 
     // ---------- Server ----------
     function serverState() {
@@ -51,51 +42,30 @@
     async function waitForJob(res, onProgress) {
         const s = App.server;
         const id = res && (res.jobId ?? res.job?.id ?? (typeof res.job === 'string' ? res.job : null) ?? (res.id && res.state ? res.id : null));
-        if (!id || res.state === 'done' || res.result) return { res, id };
-        busy && (busy.jobId = id);
-        if (typeof s.waitJob === 'function') return { res: await s.waitJob(id, onProgress), id };
+        if (!id || res.state === 'done' || res.result) return res;
+        if (typeof s.waitJob === 'function') return s.waitJob(id, onProgress);
         if (typeof s.job === 'function') {
             for (;;) {
                 const j = await s.job(id);
                 onProgress(j);
-                if (!j || j.state !== 'running') return { res: j, id };
+                if (!j || j.state !== 'running') return j;
                 await App.util.sleep(500);
             }
         }
-        return { res, id };
+        return res;
     }
 
     async function callServer(op, payload, label) {
         const s = App.server;
-        const onProgress = (prog) => {
-            const pr = typeof prog === 'number' ? prog : prog?.progress;
-            if (busy && pr != null && isFinite(pr)) {
-                busy.progress = clamp(pr, 0, 1);
-                renderBusy();
-            }
-        };
         let res;
         if (s.video && typeof s.video[op] === 'function') res = await s.video[op](payload);
         else if (typeof s.request === 'function') res = await s.request('POST', `/api/video/${op}`, payload);
         else throw new Error('서버 연결 기능이 아직 준비되지 않았어요');
-        ({ res } = await waitForJob(res, onProgress));
+        res = await waitForJob(res, () => {});
         if (res && (res.state === 'error' || (res.error && !res.path && !res.result))) throw new Error(res.error?.message || res.message || (typeof res.error === 'string' ? res.error : '') || `${label}에 실패했어요`);
         if (res && res.state === 'cancelled') return null;
         const out = res?.result?.path ?? res?.path ?? res?.output ?? res?.result?.output ?? (typeof res === 'string' ? res : null);
         return out || null;
-    }
-
-    async function cancelBusy() {
-        const id = busy?.jobId;
-        if (!id) return;
-        try {
-            const s = App.server;
-            if (typeof s.cancelJob === 'function') await s.cancelJob(id);
-            else if (typeof s.request === 'function') await s.request('POST', `/api/jobs/${id}/cancel`, {});
-            ui.toast('작업을 취소했어요', { type: 'info' });
-        } catch (e) {
-            ui.toast(`취소하지 못했어요: ${e.message}`, { type: 'error' });
-        }
     }
 
     // A file the server just wrote: tell the app and make it ONE undo step (undo = to the app trash, redo = back).
@@ -114,16 +84,13 @@
         });
     }
 
-    /** steps: [{ op, payload }] — later steps get { path: <previous output>, inPlace: true } */
-    async function runSteps(label, steps, doneText) {
-        if (busy) return null;
+    /** steps: [{ op, payload }] — later steps get { path: <previous output>, inPlace: true }. quiet: no success toast. */
+    async function runSteps(label, steps, doneText, { quiet = false } = {}) {
         const st = serverState();
         if (!st.ready) {
-            ui.toast('영상 편집은 로컬 서버가 켜져 있어야 해요', { type: 'warning' });
+            needServer();
             return null;
         }
-        busy = { label, progress: null, jobId: null };
-        render();
         const t = ui.toast(`${label} 중…`, { type: 'loading' });
         try {
             let out = null;
@@ -140,677 +107,300 @@
             }
             t.close();
             adoptServerOutput(out, label);
-            ui.toast(`${doneText} · ${P.base(out)}`, { type: 'success', duration: 6000, action: { label: '보기', run: () => V.open(out) } });
+            if (!quiet) ui.toast(`${doneText} · ${P.base(out)}`, { type: 'success', duration: 6000, action: { label: '보기', run: () => V.open(out) } });
             return out;
         } catch (e) {
             t.close();
-            ui.toast(`${label}에 실패했어요: ${e.message}`, { type: 'error' });
+            if (e.code === 'ECANCELED') ui.toast(`${label}을(를) 취소했어요`, { type: 'info' });
+            else ui.toast(`${label}에 실패했어요: ${e.message}`, { type: 'error' });
             return null;
+        }
+    }
+
+    // ---------- "needs the server" — a small inline notice at save time ----------
+    let needPop = null;
+
+    function anchorEl() {
+        const cands = [V.root?.querySelector('.vw-save-btn'), V.root?.querySelector('.vw-edit-badge')];
+        return cands.find((el) => el && el.offsetParent) || null;
+    }
+
+    function needServer(reason) {
+        const st = serverState();
+        const openSetup = () => {
+            needPop?.close();
+            if (App.server?.showSetup) App.server.showSetup();
+            else if (App.commands.get('server.setup')) App.commands.run('server.setup');
+            else if (App.commands.get('server.connect')) App.commands.run('server.connect');
+        };
+        const text = reason
+            ? `${reason} 로컬 서버를 켜면 어떤 형식이든 저장할 수 있어요.`
+            : st.why === 'workspace'
+                ? '서버는 켜져 있어요. 서버 주소(127.0.0.1:8765)에서 이 폴더를 열면 바로 저장돼요.'
+                : '새 파일을 만들려면 로컬 서버가 필요해요. 켜 두면 바로 저장할 수 있어요.';
+        const anchor = anchorEl();
+        if (!anchor) {
+            ui.toast(text, { type: 'warning', duration: 7000, action: { label: '서버 켜기', run: openSetup } });
+            return;
+        }
+        needPop?.close();
+        const box = h('div', { class: 've-need' },
+            h('span', { class: 've-need-icon', html: ui.icon('server', { size: 15 }) }),
+            h('span', { class: 've-need-text', text }),
+            h('button', { class: 'btn sm primary', html: `${ui.icon('zap', { size: 13 })}<span>서버 켜기</span>`, onclick: openSetup }));
+        needPop = ui.popover(anchor, box, { align: 'end', class: 've-need-pop', padding: '10px 12px', onClose: () => {
+            needPop = null;
+        } });
+    }
+
+    // ---------- Browser-only lossless engine ----------
+    async function freeName(dir, base, ext) {
+        for (let i = 1; i < 1000; i++) {
+            const name = `${base}${String(i).padStart(2, '0')}.${ext}`;
+            if (!(await App.fs.exists(P.join(dir, name)))) return name;
+        }
+        return `${base}${Date.now()}.${ext}`;
+    }
+
+    async function browserCut(path, ranges, label, suffix, doneText, { quiet = false } = {}) {
+        const L = App.videoLossless;
+        const t = ui.toast(`${label} 중… (브라우저에서 화질 그대로)`, { type: 'loading' });
+        const job = App.jobs?.start?.({ title: `${label} · ${P.base(path)}`, total: 100, cancellable: true });
+        let cancelled = false;
+        job?.onCancel?.(() => {
+            cancelled = true;
+        });
+        try {
+            const file = await App.fs.getFile(path);
+            const res = await L.cut(file, ranges, { onProgress: (f) => job?.update?.(Math.round(f * 100)), isCancelled: () => cancelled || !!job?.cancelled });
+            const dir = P.parent(path);
+            const name = await freeName(dir, `${P.stem(P.base(path))}_${suffix}`, res.ext);
+            const out = await App.fs.createFile(dir, name, res.blob, { label: `${label} · ${name}` });
+            App.catalog.setMeta(out, { duration: r3(res.duration), source: { path, ranges: res.ranges.map(([a, b]) => [r3(a), r3(b)]) } });
+            job?.finish?.();
+            t.close();
+            if (!quiet) ui.toast(`${doneText} · ${P.base(out)}`, { type: 'success', duration: 6000, action: { label: '보기', run: () => V.open(out) } });
+            // honest about keyframe alignment: say so when noticeably more than asked went into the file
+            if (res.restored > 0.3 || res.lead > 1.5) {
+                const more = res.restored > 0.3 ? `잘라낸 부분 ${fmtSec(res.restored)}` : `앞쪽 ${fmtSec(res.lead)}`;
+                ui.toast(`키프레임 간격 때문에 ${more}만큼 더 들어갔어요. 딱 맞게 자르려면 로컬 서버의 '정확하게'로 저장해 주세요`, { type: 'warning', duration: 8000 });
+            }
+            return out;
+        } catch (e) {
+            t.close();
+            if (e.code === 'ECANCELED') {
+                job?.finish?.();
+                ui.toast(`${label}을(를) 취소했어요`, { type: 'info' });
+            } else {
+                job?.fail?.(e);
+                if (['EUNSUPPORTED', 'ETOOBIG', 'ELOAD'].includes(e.code)) needServer(`${e.message}.`.replace(/\.\.$/, '.'));
+                else ui.toast(`${label}에 실패했어요: ${e.message}`, { type: 'error' });
+            }
+            return null;
+        }
+    }
+
+    function engineFor(path) {
+        if (serverState().ready) return 'server';
+        if (App.videoLossless?.supports?.(P.base(path))) return 'browser';
+        return null;
+    }
+
+    function trimMode() {
+        return App.settings.get('video.trimMode', 'fast') === 'accurate' ? 'accurate' : 'fast';
+    }
+
+    // ---------- Piece bookkeeping ----------
+    function plan(path) {
+        const pieces = App.videoEdit?.piecesOf?.(path) || [];
+        return { pieces, kept: pieces.filter((x) => !x.removed) };
+    }
+
+    // New files keep the memo and chips the pieces had
+    function inherit(out, pieces) {
+        const memo = pieces.map((x) => (x.memo || '').trim()).filter(Boolean).join(' · ');
+        const chips = [...new Set(pieces.flatMap((x) => x.chips || []))];
+        if (!memo && !chips.length) return;
+        App.catalog.update(out, (e) => {
+            if (memo) e.memo = e.memo ? `${e.memo}\n${memo}` : memo;
+            if (chips.length) e.chips = [...new Set([...(e.chips || []), ...chips])];
+        }, { undoable: false });
+    }
+
+    async function maybeArchive(path) {
+        if (!App.settings.get('video.archiveOriginal', false)) return;
+        try {
+            const parent = P.parent(path);
+            const dir = P.join(parent, ARCHIVE_DIR);
+            if (!(await App.fs.exists(dir))) await App.fs.mkdir(parent, ARCHIVE_DIR, { undoable: false });
+            await App.fs.move([path], dir, { label: `원본 보관 · ${P.base(path)}` });
+            ui.toast(`원본은 「${ARCHIVE_DIR}」 폴더로 옮겼어요`, { type: 'info', duration: 5000, action: { label: '되돌리기', run: () => App.undo.undo() } });
+        } catch (e) {
+            ui.toast(`원본을 옮기지 못했어요: ${e.message}`, { type: 'error' });
+        }
+    }
+
+    function guard() {
+        if (busy) {
+            ui.toast(`${busy.label} 중이에요. 끝나면 다시 눌러 주세요`, { type: 'info' });
+            return false;
+        }
+        return true;
+    }
+
+    // ---------- Actions ----------
+    async function saveKept(path) {
+        if (!guard()) return null;
+        const { pieces, kept } = plan(path);
+        if (!pieces.length || !kept.length) {
+            ui.toast('먼저 Q·W·Ctrl+B로 잘라 주세요', { type: 'info' });
+            return null;
+        }
+        const end = pieces[pieces.length - 1].end;
+        if (kept.length === pieces.length && !pieces.some((x) => x.removed) && kept.length === 1 && kept[0].start < 0.01 && kept[0].end >= end - 0.01) {
+            ui.toast('잘라낸 부분이 없어서 원본과 같아요', { type: 'info' });
+            return null;
+        }
+        if (!pieces.some((x) => x.removed) && kept.length > 1) {
+            // nothing removed, only split: the joined result equals the original
+            ui.toast('잘라낸 부분이 없어서 원본과 같아요. 조각마다 저장하려면 「조각마다 새 파일로」를 골라 주세요', { type: 'info', duration: 5000 });
+            return null;
+        }
+        const engine = engineFor(path);
+        if (!engine) {
+            needServer();
+            return null;
+        }
+        busy = { label: '편집본 저장' };
+        try {
+            let out;
+            if (engine === 'server') {
+                out = kept.length === 1
+                    ? await runSteps('편집본 저장', [{ op: 'trim', payload: { path, start: r3(kept[0].start), end: r3(kept[0].end), mode: trimMode() } }], '편집본을 새 파일로 저장했어요')
+                    : await runSteps('편집본 저장', [{ op: 'concat', payload: { segments: kept.map((x) => ({ path, start: r3(x.start), end: r3(x.end) })) } }], '편집본을 이어 붙여 새 파일로 저장했어요');
+            } else {
+                out = await browserCut(path, kept.map((x) => [x.start, x.end]), '편집본 저장', 'edit', '편집본을 새 파일로 저장했어요 (화질 그대로)');
+            }
+            if (!out) return null;
+            inherit(out, kept);
+            await maybeArchive(path);
+            return out;
         } finally {
             busy = null;
-            render();
         }
     }
 
-    async function runAction(label, op, payload, doneText) {
-        return runSteps(label, [{ op, payload }], doneText);
-    }
-
-    // ---------- Model ----------
-    function cur() {
-        const e = V.current;
-        return e && e.type === 'video' ? e : null;
-    }
-
-    function marksFor(p) {
-        if (!marks.has(p)) marks.set(p, { in: null, out: null });
-        return marks.get(p);
-    }
-
-    function selected() {
-        return segments.find((s) => s.id === selectedId) || null;
-    }
-
-    function syncRanges() {
-        const p = V.player;
-        if (!p) return;
-        if (!editor.isOpen) {
-            p.setRanges('editor', null);
-            return;
+    async function savePieces(path) {
+        if (!guard()) return [];
+        const { pieces, kept } = plan(path);
+        if (!pieces.length || !kept.length) {
+            ui.toast('먼저 Q·W·Ctrl+B로 잘라 주세요', { type: 'info' });
+            return [];
         }
-        const m = marksFor(p.path);
-        const ranges = segments.filter((s) => s.path === p.path).map((s) => ({ start: s.start, end: s.end, kind: s.id === selectedId ? 'active' : 'segment' }));
-        if (m.in != null || m.out != null) {
-            const a = m.in ?? 0;
-            const b = m.out ?? (m.in != null ? Math.min(p.duration || m.in, m.in + Math.max(0.2, (p.duration || 0) * 0.004)) : 0);
-            ranges.push({ start: a, end: b, kind: m.out != null && m.in != null ? 'inout' : 'point' });
+        const engine = engineFor(path);
+        if (!engine) {
+            needServer();
+            return [];
         }
-        p.setRanges('editor', ranges);
-    }
-
-    const editor = {
-        segments,
-        marksFor,
-
-        get isOpen() {
-            return V.isPanelOpen('editor');
-        },
-
-        markIn() {
-            const p = V.player;
-            if (!p) return;
-            const m = marksFor(p.path);
-            m.in = Math.round(p.time * 1000) / 1000;
-            if (m.out != null && m.out <= m.in + 0.05) m.out = null;
-            V.osd(`시작점 ${fmt(m.in)}`, { icon: 'vw-in-point' });
-            changed();
-        },
-
-        markOut() {
-            const p = V.player;
-            if (!p) return;
-            const m = marksFor(p.path);
-            m.out = Math.round(p.time * 1000) / 1000;
-            if (m.in != null && m.in >= m.out - 0.05) m.in = null;
-            V.osd(`끝점 ${fmt(m.out)}`, { icon: 'vw-out-point' });
-            changed();
-        },
-
-        gotoMark(which) {
-            const p = V.player;
-            if (!p) return;
-            const m = marksFor(p.path);
-            const t = m[which];
-            if (t == null) {
-                V.osd(which === 'in' ? '시작점이 없어요' : '끝점이 없어요', { icon: which === 'in' ? 'vw-in-point' : 'vw-out-point' });
-                return;
+        busy = { label: '조각 저장' };
+        const outs = [];
+        try {
+            for (const [i, x] of kept.entries()) {
+                const label = `조각 ${i + 1}/${kept.length} 저장`;
+                const out = engine === 'server'
+                    ? await runSteps(label, [{ op: 'trim', payload: { path, start: r3(x.start), end: r3(x.end), mode: trimMode() } }], '', { quiet: true })
+                    : await browserCut(path, [[x.start, x.end]], label, 'part', '', { quiet: true });
+                if (!out) break;
+                inherit(out, [x]);
+                outs.push(out);
             }
-            if (p.playing) p.pause();
-            p.seek(t);
-        },
-
-        clearMarks() {
-            const p = V.player;
-            if (!p) return;
-            marks.set(p.path, { in: null, out: null });
-            V.osd('시작점·끝점 지움', { icon: 'x' });
-            changed();
-        },
-
-        addSegment() {
-            const p = V.player;
-            const e = cur();
-            if (!p || !e) return null;
-            const m = marksFor(e.path);
-            const d = p.duration || 0;
-            const start = m.in ?? 0;
-            const end = m.out ?? d;
-            if (m.in == null && m.out == null) {
-                ui.toast('먼저 I로 시작점, O로 끝점을 찍어 주세요', { type: 'info' });
-                return null;
-            }
-            if (!(end - start >= 0.1)) {
-                ui.toast('구간이 너무 짧아요 (0.1초 이상)', { type: 'warning' });
-                return null;
-            }
-            const seg = { id: App.util.uid('s'), path: e.path, name: e.name, start, end };
-            segments.push(seg);
-            selectedId = seg.id;
-            marks.set(e.path, { in: null, out: null });
-            V.osd(`구간 추가 ${fmt(start, false)} – ${fmt(end, false)}`, { icon: 'plus' });
-            changed();
-            return seg;
-        },
-
-        removeSegment(id) {
-            const i = segments.findIndex((s) => s.id === id);
-            if (i < 0) return;
-            const [seg] = segments.splice(i, 1);
-            if (selectedId === id) selectedId = segments[Math.min(i, segments.length - 1)]?.id ?? null;
-            changed();
-            ui.toast(`구간 ${fmt(seg.start, false)} – ${fmt(seg.end, false)}을(를) 뺐어요`, {
-                type: 'info',
-                duration: 3500,
-                action: {
-                    label: '되돌리기',
-                    run: () => {
-                        segments.splice(Math.min(i, segments.length), 0, seg);
-                        selectedId = seg.id;
-                        changed();
-                    },
-                },
-            });
-        },
-
-        moveSegment(id, delta) {
-            const i = segments.findIndex((s) => s.id === id);
-            const j = clamp(i + delta, 0, segments.length - 1);
-            if (i < 0 || i === j) return;
-            const [seg] = segments.splice(i, 1);
-            segments.splice(j, 0, seg);
-            changed({ focus: id });
-        },
-
-        reorder(from, to) {
-            if (from === to || from < 0 || to < 0 || from >= segments.length || to >= segments.length) return;
-            const [seg] = segments.splice(from, 1);
-            segments.splice(to, 0, seg);
-            changed();
-        },
-
-        clearSegments() {
-            if (!segments.length) return;
-            const saved = [...segments];
-            segments.length = 0;
-            selectedId = null;
-            changed();
-            ui.toast(`구간 ${saved.length}개를 모두 뺐어요`, { type: 'info', action: { label: '되돌리기', run: () => {
-                segments.push(...saved);
-                changed();
-            } } });
-        },
-
-        /** Play one segment (switching to its file when needed). */
-        async preview(id, onEnd) {
-            const seg = segments.find((s) => s.id === id);
-            if (!seg) return;
-            selectedId = seg.id;
-            changed();
-            const start = () => V.player?.playRange(seg.start, seg.end, onEnd);
-            if (V.current?.path === seg.path && V.player && V.player.path === seg.path && V.player.duration) {
-                start();
-                return;
-            }
-            const off = App.bus.on('viewer:video-meta', ({ path }) => {
-                if (path !== seg.path) return;
-                off();
-                start();
-            });
-            setTimeout(off, 15000);
-            V.open(seg.path, { time: seg.start, play: false });
-        },
-
-        previewAll() {
-            if (!segments.length) return;
-            const queue = segments.map((s) => s.id);
-            let i = 0;
-            const next = () => {
-                if (i >= queue.length) {
-                    V.osd('미리보기 끝', { icon: 'check' });
-                    return;
-                }
-                editor.preview(queue[i++], next);
-            };
-            V.osd(`구간 ${queue.length}개 이어서 미리보기`, { icon: 'play' });
-            next();
-        },
-
-        trimTarget() {
-            if (segments.length === 1) return segments[0];
-            if (segments.length > 1) return selected();
-            const e = cur();
-            const p = V.player;
-            if (!e || !p) return null;
-            const m = marksFor(e.path);
-            if (m.in == null && m.out == null) return null;
-            const start = m.in ?? 0;
-            const end = m.out ?? p.duration;
-            return end - start >= 0.1 ? { path: e.path, name: e.name, start, end } : null;
-        },
-
-        async trim() {
-            const seg = editor.trimTarget();
-            if (!seg) {
-                ui.toast(segments.length > 1 ? '잘라낼 구간을 하나 골라 주세요' : '먼저 I·O로 구간을 표시해 주세요', { type: 'info' });
-                return null;
-            }
-            const mode = App.settings.get('video.trimMode', 'fast') === 'accurate' ? 'accurate' : 'fast';
-            return runAction('잘라내기', 'trim', { path: seg.path, start: round3(seg.start), end: round3(seg.end), mode }, '잘라낸 영상을 저장했어요');
-        },
-
-        async concat() {
-            if (segments.length < 2) {
-                ui.toast('합치려면 구간이 2개 이상 있어야 해요', { type: 'info' });
-                return null;
-            }
-            return runAction('구간 합치기', 'concat', { segments: segments.map((s) => ({ path: s.path, start: round3(s.start), end: round3(s.end) })) }, '합친 영상을 저장했어요');
-        },
-
-        async transform(op = transformOp, mode = transformMode) {
-            const e = cur();
-            if (!e || !op) {
-                ui.toast('회전할 방향을 골라 주세요', { type: 'info' });
-                return null;
-            }
-            const m = op.startsWith('rotate') ? mode : 'reencode';
-            return runAction('회전·뒤집기', 'transform', { path: e.path, op, mode: m }, '회전한 영상을 저장했어요');
-        },
-
-        /** Server ops that bake a view orientation: the flip first (re-encode), then the rotation (lossless). */
-        viewTransformSteps(path, t = V.orientationOf(path)) {
-            const steps = [];
-            if (t.flipH || t.flipV) steps.push({ op: 'transform', payload: { path, op: t.flipH ? 'hflip' : 'vflip', mode: 'reencode' } });
-            if (t.rot) steps.push({ op: 'transform', payload: { path, op: `rotate${t.rot}`, mode: 'metadata' } });
-            return steps;
-        },
-
-        canApplyViewTransform(entry) {
-            return !!entry && entry.type === 'video' && serverState().ready;
-        },
-
-        /** "회전·반전을 파일에 적용" for videos: a new file that looks like the viewer shows it (one undo step). */
-        async applyViewTransform(entry, { ask = true } = {}) {
-            if (!entry || entry.type !== 'video') return null;
-            if (!serverState().ready) {
-                ui.toast('영상 방향을 파일에 적용하려면 로컬 서버가 켜져 있어야 해요', { type: 'warning' });
-                return null;
-            }
-            const t = V.orientationOf(entry.path);
-            if (V.isIdentityTransform(t)) {
-                ui.toast('먼저 R(회전)이나 H·V(반전)로 방향을 바꿔 주세요', { type: 'info' });
-                return null;
-            }
-            const desc = V.describeTransform(t);
-            if (ask) {
-                const flips = t.flipH || t.flipV;
-                const ok = await ui.dialog({
-                    title: `${desc} 방향으로 새 영상을 만들까요?`,
-                    body: h('div', { class: 'vw-apply-body' },
-                        h('p', { text: flips ? '반전은 영상을 다시 인코딩해서 만들어요. 길이에 따라 시간이 걸릴 수 있어요.' : '회전은 화질 손실 없이 방향 정보만 바꿔서 만들어요.' }),
-                        h('div', { class: 'vw-apply-note', html: `${ui.icon('check-circle', { size: 15 })}<span>원본은 그대로 두고 <b>${escapeHtml(P.stem(entry.name))}_rot</b> 같은 새 파일로 저장해요. 실행 취소(${escapeHtml(V.dk('Mod+Z'))})로 새 파일을 지울 수 있어요.</span>` })),
-                    dismissValue: false,
-                    actions: [
-                        { label: '취소', value: false, kind: 'ghost' },
-                        { label: '새 파일로 저장', value: true, kind: 'primary', autofocus: true },
-                    ],
+            if (outs.length) {
+                ui.toast(outs.length === 1 ? `조각을 새 파일로 저장했어요 · ${P.base(outs[0])}` : `조각 ${outs.length}개를 새 파일로 저장했어요`, {
+                    type: 'success',
+                    duration: 6000,
+                    action: { label: '보기', run: () => V.open(outs[0]) },
                 });
-                if (!ok) return null;
+                if (outs.length === kept.length) await maybeArchive(path);
             }
-            return runSteps('방향 적용', editor.viewTransformSteps(entry.path, t), `${desc} 방향으로 저장했어요`);
+            return outs;
+        } finally {
+            busy = null;
+        }
+    }
+
+    async function toClips(path) {
+        if (!App.clips?.add) return null;
+        const { kept } = plan(path);
+        if (!kept.length) {
+            ui.toast('먼저 Q·W·Ctrl+B로 잘라 주세요', { type: 'info' });
+            return null;
+        }
+        try {
+            const created = await App.clips.add(kept.map((x) => ({ path, start: r3(x.start), end: r3(x.end), title: '', memo: x.memo || '', chips: [...(x.chips || [])] })));
+            const n = Array.isArray(created) ? created.length : kept.length;
+            const open = App.commands.get('clips.open') ? { label: '보관함 열기', run: () => App.commands.run('clips.open') } : { label: '되돌리기', run: () => App.undo.undo() };
+            ui.toast(`보관함에 ${n}개 담았어요`, { type: 'success', duration: 5000, action: open });
+            return created;
+        } catch (e) {
+            ui.toast(`보관함에 담지 못했어요: ${e.message}`, { type: 'error' });
+            return null;
+        }
+    }
+
+    // ---------- Rotation / flip baked into a new video file (viewer "파일에 적용") ----------
+    function viewTransformSteps(path, t = V.orientationOf(path)) {
+        const steps = [];
+        if (t.flipH || t.flipV) steps.push({ op: 'transform', payload: { path, op: t.flipH ? 'hflip' : 'vflip', mode: 'reencode' } });
+        if (t.rot) steps.push({ op: 'transform', payload: { path, op: `rotate${t.rot}`, mode: 'metadata' } });
+        return steps;
+    }
+
+    function canApplyViewTransform(entry) {
+        return !!entry && entry.type === 'video' && serverState().ready;
+    }
+
+    async function applyViewTransform(entry, { ask = true } = {}) {
+        if (!entry || entry.type !== 'video') return null;
+        if (!serverState().ready) {
+            ui.toast('영상 방향을 파일에 적용하려면 로컬 서버가 켜져 있어야 해요', { type: 'warning' });
+            return null;
+        }
+        const t = V.orientationOf(entry.path);
+        if (V.isIdentityTransform(t)) {
+            ui.toast('먼저 R(회전)이나 H·V(반전)로 방향을 바꿔 주세요', { type: 'info' });
+            return null;
+        }
+        const desc = V.describeTransform(t);
+        if (ask) {
+            const flips = t.flipH || t.flipV;
+            const ok = await ui.dialog({
+                title: `${desc} 방향으로 새 영상을 만들까요?`,
+                body: h('div', { class: 'vw-apply-body' },
+                    h('p', { text: flips ? '반전은 영상을 다시 인코딩해서 만들어요. 길이에 따라 시간이 걸릴 수 있어요.' : '회전은 화질 손실 없이 방향 정보만 바꿔서 만들어요.' }),
+                    h('div', { class: 'vw-apply-note', html: `${ui.icon('check-circle', { size: 15 })}<span>원본은 그대로 두고 <b>${escapeHtml(P.stem(entry.name))}_rot</b> 같은 새 파일로 저장해요. 실행 취소(${escapeHtml(V.dk('Mod+Z'))})로 새 파일을 지울 수 있어요.</span>` })),
+                dismissValue: false,
+                actions: [
+                    { label: '취소', value: false, kind: 'ghost' },
+                    { label: '새 파일로 저장', value: true, kind: 'primary', autofocus: true },
+                ],
+            });
+            if (!ok) return null;
+        }
+        return runSteps('방향 적용', viewTransformSteps(entry.path, t), `${desc} 방향으로 저장했어요`);
+    }
+
+    App.videoEditor = {
+        saveKept,
+        savePieces,
+        toClips,
+        serverState,
+        engineFor,
+        get busy() {
+            return !!busy;
         },
+        viewTransformSteps,
+        canApplyViewTransform,
+        applyViewTransform,
+        _needServer: needServer,
     };
-
-    function round3(t) {
-        return Math.round(t * 1000) / 1000;
-    }
-
-    function changed(opts) {
-        syncRanges();
-        render(opts);
-    }
-
-    // ---------- Rendering ----------
-    function render(opts = {}) {
-        if (!body) return;
-        const scrollTop = body.scrollTop;
-        body.innerHTML = '';
-        const e = cur();
-        const p = V.player;
-        if (!e) {
-            body.append(h('div', { class: 'vw-dock-empty' },
-                h('div', { class: 'vw-dock-empty-icon', html: ui.icon('scissors', { size: 22 }) }),
-                h('p', { text: '영상을 열면 구간을 자르고 합칠 수 있어요.' }),
-                segments.length ? h('p', { class: 'faint', text: `담아 둔 구간 ${segments.length}개는 그대로 있어요.` }) : null));
-            return;
-        }
-        const st = serverState();
-        const m = marksFor(e.path);
-
-        // In / Out
-        const point = (which, label, iconName, key) => {
-            const t = m[which];
-            return h('div', { class: `ve-point${t != null ? ' is-set' : ''}` },
-                h('div', { class: 've-point-label', html: `${V.icon(iconName, { size: 14 })}<span>${label}</span>` }),
-                h('button', {
-                    class: 've-point-time',
-                    text: t != null ? fmt(t) : '––:––',
-                    'data-tip': t != null ? '이 지점으로 이동' : '아직 안 찍었어요',
-                    'data-tip-keys': which === 'in' ? 'Shift+I' : 'Shift+O',
-                    disabled: t == null,
-                    onmousedown: (ev) => ev.preventDefault(),
-                    onclick: () => editor.gotoMark(which),
-                }),
-                h('button', {
-                    class: 'btn sm ve-point-set',
-                    html: `<span>지금</span><span class="kbd">${key}</span>`,
-                    'data-tip': `${label}을 지금 위치로`,
-                    onmousedown: (ev) => ev.preventDefault(),
-                    onclick: () => (which === 'in' ? editor.markIn() : editor.markOut()),
-                }));
-        };
-        const len = m.in != null || m.out != null ? (m.out ?? p?.duration ?? 0) - (m.in ?? 0) : null;
-        body.append(h('section', { class: 've-sec' },
-            h('div', { class: 've-sec-title', html: '<span>구간 표시</span>' }),
-            h('div', { class: 've-points' }, point('in', '시작점', 'vw-in-point', 'I'), point('out', '끝점', 'vw-out-point', 'O')),
-            h('div', { class: 've-row' },
-                h('span', { class: 've-len muted', text: len != null && len > 0 ? `길이 ${fmtLen(len)}` : 'I·O로 구간을 표시해요' }),
-                h('div', { class: 'grow' }),
-                h('button', { class: 'btn sm ghost', text: '지우기', 'data-tip': '시작점·끝점 지우기', 'data-tip-keys': 'Alt+X', disabled: m.in == null && m.out == null, onmousedown: (ev) => ev.preventDefault(), onclick: () => editor.clearMarks() }),
-                h('button', { class: 'btn sm primary', html: `${ui.icon('plus', { size: 13 })}<span>구간 추가</span><span class="kbd">Enter</span>`, disabled: m.in == null && m.out == null, onmousedown: (ev) => ev.preventDefault(), onclick: () => editor.addSegment() }))));
-
-        // Segment bin
-        const total = segments.reduce((s, x) => s + (x.end - x.start), 0);
-        const segSec = h('section', { class: 've-sec' },
-            h('div', { class: 've-sec-title' },
-                h('span', { text: '구간 목록' }),
-                segments.length ? h('span', { class: 'badge', text: `${formatCount(segments.length)}개 · ${fmtLen(total)}` }) : null,
-                h('div', { class: 'grow' }),
-                segments.length > 1 ? V.button('play', '모두 이어서 미리보기', 'Shift+Enter', () => editor.previewAll(), { class: 'sm' }) : null,
-                segments.length ? V.button('trash', '모두 빼기', null, () => editor.clearSegments(), { class: 'sm' }) : null));
-        if (!segments.length) {
-            segSec.append(h('div', { class: 've-empty', html: `<span class="kbd">I</span>·<span class="kbd">O</span>로 구간을 표시하고 <span class="kbd">Enter</span>를 누르면 여기에 담겨요. 다른 영상의 구간도 함께 담아서 한 영상으로 합칠 수 있어요.` }));
-        } else {
-            const list = h('div', { class: 've-list', role: 'listbox', 'aria-label': '구간 목록' });
-            segments.forEach((s, i) => list.append(segRow(s, i, e)));
-            segSec.append(list);
-        }
-        body.append(segSec);
-
-        // Export
-        const disabled = !st.ready || !!busy;
-        const trimTarget = editor.trimTarget();
-        const mode = App.settings.get('video.trimMode', 'fast');
-        const exp = h('section', { class: 've-sec' },
-            h('div', { class: 've-sec-title', html: '<span>내보내기</span>' }),
-            !st.ready ? serverNotice(st.why) : null,
-            h('div', { class: 'seg ve-mode', role: 'radiogroup', 'aria-label': '자르는 방식' },
-                ...[['fast', '빠르게 (무손실)'], ['accurate', '정확하게']].map(([k, label]) => h('button', {
-                    class: mode === k ? 'on' : '',
-                    text: label,
-                    'aria-pressed': mode === k ? 'true' : 'false',
-                    onmousedown: (ev) => ev.preventDefault(),
-                    onclick: () => {
-                        App.settings.set('video.trimMode', k);
-                        render();
-                    },
-                }))),
-            h('p', { class: 've-help', text: mode === 'accurate' ? '다시 인코딩해서 프레임 단위로 정확하게 잘라요. 시간이 조금 걸려요.' : '다시 인코딩하지 않아 빠르고 화질 그대로예요. 키프레임 기준이라 앞뒤가 조금 더 잘릴 수 있어요.' }),
-            h('div', { class: 've-actions' },
-                h('button', {
-                    class: 'btn primary',
-                    html: `${ui.icon('scissors', { size: 14 })}<span>잘라내기</span>`,
-                    disabled: disabled || !trimTarget,
-                    'data-tip': trimTarget ? `${fmt(trimTarget.start, false)} – ${fmt(trimTarget.end, false)}을 새 파일로 저장` : segments.length > 1 ? '목록에서 구간을 하나 골라 주세요' : '구간을 먼저 표시해 주세요',
-                    onmousedown: (ev) => ev.preventDefault(),
-                    onclick: () => editor.trim(),
-                }),
-                h('button', {
-                    class: 'btn',
-                    html: `${ui.icon('merge', { size: 14 })}<span>구간 합치기${segments.length > 1 ? ` (${segments.length})` : ''}</span>`,
-                    disabled: disabled || segments.length < 2,
-                    'data-tip': segments.length < 2 ? '구간이 2개 이상 있어야 해요' : '목록 순서대로 이어 붙여 새 MP4로 저장',
-                    onmousedown: (ev) => ev.preventDefault(),
-                    onclick: () => editor.concat(),
-                })));
-        if (busy) {
-            const pct = busy.progress != null ? Math.round(busy.progress * 100) : null;
-            exp.append(h('div', { class: 've-busy' },
-                h('span', { class: 'spinner' }),
-                h('span', { class: 've-busy-label', text: `${busy.label} 중${pct != null ? ` · ${pct}%` : '…'}` }),
-                h('div', { class: 'grow' }),
-                busy.jobId ? h('button', { class: 'btn sm ghost', text: '취소', onclick: () => cancelBusy() }) : null,
-                pct != null ? h('div', { class: 'progress ve-progress' }, h('i', { style: { width: `${pct}%` } })) : null));
-        }
-        body.append(exp);
-
-        // Rotate / flip
-        const viewT = V.orientationOf(e.path);
-        const viewOriented = !V.isIdentityTransform(viewT);
-        const tf = h('section', { class: 've-sec' },
-            h('div', { class: 've-sec-title', html: '<span>회전·뒤집기</span>' }),
-            viewOriented ? h('div', { class: 've-row ve-view-orient' },
-                h('p', { class: 've-help', text: `지금 보기 방향(${V.describeTransform(viewT)})을 그대로 새 파일로 만들 수 있어요.` }),
-                h('button', {
-                    class: 'btn sm primary',
-                    html: `${ui.icon('check', { size: 13 })}<span>보기 방향 적용</span>`,
-                    disabled: disabled,
-                    onmousedown: (ev) => ev.preventDefault(),
-                    onclick: () => editor.applyViewTransform(e),
-                })) : null,
-            h('div', { class: 've-ops', role: 'radiogroup', 'aria-label': '회전·뒤집기' },
-                ...TRANSFORMS.map((t) => h('button', {
-                    class: `ve-op${transformOp === t.op ? ' on' : ''}`,
-                    'data-tip': t.tip,
-                    'aria-pressed': transformOp === t.op ? 'true' : 'false',
-                    html: `${ui.icon(t.icon, { size: 15 })}<span>${t.label}</span>`,
-                    onmousedown: (ev) => ev.preventDefault(),
-                    onclick: () => {
-                        transformOp = transformOp === t.op ? null : t.op;
-                        render();
-                    },
-                }))),
-            h('div', { class: 've-row' },
-                h('div', { class: 'seg ve-mode' },
-                    ...[['metadata', '무손실'], ['reencode', '다시 인코딩']].map(([k, label]) => h('button', {
-                        class: (transformOp && !transformOp.startsWith('rotate') ? k === 'reencode' : transformMode === k) ? 'on' : '',
-                        text: label,
-                        disabled: !!transformOp && !transformOp.startsWith('rotate') && k === 'metadata',
-                        'data-tip': k === 'metadata' ? '화면 방향 정보만 바꿔요 (회전만 가능)' : '픽셀을 다시 만들어요 (뒤집기는 이 방식만)',
-                        onmousedown: (ev) => ev.preventDefault(),
-                        onclick: () => {
-                            transformMode = k;
-                            render();
-                        },
-                    }))),
-                h('div', { class: 'grow' }),
-                h('button', {
-                    class: 'btn',
-                    html: `${ui.icon('check', { size: 14 })}<span>적용</span>`,
-                    disabled: disabled || !transformOp,
-                    'data-tip': '새 파일(_rot)로 저장해요. 원본은 그대로예요',
-                    onmousedown: (ev) => ev.preventDefault(),
-                    onclick: () => editor.transform(),
-                })));
-        body.append(tf);
-
-        body.scrollTop = scrollTop;
-        if (opts.focus) body.querySelector(`.ve-seg[data-id="${CSS.escape(opts.focus)}"]`)?.focus();
-    }
-
-    function serverNotice(why) {
-        const connect = App.commands.get('server.connect');
-        const text = {
-            missing: '자르기·합치기·회전은 로컬 서버(ffmpeg)가 해요. <b>server\\start.bat</b>을 실행하면 서버가 켜지고 브라우저가 열려요.',
-            offline: '자르기·합치기·회전은 로컬 서버(ffmpeg)가 해요. <b>server\\start.bat</b>을 실행한 뒤 열리는 주소(http://127.0.0.1:8765)에서 이 폴더를 열어 주세요.',
-            workspace: '서버가 켜져 있어요. 서버 주소(<b>http://127.0.0.1:8765</b>)에서 작업 폴더를 열면 편집 기능을 쓸 수 있어요.',
-            ffmpeg: '서버에 ffmpeg가 없어요. <b>server\\start.bat</b>을 다시 실행하면 자동으로 설치해요.',
-        }[why] || '로컬 서버가 있어야 편집할 수 있어요.';
-        return h('div', { class: 've-server' },
-            h('div', { class: 've-server-icon', html: ui.icon('server', { size: 16 }) }),
-            h('div', { class: 've-server-body' },
-                h('div', { class: 've-server-title', text: '로컬 서버가 필요해요' }),
-                h('div', { class: 've-server-text', html: text }),
-                connect ? h('button', { class: 'btn sm', html: `${ui.icon('zap', { size: 13 })}<span>서버 연결</span>`, onclick: () => App.commands.run('server.connect') }) : null));
-    }
-
-    function segRow(s, i, curEntry) {
-        const other = s.path !== curEntry.path;
-        const row = h('div', {
-            class: `ve-seg${s.id === selectedId ? ' is-selected' : ''}${other ? ' is-other' : ''}`,
-            role: 'option',
-            tabindex: '0',
-            'aria-selected': s.id === selectedId ? 'true' : 'false',
-            dataset: { id: s.id },
-        },
-            h('span', { class: 've-grip', html: ui.icon('drag-handle', { size: 14 }), 'data-tip': '끌어서 순서 바꾸기', 'data-tip-keys': 'Alt+ArrowUp' }),
-            h('span', { class: 've-idx', text: String(i + 1) }),
-            h('div', { class: 've-seg-body' },
-                h('div', { class: 've-seg-range', text: `${fmt(s.start)} – ${fmt(s.end)}` }),
-                h('div', { class: 've-seg-src truncate', text: other ? s.name : '이 영상', title: s.path })),
-            h('span', { class: 've-seg-len', text: fmtLen(s.end - s.start) }),
-            V.button('play', '미리보기', null, () => editor.preview(s.id), { class: 'sm' }),
-            V.button('x', '목록에서 빼기', 'Delete', () => editor.removeSegment(s.id), { class: 'sm' }));
-        row.addEventListener('click', (ev) => {
-            if (ev.target.closest('button, .ve-grip')) return;
-            selectedId = s.id;
-            changed({ focus: s.id });
-            if (!other && V.player) V.player.seek(s.start);
-        });
-        row.addEventListener('dblclick', (ev) => {
-            if (ev.target.closest('button')) return;
-            editor.preview(s.id);
-        });
-        row.addEventListener('keydown', (ev) => {
-            if (ev.altKey && (ev.key === 'ArrowUp' || ev.key === 'ArrowDown')) {
-                ev.preventDefault();
-                editor.moveSegment(s.id, ev.key === 'ArrowUp' ? -1 : 1);
-            } else if (ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
-                ev.preventDefault();
-                const j = clamp(i + (ev.key === 'ArrowUp' ? -1 : 1), 0, segments.length - 1);
-                selectedId = segments[j].id;
-                changed({ focus: selectedId });
-            } else if (ev.key === 'Delete' || ev.key === 'Backspace') {
-                ev.preventDefault();
-                editor.removeSegment(s.id);
-            } else if (ev.key === 'Enter' || ev.key === ' ') {
-                ev.preventDefault();
-                editor.preview(s.id);
-            }
-        });
-        bindDrag(row, row.querySelector('.ve-grip'));
-        return row;
-    }
-
-    // Pointer-driven reordering (smooth, works with the virtual-free short list)
-    function bindDrag(row, grip) {
-        grip.addEventListener('pointerdown', (e) => {
-            if (e.button !== 0) return;
-            e.preventDefault();
-            const list = row.parentNode;
-            const rows = [...list.children];
-            const from = rows.indexOf(row);
-            const step = row.offsetHeight + parseFloat(getComputedStyle(list).rowGap || '0');
-            const y0 = e.clientY;
-            let to = from;
-            grip.setPointerCapture(e.pointerId);
-            row.classList.add('is-dragging');
-            list.classList.add('is-sorting');
-            const move = (ev) => {
-                const dy = ev.clientY - y0;
-                row.style.transform = `translateY(${dy}px)`;
-                to = clamp(from + Math.round(dy / step), 0, rows.length - 1);
-                rows.forEach((r, k) => {
-                    if (r === row) return;
-                    let shift = 0;
-                    if (from < to && k > from && k <= to) shift = -step;
-                    if (from > to && k < from && k >= to) shift = step;
-                    r.style.transform = shift ? `translateY(${shift}px)` : '';
-                });
-            };
-            const up = () => {
-                grip.removeEventListener('pointermove', move);
-                grip.removeEventListener('pointerup', up);
-                grip.removeEventListener('pointercancel', up);
-                rows.forEach((r) => (r.style.transform = ''));
-                row.classList.remove('is-dragging');
-                list.classList.remove('is-sorting');
-                editor.reorder(from, to);
-            };
-            grip.addEventListener('pointermove', move);
-            grip.addEventListener('pointerup', up);
-            grip.addEventListener('pointercancel', up);
-        });
-    }
-
-    function renderBusy() {
-        const lab = body?.querySelector('.ve-busy-label');
-        if (!lab || !busy) return;
-        const pct = busy.progress != null ? Math.round(busy.progress * 100) : null;
-        lab.textContent = `${busy.label} 중${pct != null ? ` · ${pct}%` : '…'}`;
-        const bar = body.querySelector('.ve-progress > i');
-        if (bar && pct != null) bar.style.width = `${pct}%`;
-        else if (pct != null) render();
-    }
-
-    // ---------- Panel ----------
-    V.registerPanel({
-        id: 'editor',
-        title: '영상 편집',
-        icon: 'scissors',
-        keys: 'E',
-        toolbar: true,
-        render(b) {
-            body = b;
-            render();
-            syncRanges();
-            const offs = [
-                App.bus.on('viewer:player', () => {
-                    syncRanges();
-                    render();
-                }),
-                App.bus.on('viewer:video-meta', () => render()),
-                App.bus.on('*', (evt) => {
-                    if (typeof evt === 'string' && evt.startsWith('server:')) render();
-                }),
-                App.bus.on('fs:changed', (c) => {
-                    if (!c.from || !c.to) return;
-                    // keep segment paths valid across renames/moves
-                    let touched = false;
-                    for (const s of segments) {
-                        const i = c.from.indexOf(s.path);
-                        if (i >= 0 && c.to[i]) {
-                            s.path = c.to[i];
-                            s.name = P.base(c.to[i]);
-                            touched = true;
-                        }
-                    }
-                    if (touched) render();
-                }),
-            ];
-            return () => {
-                offs.forEach((off) => off());
-                body = null;
-                V.player?.setRanges('editor', null);
-            };
-        },
-        onEntry() {
-            render();
-            syncRanges();
-        },
-        hints: () => [
-            { keys: ['I'], label: '시작점' },
-            { keys: ['O'], label: '끝점' },
-            { keys: ['Enter'], label: '구간 추가' },
-            { keys: [V.dk('Shift+I'), V.dk('Shift+O')], label: '점으로 이동' },
-            { keys: [V.dk('Alt+X')], label: '지우기' },
-            { keys: ['Space'], label: '재생' },
-            { keys: [',', '.'], label: '프레임' },
-            { keys: ['E'], label: '편집 닫기' },
-        ],
-    });
-
-    // ---------- Commands ----------
-    const editing = () => V.isOpen && V.kind === 'video' && !!V.player && editor.isOpen;
-    const notOnControl = () => {
-        const a = document.activeElement;
-        return !a || !(a.closest?.('button, a, input, textarea, select, [role="option"], [contenteditable="true"]'));
-    };
-    const reg = (cmd) => App.commands.register({ group: '영상 편집', scope: 'viewer', when: editing, ...cmd });
-    App.commands.register({
-        id: 'video.editor',
-        title: '영상 편집 열기/닫기',
-        group: '영상 편집',
-        icon: 'scissors',
-        scope: 'viewer',
-        keys: ['E'],
-        when: () => V.isOpen && V.kind === 'video',
-        run: () => V.togglePanel('editor'),
-    });
-    // I is routed here by viewer.info while the editor is open (see viewer-strip.js)
-    reg({ id: 'video.markIn', title: '시작점 찍기', icon: 'vw-in-point', run: () => editor.markIn() });
-    reg({ id: 'video.markOut', title: '끝점 찍기', icon: 'vw-out-point', keys: ['O'], run: () => editor.markOut() });
-    reg({ id: 'video.gotoIn', title: '시작점으로 이동', icon: 'vw-in-point', keys: ['Shift+I'], run: () => editor.gotoMark('in') });
-    reg({ id: 'video.gotoOut', title: '끝점으로 이동', icon: 'vw-out-point', keys: ['Shift+O'], run: () => editor.gotoMark('out') });
-    reg({ id: 'video.clearInOut', title: '시작점·끝점 지우기', icon: 'x', keys: ['Alt+X'], run: () => editor.clearMarks() });
-    reg({ id: 'video.addSegment', title: '구간 추가', icon: 'plus', keys: ['Enter'], when: () => editing() && notOnControl(), run: () => editor.addSegment() });
-    reg({ id: 'video.previewSegments', title: '구간 모두 미리보기', icon: 'play', keys: ['Shift+Enter'], when: () => editing() && segments.length > 0, run: () => editor.previewAll() });
-    reg({ id: 'video.trim', title: '구간 잘라내기 (서버)', icon: 'scissors', when: () => V.isOpen && V.kind === 'video' && serverState().ready, run: () => editor.trim() });
-    reg({ id: 'video.concat', title: '구간 합치기 (서버)', icon: 'merge', when: () => V.isOpen && segments.length > 1 && serverState().ready, run: () => editor.concat() });
-    reg({ id: 'video.transform', title: '영상 회전·뒤집기 (서버)', icon: 'rotate-cw', when: () => V.isOpen && V.kind === 'video' && serverState().ready, run: () => (editor.isOpen ? editor.transform() : V.togglePanel('editor', true)) });
-
-    App.bus.on('viewer:closed', () => {
-        // keep marks and segments for the session; just drop overlays
-    });
-
-    App.videoEditor = editor;
 })();

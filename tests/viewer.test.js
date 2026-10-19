@@ -1,5 +1,5 @@
 // Viewer team: photos (zoom/pan/rotate/instant open), filmstrip/info/slideshow, video player, markers,
-// capture/poster, A-B loop, video editor (with and without the local server), TS helpers.
+// capture/poster, A-B loop, TS helpers. In-viewer editing (Q/W/Ctrl+B, pieces, save, playback API) lives in tests/video-edit.test.js.
 'use strict';
 
 const PHOTOS = {
@@ -488,120 +488,6 @@ module.exports = [
         },
     },
     {
-        name: 'video editor: in/out, segments, reorder, delete; server actions stay disabled without the server',
-        async run({ openApp, assert }) {
-            const { page } = await openApp({ seed: { 'clip.webm': { video: { seconds: 3 } } } });
-            await openVideo(page, 'clip.webm');
-            await page.keyboard.press('e');
-            await page.waitForSelector('.vw-dock .ve-sec');
-            assert.ok(await page.isVisible('.ve-server'), 'explains that the local server is needed');
-            assert.ok(await page.isDisabled('.ve-actions .btn.primary'));
-            // I is "in point" while the editor is open (info overlay otherwise)
-            const mark = async (t, key) => {
-                await page.evaluate((x) => App.viewer.player.seek(x), t);
-                await page.waitForFunction((x) => Math.abs(App.viewer.player.time - x) < 0.05, t);
-                await page.keyboard.press(key);
-            };
-            await mark(0.4, 'i');
-            await mark(1.4, 'o');
-            assert.ok(await page.evaluate(() => !App.settings.get('viewer.info', false)), 'I did not toggle the info overlay');
-            await page.keyboard.press('Enter');
-            await mark(2.0, 'i');
-            await mark(2.6, 'o');
-            await page.keyboard.press('Enter');
-            const segs = () => page.evaluate(() => App.videoEditor.segments.map((s) => [Math.round(s.start * 10) / 10, Math.round(s.end * 10) / 10]));
-            // Wait for the editor to apply the change (clicks/drags are handled asynchronously under load)
-            const expectSegs = async (want) => {
-                await page.waitForFunction((w) => JSON.stringify(App.videoEditor.segments.map((s) => [Math.round(s.start * 10) / 10, Math.round(s.end * 10) / 10])) === JSON.stringify(w), want, { timeout: 5000 }).catch(() => {});
-                assert.deepEqual(await segs(), want);
-            };
-            await expectSegs([[0.4, 1.4], [2, 2.6]]);
-            assert.equal(await page.locator('.ve-seg').count(), 2);
-            assert.ok(await page.locator('.vw-range.is-segment, .vw-range.is-active').count() >= 2, 'segments are drawn on the seek bar');
-            await page.focus('.ve-seg:nth-child(2)');
-            await page.keyboard.press('Alt+ArrowUp');
-            await expectSegs([[2, 2.6], [0.4, 1.4]]);
-            // drag the grip back down
-            const g = await page.locator('.ve-seg:nth-child(1) .ve-grip').boundingBox();
-            await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2);
-            await page.mouse.down();
-            await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2 + 50, { steps: 5 });
-            await page.mouse.up();
-            await expectSegs([[0.4, 1.4], [2, 2.6]]);
-            await page.click('.ve-seg:nth-child(2) button[aria-label="목록에서 빼기"]');
-            await expectSegs([[0.4, 1.4]]);
-            await page.click('.toast-action:has-text("되돌리기")');
-            assert.equal((await segs()).length, 2);
-            // Shift+I jumps to the in point, Alt+X clears marks
-            await mark(0.8, 'i');
-            await page.evaluate(() => App.viewer.player.seek(2.5));
-            await page.keyboard.press('Shift+I');
-            await page.waitForFunction(() => Math.abs(App.viewer.player.time - 0.8) < 0.06);
-            await page.keyboard.press('Alt+x');
-            assert.equal(await page.evaluate(() => App.videoEditor.marksFor('clip.webm').in), null);
-            await page.keyboard.press('e');
-            await page.waitForSelector('.vw-dock', { state: 'hidden' });
-            await page.keyboard.press('i');
-            await page.waitForSelector('.vw-info:not([hidden])');
-        },
-    },
-    {
-        name: 'video editor talks to App.server.video.* when the server is there (trim, concat via job, transform)',
-        async run({ openApp, assert }) {
-            const { page } = await openApp({ seed: { 'clip.webm': { video: { seconds: 2 } } } });
-            await openVideo(page, 'clip.webm');
-            await page.evaluate(() => {
-                window.__calls = [];
-                App.server = {
-                    available: true,
-                    capabilities: { ffmpeg: true },
-                    video: {
-                        trim: async (b) => (window.__calls.push(['trim', b]), { path: 'clip_cut01.webm' }),
-                        concat: async (b) => (window.__calls.push(['concat', b]), { id: 'job1', state: 'running' }),
-                        transform: async (b) => (window.__calls.push(['transform', b]), { result: { path: 'clip_rot.webm' } }),
-                    },
-                    waitJob: async (id, onProgress) => {
-                        onProgress({ progress: 0.5 });
-                        return { id, state: 'done', result: { path: 'clip_merged01.mp4' } };
-                    },
-                };
-                App.fs.backend.kind = 'server';
-            });
-            await page.keyboard.press('e');
-            await page.waitForSelector('.vw-dock .ve-sec');
-            assert.equal(await page.locator('.ve-server').count(), 0);
-            const seg = async (a, b) => {
-                await page.evaluate((x) => App.viewer.player.seek(x), a);
-                await page.waitForFunction((x) => Math.abs(App.viewer.player.time - x) < 0.05, a);
-                await page.keyboard.press('i');
-                await page.evaluate((x) => App.viewer.player.seek(x), b);
-                await page.waitForFunction((x) => Math.abs(App.viewer.player.time - x) < 0.05, b);
-                await page.keyboard.press('o');
-                await page.keyboard.press('Enter');
-            };
-            await seg(0.2, 0.9);
-            await page.click('.ve-mode button:has-text("정확하게")');
-            await page.click('.ve-actions .btn.primary');
-            await page.waitForSelector('.toast:has-text("잘라낸 영상을 저장했어요")');
-            await seg(1.0, 1.6);
-            await page.click('.ve-actions .btn:has-text("구간 합치기")');
-            await page.waitForSelector('.toast:has-text("합친 영상을 저장했어요")');
-            await page.click('.ve-op:has-text("좌우")');
-            await page.click('.ve-sec .btn:has-text("적용")');
-            await page.waitForSelector('.toast:has-text("회전한 영상을 저장했어요")');
-            const calls = await page.evaluate(() => window.__calls);
-            assert.equal(calls[0][0], 'trim');
-            assert.deepEqual({ ...calls[0][1], start: Math.round(calls[0][1].start * 10) / 10, end: Math.round(calls[0][1].end * 10) / 10 }, { path: 'clip.webm', start: 0.2, end: 0.9, mode: 'accurate' });
-            assert.equal(calls[1][0], 'concat');
-            assert.deepEqual(calls[1][1].segments.map((s) => [s.path, Math.round(s.start * 10) / 10]), [['clip.webm', 0.2], ['clip.webm', 1]]);
-            assert.deepEqual(calls[2], ['transform', { path: 'clip.webm', op: 'hflip', mode: 'reencode' }]);
-            await page.evaluate(() => {
-                App.fs.backend.kind = 'browser';
-                delete App.server;
-            });
-        },
-    },
-    {
         name: 'unsupported formats: friendly card, "서버로 재생" only when the server can stream',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: { 'old.avi': { bytes: [1, 2, 3, 4] }, 'scan.heic': { bytes: [5, 6, 7] }, 'z.png': { image: {} } } });
@@ -680,7 +566,7 @@ module.exports = [
             assert.equal(await page.evaluate(() => App.viewer.current.path), 'c-photo.png', 'stays on the file you were looking at');
             // the viewer's own commands are listed for the palette with Korean titles
             const cmds = await page.evaluate(() => App.commands.list().filter((c) => c.scope === 'viewer').map((c) => [c.id, c.title, c.keys.some((k) => !k)]));
-            for (const id of ['viewer.zoom100', 'viewer.setPoster', 'video.capture', 'video.marker', 'video.editor', 'video.markIn', 'viewer.slideshow']) {
+            for (const id of ['viewer.zoom100', 'viewer.setPoster', 'video.capture', 'video.marker', 'video.cutBefore', 'video.cutAfter', 'video.split', 'video.clip', 'video.saveMenu', 'viewer.slideshow']) {
                 assert.ok(cmds.some((c) => c[0] === id && /[가-힣]/.test(c[1])), `${id} is registered`);
             }
             assert.deepEqual(cmds.filter((c) => c[2]).map((c) => c[0]), [], 'no empty key combos');

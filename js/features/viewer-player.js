@@ -25,6 +25,8 @@
         if (t == null || !isFinite(t)) t = 0;
         const neg = t < 0;
         t = Math.abs(t);
+        // precise: round to 1/100 s first (1.1999 shows as 1.20, not 1.19)
+        if (precise) t = Math.round(t * 100) / 100 + 1e-9;
         const hh = Math.floor(t / 3600);
         const m = Math.floor((t % 3600) / 60);
         const s = Math.floor(t % 60);
@@ -72,6 +74,10 @@
             this.reverseRaf = 0;
             this.raf = 0;
             this.stopAt = null;
+            this.segment = null; // { start, end, loop, onEnd } — App.viewer.openAt / playSequence
+            this.skip = null; // [[a, b]] removed parts the playback jumps over (video-edit.js '편집본 미리보기')
+            this.editBounds = null; // { first, last } kept span of an edited video
+            this.lastTickT = null;
             this.ranges = new Map();
             this.meta = App.catalog.peek(this.path)?.meta || {};
             this.fps = this.meta.fps || null;
@@ -298,6 +304,12 @@
             v.addEventListener('seeking', () => this.setState('loading', 350));
             v.addEventListener('canplay', () => this.state === 'loading' && this.setState('none'));
             v.addEventListener('ended', () => {
+                // a range that runs to (or past) the end of the file finishes here
+                if (this.segment) {
+                    this.checkSegment(Infinity);
+                    if (isActive()) bar.update();
+                    return;
+                }
                 if (this.loopB != null && this.loopA != null) {
                     this.seek(this.loopA);
                     this.play();
@@ -381,12 +393,14 @@
             }
             const opts = this.ctx.opts || {};
             if (opts.time != null && isFinite(opts.time)) this.seek(opts.time);
-            const auto = opts.play !== false && App.settings.get('viewer.autoplay', true) !== false;
+            if (opts.segment) this.setSegment(opts.segment);
+            const auto = opts.play === true || (opts.play !== false && App.settings.get('viewer.autoplay', true) !== false);
             if (auto && (!V.slideshow?.running || V.slideshow.includeVideos)) this.play();
             else this.setState('paused');
             if (V.player === this) {
                 bar.update();
                 bar.renderMarks();
+                bar.renderEdit();
                 App.bus.emit('viewer:video-meta', { path: this.path, duration: d });
             }
             this.sampleFps();
@@ -466,7 +480,13 @@
         play() {
             this.stopReverse();
             if (this.failed) return;
-            if (this.video.ended || (this.duration && this.time >= this.duration - 0.05)) this.seek(this.loopA ?? 0);
+            const seg = this.segment;
+            const t = this.time;
+            if (seg && (t >= seg.end - 0.05 || t < seg.start - 0.5)) this.seek(seg.start);
+            // stopped at the end of the edit → play the edit again (seeking deeper into the removed tail still plays it)
+            else if (!seg && this.skip && this.editBounds && t >= this.editBounds.last - 0.05 && t <= this.editBounds.last + 0.3) this.seek(this.editBounds.first);
+            else if (this.video.ended || (this.duration && t >= this.duration - 0.05)) this.seek(this.loopA ?? (this.skip && this.editBounds ? this.editBounds.first : 0));
+            this.lastTickT = this.time;
             const p = this.video.play();
             if (p && p.catch) p.catch(() => this.setState('paused'));
         }
@@ -493,6 +513,7 @@
             t = clamp(t, 0, d ? Math.max(0, d - 0.001) : Math.max(0, t));
             if (this.ts) this.ts.seek(t);
             else this.video.currentTime = t;
+            this.lastTickT = t;
             if (this.state === 'ended') this.setState(this.playing ? 'none' : 'paused');
             if (V.player === this) bar.update(t);
         }
@@ -616,6 +637,13 @@
                 if (this.destroyed || this.video.paused) return;
                 const t = this.time;
                 if (this.loopA != null && this.loopB != null && t >= this.loopB) this.seek(this.loopA);
+                if (this.segment) this.checkSegment(t);
+                else if (this.skip) this.checkSkip(t);
+                if (this.destroyed || this.video.paused) {
+                    if (V.player === this) bar.updateTime();
+                    return;
+                }
+                this.lastTickT = this.time;
                 if (this.stopAt != null && t >= this.stopAt) {
                     const end = this.stopAt;
                     this.stopAt = null;
@@ -632,6 +660,54 @@
                 this.raf = requestAnimationFrame(tick);
             };
             this.raf = requestAnimationFrame(tick);
+        }
+
+        /**
+         * Removed parts are jumped over only when playback runs INTO them from a kept part (or starts right at their
+         * beginning) — seeking into the middle of a removed part plays it, so it can still be reviewed.
+         */
+        checkSkip(t) {
+            const prev = this.lastTickT ?? t;
+            for (const [a, b] of this.skip) {
+                if (t < a || t >= b - 0.02 || prev > a + 0.04) continue;
+                if (b >= this.duration - 0.05) {
+                    // nothing kept after this part: stop where the edit ends
+                    this.video.pause();
+                    this.seek(a);
+                    this.setState('paused');
+                    App.bus.emit('viewer:edit-ended', { path: this.path });
+                } else {
+                    this.seek(b);
+                }
+                return;
+            }
+        }
+
+        checkSegment(t) {
+            const seg = this.segment;
+            if (t < seg.end) return;
+            if (seg.loop) {
+                this.seek(seg.start);
+                if (this.video.paused) this.play();
+                return;
+            }
+            this.video.pause();
+            const d = this.duration;
+            this.seek(Math.min(seg.end, d || seg.end));
+            this.setState('paused');
+            // the callback only runs if this very range is still the active one (not dismissed / replaced / destroyed)
+            if (seg.onEnd) {
+                setTimeout(() => {
+                    if (!this.destroyed && this.segment === seg) seg.onEnd();
+                }, 0);
+            }
+        }
+
+        /** Limit playback to [start, end] ({ loop, onEnd }); end may be Infinity (= to the end of the file). null clears. */
+        setSegment(seg) {
+            this.segment = seg && Number.isFinite(seg.start) && seg.end > seg.start ? { loop: false, ...seg } : null;
+            const d = this.duration;
+            this.setRanges('segment', this.segment ? [{ start: this.segment.start, end: Math.min(this.segment.end, d || this.segment.end), kind: 'loop' }] : null);
         }
 
         /** Play [a, b] once (editor preview). onEnd fires when b is reached. */
@@ -701,14 +777,15 @@
             return [...(App.catalog.get(this.path).markers || [])].sort((a, b) => a.t - b.t);
         }
 
-        addMarker() {
-            const t = Math.round(this.time * 1000) / 1000;
-            const marker = { id: App.util.uid('m'), t, title: '', memo: '', color: null };
+        /** opts: { popover = setting, title, at, osd = true } */
+        addMarker(opts = {}) {
+            const t = Math.round((opts.at ?? this.time) * 1000) / 1000;
+            const marker = { id: App.util.uid('m'), t, title: opts.title || '', memo: '', color: null };
             const path = this.path;
             putMarker(path, marker);
             const entry = App.undo.push({ label: `마커 ${fmt(t)} 추가`, undo: () => deleteMarker(path, marker.id), redo: () => putMarker(path, entry.marker || marker) });
-            V.osd(`마커 ${fmt(t)}`, { icon: 'bookmark' });
-            if (V.player === this) {
+            if (opts.osd !== false) V.osd(`마커 ${fmt(t)}`, { icon: 'bookmark' });
+            if (V.player === this && opts.popover !== false) {
                 bar.renderMarks();
                 const el = bar.markEl(marker.id);
                 if (el && App.settings.get('viewer.markerPopover', true) !== false) editMarker(path, marker.id, el, { addEntry: entry });
@@ -787,6 +864,7 @@
         }
 
         hints() {
+            if (App.videoEdit?.hintMode) return App.videoEdit.hints();
             const step = seekStepSec();
             const dk = V.dk;
             return [
@@ -799,8 +877,9 @@
                 { keys: ['A'], label: '구간 반복' },
                 { keys: ['C'], label: '캡처' },
                 { keys: [dk('Mod')], mouse: true, label: '확대' },
+                { keys: ['Q', 'W', dk('Mod+B')], label: '자르기' },
+                ...(App.clips?.add ? [{ keys: ['G'], label: '보관함' }] : []),
                 { keys: ['R', 'H'], label: '회전·반전' },
-                { keys: ['E'], label: '편집' },
                 { keys: ['M'], label: '음소거' },
             ];
         }
@@ -809,6 +888,7 @@
             this.view.finish();
             this.stopReverse();
             this.stopAt = null;
+            this.segment = null;
             try {
                 this.video.pause();
             } catch (e) {
@@ -1065,8 +1145,13 @@
             this.hoverCanvas = h('canvas', { class: 'vw-seek-preview' });
             this.hoverEl = h('div', { class: 'vw-seek-hover', hidden: true }, this.hoverCanvas, this.hoverTime);
             this.hoverLine = h('div', { class: 'vw-seek-hover-line', hidden: true });
-            this.track = h('div', { class: 'vw-seek-track' }, this.buffered, this.played, this.rangesEl, this.hoverLine);
-            this.seekEl = h('div', { class: 'vw-seek', role: 'slider', 'aria-label': '재생 위치', 'aria-valuemin': '0' }, this.track, this.marksEl, this.knob, this.hoverEl);
+            // edit pieces (video-edit.js) are drawn in editEl, under the progress; cut handles sit in cutsEl above it
+            this.editEl = h('div', { class: 'vw-seek-edit' });
+            this.cutsEl = h('div', { class: 'vw-seek-cuts' });
+            this.track = h('div', { class: 'vw-seek-track' }, this.editEl, this.buffered, this.played, this.rangesEl, this.hoverLine);
+            this.seekEl = h('div', { class: 'vw-seek', role: 'slider', 'aria-label': '재생 위치', 'aria-valuemin': '0' }, this.track, this.cutsEl, this.marksEl, this.knob, this.hoverEl);
+            // inline strip above the bar for the selected piece (memo, chips, actions) — video-edit.js renders it
+            this.pieceHost = h('div', { class: 'vw-piece-host', hidden: true });
 
             // controls
             this.playBtn = B('play', '재생', 'Space', () => App.commands.run('viewer.playPause'), 'vw-play');
@@ -1082,7 +1167,7 @@
             this.abLabel = h('span', { class: 'vw-ab-label' });
             this.abBtn.append(this.abLabel);
             this.markBtn = B('bookmark', '마커 추가', 'B', () => App.commands.run('video.marker'));
-            this.listBtn = B('vw-list-marker', '마커 목록', 'Shift+B', () => App.commands.run('video.markerList'), 'vw-list');
+            this.listBtn = B('vw-list-marker', '메모 목록 (마커·조각)', 'Shift+B', () => App.commands.run('video.markerList'), 'vw-list');
             this.listCount = h('span', { class: 'vw-count' });
             this.listBtn.append(this.listCount);
             this.capBtn = B('camera', '장면 캡처 (JPG로 저장)', 'C', () => App.commands.run('video.capture'));
@@ -1092,15 +1177,19 @@
             this.volKnob = h('div', { class: 'vw-vol-knob' });
             this.volTrack = h('div', { class: 'vw-vol-track', role: 'slider', 'aria-label': '소리 크기', 'data-tip': '소리 크기', 'data-tip-keys': 'ArrowUp' }, h('div', { class: 'vw-vol-rail' }, this.volFill), this.volKnob);
             this.vol = h('div', { class: 'vw-vol' }, this.volBtn, this.volTrack);
-            this.editBtn = B('scissors', '영상 편집', 'E', () => App.commands.run('video.editor'), 'vw-edit');
+            this.editBtn = B('scissors', '편집 단축키 (Q·W·Ctrl+B)', 'E', () => App.commands.run('video.editHelp'), 'vw-edit');
+            // '편집됨' state + 편집본 미리보기 / 원래대로 (video-edit.js fills it)
+            this.editState = h('div', { class: 'vw-ctl-group vw-edit-state', hidden: true });
             this.fsBtn = B('maximize', '전체 화면', 'F', () => App.commands.run('viewer.fullscreen'));
             this.frameBack = B('vw-frame-prev', '이전 프레임', ',', () => App.commands.run('video.frameBack'), 'vw-opt');
             this.frameFwd = B('vw-frame-next', '다음 프레임', '.', () => App.commands.run('video.frameForward'), 'vw-opt');
 
             this.el = h('div', { class: 'vw-ctl', hidden: true },
+                this.pieceHost,
                 this.seekEl,
                 h('div', { class: 'vw-ctl-row' },
                     h('div', { class: 'vw-ctl-group' }, this.playBtn, this.backBtn, this.fwdBtn, this.frameBack, this.frameFwd, this.timeEl),
+                    this.editState,
                     h('div', { class: 'grow' }),
                     h('div', { class: 'vw-ctl-group' }, this.markBtn, this.listBtn, this.abBtn, this.capBtn, this.posterBtn),
                     h('span', { class: 'vw-sep' }),
@@ -1125,6 +1214,17 @@
             this.updateBuffered();
             this.renderMarks();
             this.renderRanges();
+            this.renderEdit();
+        },
+
+        /** Pieces, cuts, the selected piece strip and the '편집됨' state (video-edit.js). */
+        renderEdit() {
+            if (!this.el || !this.player) return;
+            try {
+                App.videoEdit?.render?.(this, this.player);
+            } catch (e) {
+                console.error('[viewer] edit render failed', e);
+            }
         },
 
         pct(t) {
@@ -1172,7 +1272,7 @@
             const n = p.markers().length;
             this.listCount.textContent = n ? String(n) : '';
             this.listBtn.classList.toggle('active', V.isPanelOpen('markers'));
-            this.editBtn.classList.toggle('active', V.isPanelOpen('editor'));
+            this.editBtn.classList.toggle('active', !!App.videoEdit?.hintMode);
             const fs = !!document.fullscreenElement;
             set(this.fsBtn, '_html', V.icon(fs ? 'vw-minimize' : 'maximize'));
             this.fsBtn.dataset.tip = fs ? '전체 화면 끝내기' : '전체 화면';
@@ -1321,8 +1421,10 @@
                 el.classList.add('is-scrubbing');
                 if (p.playing) p.video.pause();
                 p.stopReverse();
-                p.seek(this.timeAt(e.clientX));
+                const t = this.timeAt(e.clientX);
+                p.seek(t);
                 showHover(e.clientX);
+                App.videoEdit?.pointerAt?.(p, t); // clicking the edit track selects the piece under the pointer
             });
             el.addEventListener('pointermove', (e) => {
                 lastX = e.clientX;
@@ -1349,6 +1451,8 @@
             el.addEventListener('pointercancel', end);
             el.addEventListener('pointerleave', () => {
                 if (scrub) return;
+                cancelAnimationFrame(raf); // a pending hover frame must not show it again
+                raf = 0;
                 this.hoverEl.hidden = true;
                 this.hoverLine.hidden = true;
                 this.hoverCanvas.classList.remove('ready');
@@ -1428,83 +1532,136 @@
         V.osd(`이동 간격 ${seekStepSec()}초`, { icon: 'clock' });
     }
 
-    // ---------- Marker panel (dock) ----------
+    // ---------- '메모 목록' panel (dock): markers (B) and edit pieces (Q/W/Ctrl+B) in one time-ordered list ----------
+    function chipPills(ids) {
+        if (!ids || !ids.length || !App.chipset?.nameOf) return null;
+        const all = App.chipset.list?.() || [];
+        return h('div', { class: 'vw-note-chips' }, ...ids.slice(0, 6).map((id) => {
+            const info = all.find((c) => c.id === id);
+            return h('span', { class: 'vw-chip-pill', style: `--c:${info?.color ? `var(--label-${info.color})` : 'var(--accent)'}`, text: App.chipset.nameOf(id) || '칩' });
+        }));
+    }
+
+    function fmtLen(sec) {
+        return sec < 60 ? `${(Math.round(Math.max(0, sec) * 10) / 10).toFixed(1)}초` : fmt(sec);
+    }
+
     function renderMarkerPanel(body) {
         body.innerHTML = '';
         const entry = V.current;
         const p = V.player;
         if (!entry || entry.type !== 'video') {
-            body.append(h('div', { class: 'vw-dock-empty' }, h('div', { class: 'vw-dock-empty-icon', html: ui.icon('bookmark', { size: 22 }) }), h('p', { text: '영상을 열면 마커가 여기에 나와요.' })));
+            body.append(h('div', { class: 'vw-dock-empty' }, h('div', { class: 'vw-dock-empty-icon', html: ui.icon('bookmark', { size: 22 }) }), h('p', { text: '영상을 열면 마커와 조각 메모가 여기에 나와요.' })));
             return;
         }
-        const list = [...App.catalog.get(entry.path).markers].sort((a, b) => a.t - b.t);
-        const head = h('div', { class: 'vw-mk-panel-head' },
-            h('span', { class: 'muted', text: list.length ? `마커 ${list.length}개` : '마커 없음' }),
+        const markers = [...App.catalog.get(entry.path).markers].sort((a, b) => a.t - b.t);
+        const pieces = App.videoEdit?.listFor?.(entry.path) || [];
+        const kept = pieces.filter((x) => !x.removed).length;
+        const summary = [markers.length ? `마커 ${markers.length}개` : '', pieces.length ? `조각 ${kept}개${pieces.length > kept ? ` · 잘라냄 ${pieces.length - kept}` : ''}` : ''].filter(Boolean).join(' · ');
+        body.append(h('div', { class: 'vw-mk-panel-head' },
+            h('span', { class: 'muted', text: summary || '아직 없어요' }),
             h('div', { class: 'grow' }),
-            h('button', { class: 'btn sm', html: `${ui.icon('plus', { size: 13 })}<span>지금 장면에 추가</span>`, onmousedown: (e) => e.preventDefault(), onclick: () => App.commands.run('video.marker') }));
-        body.append(head);
-        if (!list.length) {
+            h('button', { class: 'btn sm', html: `${ui.icon('plus', { size: 13 })}<span>마커</span><span class="kbd">B</span>`, 'data-tip': '지금 장면에 마커 추가', onmousedown: (e) => e.preventDefault(), onclick: () => App.commands.run('video.marker') })));
+        if (!markers.length && !pieces.length) {
             body.append(h('div', { class: 'vw-dock-empty' },
                 h('div', { class: 'vw-dock-empty-icon', html: ui.icon('bookmark', { size: 22 }) }),
-                h('p', { html: `재생하다가 <span class="kbd">B</span>를 누르면 지금 장면에 마커가 생겨요. 이름과 메모를 붙여 두면 나중에 바로 찾아갈 수 있어요.` })));
+                h('p', { html: `<span class="kbd">B</span>로 지금 장면에 마커를, <span class="kbd">${escapeHtml(V.dk('Mod+B'))}</span>로 조각을 만들어요. 이름·메모를 붙여 두면 나중에 바로 찾아갈 수 있어요.` })));
             return;
         }
+        const rows = [
+            ...markers.map((m) => ({ kind: 'marker', t: m.t, m })),
+            ...pieces.map((x) => ({ kind: 'piece', t: x.start, x })),
+        ].sort((a, b) => a.t - b.t || (a.kind === 'piece' ? -1 : 1));
         const ul = h('div', { class: 'vw-mk-list', role: 'list' });
         const t = p ? p.time : 0;
-        let currentId = null;
-        for (const m of list) if (m.t <= t + 0.05) currentId = m.id;
-        for (const m of list) {
-            const row = h('div', { class: `vw-mk-row${m.id === currentId ? ' is-current' : ''}`, role: 'listitem', tabindex: '0', dataset: { id: m.id } },
-                h('span', { class: 'vw-mk-dot', style: `--c:${markColor(m.color)}` }),
-                h('button', { class: 'vw-mk-t', text: fmt(m.t, true), onmousedown: (e) => e.preventDefault(), onclick: () => V.player?.seek(m.t) }),
-                h('div', { class: 'vw-mk-body' },
-                    h('div', { class: `vw-mk-name${m.title ? '' : ' faint'}`, text: m.title || '이름 없음' }),
-                    m.memo ? h('div', { class: 'vw-mk-memo-text', text: m.memo }) : null),
-                h('div', { class: 'vw-mk-actions' },
-                    V.button('edit', '이름·메모 편집', null, (e) => {
-                        const anchor = bar.markEl(m.id) || e.currentTarget;
-                        editMarker(entry.path, m.id, anchor);
-                    }, { class: 'sm' }),
-                    V.button('trash', '삭제', null, () => removeMarkerUndoable(entry.path, m.id), { class: 'sm' })));
-            row.addEventListener('click', (e) => {
-                if (e.target.closest('button')) return;
-                V.player?.seek(m.t);
-            });
-            row.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    V.player?.seek(m.t);
-                } else if (e.key === 'Delete' || e.key === 'Backspace') {
-                    e.preventDefault();
-                    removeMarkerUndoable(entry.path, m.id);
-                }
-            });
-            ul.append(row);
+        let current = null;
+        for (const r of rows) if (r.t <= t + 0.05) current = r;
+        const sel = App.videoEdit?.selected?.();
+        for (const r of rows) {
+            if (r.kind === 'marker') ul.append(markerRow(entry, r.m, r === current));
+            else ul.append(pieceRow(entry, r.x, r === current, !!sel && Math.abs(sel.start - r.x.start) < 0.001));
         }
         body.append(ul);
     }
 
+    function markerRow(entry, m, current) {
+        const row = h('div', { class: `vw-mk-row${current ? ' is-current' : ''}`, role: 'listitem', tabindex: '0', dataset: { id: m.id, t: String(m.t) } },
+            h('span', { class: 'vw-mk-dot', style: `--c:${markColor(m.color)}` }),
+            h('button', { class: 'vw-mk-t', text: fmt(m.t, true), onmousedown: (e) => e.preventDefault(), onclick: () => V.player?.seek(m.t) }),
+            h('div', { class: 'vw-mk-body' },
+                h('div', { class: `vw-mk-name${m.title ? '' : ' faint'}`, text: m.title || '이름 없는 마커' }),
+                m.memo ? h('div', { class: 'vw-mk-memo-text', text: m.memo }) : null),
+            h('div', { class: 'vw-mk-actions' },
+                V.button('edit', '이름·메모 편집', null, (e) => {
+                    const anchor = bar.markEl(m.id) || e.currentTarget;
+                    editMarker(entry.path, m.id, anchor);
+                }, { class: 'sm' }),
+                V.button('trash', '삭제', null, () => removeMarkerUndoable(entry.path, m.id), { class: 'sm' })));
+        row.addEventListener('click', (e) => {
+            if (e.target.closest('button')) return;
+            V.player?.seek(m.t);
+        });
+        row.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                V.player?.seek(m.t);
+            } else if (e.key === 'Delete' || e.key === 'Backspace') {
+                e.preventDefault();
+                e.stopPropagation();
+                removeMarkerUndoable(entry.path, m.id);
+            }
+        });
+        return row;
+    }
+
+    function pieceRow(entry, x, current, selected) {
+        const select = (extra) => App.videoEdit?.select?.(entry.path, x.start, { seek: true, ...extra });
+        const row = h('div', {
+            class: `vw-mk-row vw-piece-row${x.removed ? ' is-removed' : ''}${current ? ' is-current' : ''}${selected ? ' is-selected' : ''}`,
+            role: 'listitem',
+            tabindex: '0',
+            dataset: { piece: String(x.start), t: String(x.start) },
+        },
+            h('span', { class: 'vw-piece-glyph', html: ui.icon(x.removed ? 'x' : 'scissors', { size: 12 }) }),
+            h('button', { class: 'vw-mk-t', text: fmt(x.start, true), onmousedown: (e) => e.preventDefault(), onclick: () => select() }),
+            h('div', { class: 'vw-mk-body' },
+                h('div', { class: 'vw-mk-name' }, h('span', { class: 'vw-piece-title', text: x.removed ? '잘라낸 부분' : `조각 ${x.number}` }), h('span', { class: 'vw-piece-len', text: ` · ${fmtLen(x.end - x.start)}` })),
+                x.memo ? h('div', { class: 'vw-mk-memo-text', text: x.memo }) : null,
+                chipPills(x.chips)));
+        row.addEventListener('click', (e) => {
+            if (e.target.closest('button')) return;
+            select();
+        });
+        row.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                select({ focusMemo: true });
+            }
+        });
+        return row;
+    }
+
     V.registerPanel({
         id: 'markers',
-        title: '마커',
-        icon: 'bookmark',
+        title: '메모 목록',
+        icon: 'vw-list-marker',
         keys: 'Shift+B',
         toolbar: true,
         render(body) {
-            renderMarkerPanel(body);
+            const refresh = () => renderMarkerPanel(body);
+            refresh();
             const offs = [
                 App.bus.on('catalog:changed', ({ paths }) => {
-                    if (paths?.includes(V.current?.path)) renderMarkerPanel(body);
+                    if (paths?.includes(V.current?.path)) refresh();
                 }),
+                App.bus.on('viewer:piece-select', refresh),
+                App.bus.on('viewer:video-meta', refresh),
                 App.bus.on('viewer:video-time', App.util.throttle(() => {
                     const p = V.player;
                     if (!p) return;
                     const rows = body.querySelectorAll('.vw-mk-row');
                     let cur = null;
-                    for (const r of rows) {
-                        const m = p.markers().find((x) => x.id === r.dataset.id);
-                        if (m && m.t <= p.time + 0.05) cur = r;
-                    }
+                    for (const r of rows) if (Number(r.dataset.t) <= p.time + 0.05) cur = r;
                     rows.forEach((r) => r.classList.toggle('is-current', r === cur));
                 }, 250)),
             ];
@@ -1513,7 +1670,12 @@
         onEntry() {
             V.refreshPanel('markers');
         },
-        hints: () => [{ keys: ['B'], label: '마커 추가' }, { keys: [V.dk('Shift+ArrowLeft'), V.dk('Shift+ArrowRight')], label: '이전/다음 마커' }, { keys: ['Shift+B'], label: '목록 닫기' }],
+        hints: () => [
+            { keys: ['B'], label: '마커 추가' },
+            { keys: [V.dk('Mod+B')], label: '조각 자르기' },
+            { keys: [V.dk('Shift+ArrowLeft'), V.dk('Shift+ArrowRight')], label: '이전/다음 마커' },
+            { keys: ['Shift+B'], label: '목록 닫기' },
+        ],
     });
 
     V.registerRenderer('video', {
@@ -1531,6 +1693,7 @@
         if (p && paths?.includes(p.path)) {
             bar.renderMarks();
             bar.update();
+            bar.renderEdit();
         }
     });
     App.bus.on('settings:changed', ({ key }) => {
@@ -1559,7 +1722,7 @@
     reg({ id: 'video.volumeUp', title: '소리 크게', icon: 'volume', keys: ['ArrowUp'], run: () => V.player.volumeBy(0.05) });
     reg({ id: 'video.volumeDown', title: '소리 작게', icon: 'vw-volume-1', keys: ['ArrowDown'], run: () => V.player.volumeBy(-0.05) });
     reg({ id: 'video.marker', title: '마커 추가', icon: 'bookmark', keys: ['B'], run: () => V.player.addMarker() });
-    reg({ id: 'video.markerList', title: '마커 목록', icon: 'vw-list-marker', keys: ['Shift+B'], when: () => V.isOpen && V.kind === 'video', run: () => V.togglePanel('markers') });
+    reg({ id: 'video.markerList', title: '메모 목록 (마커·조각)', icon: 'vw-list-marker', keys: ['Shift+B'], when: () => V.isOpen && V.kind === 'video', run: () => V.togglePanel('markers') });
     reg({ id: 'video.prevMarker', title: '이전 마커로', icon: 'bookmark', keys: ['Shift+ArrowLeft'], run: () => V.player.jumpMarker(-1) });
     reg({ id: 'video.nextMarker', title: '다음 마커로', icon: 'bookmark', keys: ['Shift+ArrowRight'], run: () => V.player.jumpMarker(1) });
     reg({ id: 'video.loop', title: '구간 반복 (A-B)', icon: 'vw-repeat', keys: ['A'], run: () => V.player.cycleLoop() });

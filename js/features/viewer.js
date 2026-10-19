@@ -45,6 +45,7 @@
         mouse: '<rect x="6" y="3" width="12" height="18" rx="6"/><path d="M12 7v4"/>',
         palette: '<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2a10 10 0 0 0 0 20c.9 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6H16c3.3 0 6-2.7 6-6 0-4.9-4.5-8.6-10-8.6Z"/>',
         'reset-orient': '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 8v4l2.5 2.5"/>',
+        clip: '<rect x="2" y="4" width="20" height="5" rx="1"/><path d="M4 9v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9"/><path d="M10 13h4"/>',
     };
 
     // Also expose them to the shared kit as "vw-<name>" so menus and the command palette can show them.
@@ -907,6 +908,7 @@
         if (!viewer.isOpen) return false;
         if (root.querySelector('.vw-top:hover, .vw-ctl:hover, .vw-strip:hover, .vw-dock:hover, .vw-info:hover, .vw-show-hud:hover')) return false;
         if (document.querySelector('.menu, .dialog-backdrop')) return false;
+        if (root.querySelector('.vw-ctl:focus-within')) return false; // typing a piece memo
         if (viewer.slideshow?.running) return true;
         if (viewer.player?.playing) return true;
         return !!document.fullscreenElement;
@@ -967,6 +969,7 @@
                 viewer.slideshow.stop();
                 return;
             }
+            if (App.videoEdit?.deselect?.()) return; // a selected edit piece goes first
             if (openPanel && openPanel.def.closeOnEscape !== false) {
                 closePanel();
                 return;
@@ -1019,6 +1022,8 @@
         run: async () => {
             const cur = viewer.current;
             if (!cur) return;
+            // A selected edit piece on the seek bar: Delete removes (or restores) that piece, not the file
+            if (isVideo() && App.videoEdit?.removeSelected?.()) return;
             // Settings › 일반 › '삭제 전 확인' (off by default: deletes are soft and undoable)
             if (App.settings.get('trash.confirm', false) && !(await ui.confirm({ title: '휴지통으로 옮기기', message: `"${cur.name}"을(를) 휴지통으로 옮길까요?`, okLabel: '휴지통으로', danger: true }))) return;
             visible?.inst?.deactivate?.();
