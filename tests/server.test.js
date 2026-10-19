@@ -282,4 +282,61 @@ module.exports = [
             }
         },
     },
+    {
+        name: 'server: AVI plays via the stream, media info, Explorer commands, shutdown and auto-reconnect',
+        async run(h) {
+            const py = python(h.ROOT);
+            if (!py) { console.log('    skip: Python environment is unavailable'); return; }
+            const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'fi-client-'));
+            const root = path.join(temp, '사진 작업');
+            fs.mkdirSync(root);
+            let server;
+            let browser;
+            try {
+                await fixtures(py, root, 'avi');
+                const port = await freePort();
+                const dataDir = path.join(temp, 'data');
+                server = await startPy({ py, root: h.ROOT, port, dataDir });
+                browser = await h.launchBrowser();
+                const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+                await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: `http://127.0.0.1:${port}` });
+                const page = await context.newPage();
+                const errors = collect(page);
+                await page.goto(`http://127.0.0.1:${port}/`);
+                await page.waitForFunction(() => window.App?.server?.state === 'connected');
+                await open(page, root);
+
+                // Inspector: codec info only the server knows
+                await page.locator('.card[data-path="c.avi"]').click();
+                await page.waitForFunction(() => /mpeg4/.test(document.querySelector('.insp-server-media')?.textContent || ''));
+
+                // Viewer: an AVI plays through the fragmented-MP4 stream
+                await page.keyboard.press('Enter');
+                await page.waitForSelector('#viewer video.vw-media[src*="/api/media/stream"]');
+                await page.waitForFunction(() => document.querySelector('#viewer video.vw-media').readyState >= 2, null, { timeout: 20000 });
+                await page.keyboard.press('Escape');
+                await page.waitForSelector('#viewer', { state: 'hidden' });
+
+                // Explorer commands (the test server runs with FI_DRY_SHELL, so nothing pops up)
+                await page.keyboard.press('Alt+Shift+C');
+                await page.waitForFunction(() => document.querySelector('#toasts')?.textContent.includes('경로를 복사했어요'));
+                h.assert.equal(await page.evaluate(() => navigator.clipboard.readText()), path.join(root, 'c.avi'));
+                await page.keyboard.press('Alt+Shift+R');
+
+                // '서버 끄기' from the app, then the app reconnects by itself when the server is back
+                await page.evaluate(() => { App.commands.run('server.shutdown'); });
+                await page.getByRole('button', { name: '서버 끄기', exact: true }).click();
+                await page.waitForSelector('.srv-status[data-state="offline"]');
+                await server.stop();
+                server = await startPy({ py, root: h.ROOT, port, dataDir });
+                await page.waitForSelector('.srv-status[data-state="connected"]', { timeout: 30000 });
+                await page.waitForFunction(() => App.fs.backend?.kind === 'server' && !!App.view.get('c.avi'));
+                h.assert.deepEqual(errors, [], 'browser must remain quiet');
+            } finally {
+                if (browser) await browser.close();
+                if (server) await server.stop();
+                removeTemp(temp);
+            }
+        },
+    },
 ];

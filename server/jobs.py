@@ -43,6 +43,7 @@ class Job:
         self._procs: set[subprocess.Popen] = set()
         self._lock = threading.Lock()
         self.cleanup: list[Callable[[], None]] = []  # run after the job ends (e.g. delete temp files)
+        self._future = None
 
     @property
     def cancelled(self) -> bool:
@@ -111,12 +112,14 @@ class JobManager:
         self._lock = threading.Lock()
         self._keep = keep
 
-    def submit(self, kind: str, fn: Callable[[Job], Any], *, ws=None, message: str = '') -> Job:
+    def submit(self, kind: str, fn: Callable[[Job], Any], *, ws=None, message: str = '', cleanup: list[Callable[[], None]] | None = None) -> Job:
+        """Queue fn(job). `cleanup` callbacks run when the job ends — also when it is cancelled before it starts."""
         job = Job(kind, ws=ws, message=message)
+        job.cleanup.extend(cleanup or ())
         with self._lock:
             self._jobs[job.id] = job
             self._prune()
-        self._executor.submit(self._run, job, fn)
+            job._future = self._executor.submit(self._run, job, fn)
         return job
 
     def _run(self, job: Job, fn: Callable[[Job], Any]) -> None:
@@ -153,16 +156,21 @@ class JobManager:
                 job.error = {'code': 'ESERVER', 'message': f'작업이 실패했어요 ({type(e).__name__}: {e})'}
                 job.message = job.error['message']
         finally:
-            job.finished = time.time()
-            for fn_cleanup in job.cleanup:
-                try:
-                    fn_cleanup()
-                except Exception:
-                    log.debug('job cleanup failed', exc_info=True)
-            with job._lock:
-                procs = list(job._procs)
-            for p in procs:
-                _kill(p)
+            self._finalize(job)
+
+    @staticmethod
+    def _finalize(job: Job) -> None:
+        job.finished = time.time()
+        for fn_cleanup in job.cleanup:
+            try:
+                fn_cleanup()
+            except Exception:
+                log.debug('job cleanup failed', exc_info=True)
+        job.cleanup.clear()
+        with job._lock:
+            procs = list(job._procs)
+        for p in procs:
+            _kill(p)
 
     def _prune(self) -> None:
         if len(self._jobs) <= self._keep:
@@ -183,9 +191,23 @@ class JobManager:
             return sorted(self._jobs.values(), key=lambda j: j.created, reverse=True)
 
     def cancel(self, job_id: str) -> bool:
-        return self.get(job_id).cancel()
+        job = self.get(job_id)
+        ok = job.cancel()
+        future = job._future
+        if future is not None and future.cancel():
+            # Still queued: it will never run, so finish it now (state + cleanup)
+            job.state = 'cancelled'
+            job.message = '취소했어요'
+            self._finalize(job)
+        return ok
 
     def shutdown(self) -> None:
         for j in self.list():
             j.cancel()
+            future = getattr(j, '_future', None)
+            if future is not None and future.cancel():
+                # Never started: finish it here so its state and cleanup are not left dangling
+                j.state = 'cancelled'
+                j.message = '취소했어요'
+                self._finalize(j)
         self._executor.shutdown(wait=False, cancel_futures=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -102,6 +103,105 @@ class ExtensionTests(ServerTestCase):
         finally:
             srv.stop()
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class MediaHardeningTests(ServerTestCase):
+    def test_playlists_disguised_as_videos_are_refused(self):
+        outside = os.path.join(self.tmp, 'outside.mp4')
+        from server.tests.helpers import make_video
+
+        make_video(outside, seconds=1)
+        self.write('evil.mp4', '#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10,\n' + outside.replace('\\', '/') + '\n#EXT-X-ENDLIST\n')
+        r = self.api.get('/api/thumb', path='evil.mp4', soft='1')
+        self.assertEqual(r.status, 204)
+        self.assertEqual(r.headers.get('x-fi-error'), 'EINVAL')
+        self.assertError(self.api.get('/api/media/probe', path='evil.mp4'), 400, 'EINVAL')
+
+    def test_cover_art_stream_is_not_mistaken_for_the_movie(self):
+        from server.tests.helpers import make_video
+
+        src = make_video(os.path.join(self.tmp, 'movie-src.mp4'), seconds=2, size=(320, 240))
+        cover = make_image(os.path.join(self.tmp, 'cover.png'), size=(500, 500))
+        subprocess.run([ffmpeg.exe(), '-hide_banner', '-loglevel', 'error', '-y', '-i', cover, '-i', src, '-map', '0', '-map', '1',
+                        '-c', 'copy', '-disposition:v:0', 'attached_pic', self.path('with-cover.mp4')], check=True, capture_output=True)
+        info = self.api.get('/api/media/probe', path='with-cover.mp4').json()
+        self.assertEqual((info['width'], info['height']), (320, 240))
+        r = self.api.get('/api/thumb', path='with-cover.mp4', size='200')
+        self.assertEqual(r.status, 200, r.text)
+        from PIL import Image
+        import io
+
+        with Image.open(io.BytesIO(r.body)) as thumb:
+            self.assertEqual(thumb.size, (200, 150))  # the 4:3 movie frame, not the square cover
+
+
+class JobQueueTests(unittest.TestCase):
+    def test_cancelling_a_queued_job_runs_its_cleanup_now(self):
+        import threading
+
+        from server.jobs import JobManager
+
+        manager = JobManager(workers=1)
+        gate = threading.Event()
+        cleaned = []
+        try:
+            blocker = manager.submit('test.block', lambda job: gate.wait(10))
+            queued = manager.submit('test.queued', lambda job: 'never', cleanup=[lambda: cleaned.append('done')])
+            manager.cancel(queued.id)
+            self.assertEqual(queued.state, 'cancelled')
+            self.assertEqual(cleaned, ['done'])
+        finally:
+            gate.set()
+            deadline = time.time() + 5
+            while blocker.state == 'running' and time.time() < deadline:
+                time.sleep(0.01)
+            manager.shutdown()
+        self.assertEqual(blocker.state, 'done')
+
+    def test_publish_new_never_overwrites(self):
+        from server import fsutil
+
+        tmp = tempfile.mkdtemp(prefix='fi-pub-')
+        try:
+            from pathlib import Path
+
+            a, b = Path(tmp, 'a.part'), Path(tmp, 'b.mp4')
+            a.write_bytes(b'new')
+            b.write_bytes(b'old')
+            with self.assertRaises(FileExistsError):
+                fsutil.publish_new(str(a), str(b))
+            self.assertEqual(b.read_bytes(), b'old')
+            b.unlink()
+            fsutil.publish_new(str(a), str(b))
+            self.assertEqual(b.read_bytes(), b'new')
+            self.assertFalse(a.exists())
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_port_probe_treats_non_http_listeners_as_busy(self):
+        import socket
+        import threading
+
+        from server.__main__ import _probe_port
+
+        srv = socket.socket()
+        srv.bind(('127.0.0.1', 0))
+        srv.listen(5)
+        port = srv.getsockname()[1]
+
+        def accept_and_close():
+            for _ in range(2):
+                try:
+                    conn, _ = srv.accept()
+                    conn.close()
+                except OSError:
+                    return
+
+        threading.Thread(target=accept_and_close, daemon=True).start()
+        try:
+            self.assertEqual(_probe_port(port), 'busy')
+        finally:
+            srv.close()
 
 
 class PathRuleTests(unittest.TestCase):

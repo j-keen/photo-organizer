@@ -62,6 +62,32 @@ def require() -> str:
     return path
 
 
+# Demuxers allowed to open user files. Playlists/manifests (hls, concat, dash...) are refused so a crafted file can't make
+# ffmpeg read other local files or the network; `file`/`pipe` are the only protocols.
+SAFE_DEMUXERS = 'mov,mp4,matroska,webm,avi,asf,flv,mpegts,mpeg,mpegvideo,h264,hevc,dv,ogg,mjpeg'
+
+
+def harden(args: list[str]) -> list[str]:
+    """Insert protocol/format whitelists before every `-i <user file>` (lavfi test sources are left alone)."""
+    out: list[str] = []
+    segment: list[str] = []  # options seen since the previous input
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == '-i' and i + 1 < len(args):
+            lavfi = any(segment[k] == '-f' and k + 1 < len(segment) and segment[k + 1] == 'lavfi' for k in range(len(segment)))
+            if not lavfi:
+                out += ['-protocol_whitelist', 'file,pipe', '-format_whitelist', SAFE_DEMUXERS]
+            out += [a, args[i + 1]]
+            segment = []
+            i += 2
+            continue
+        out.append(a)
+        segment.append(a)
+        i += 1
+    return out
+
+
 def popen_kwargs() -> dict:
     kw: dict = {}
     if os.name == 'nt':
@@ -132,7 +158,7 @@ def kill_all() -> None:
 
 def popen(args: list[str], *, inputs=(), stdin=subprocess.DEVNULL) -> subprocess.Popen:
     """Start ffmpeg with stdout piped (for streaming). Caller must close/kill it; untrack happens in reap()."""
-    cmd = [require(), '-hide_banner', '-nostdin', '-loglevel', 'error', *args]
+    cmd = [require(), '-hide_banner', '-nostdin', '-loglevel', 'error', *harden(args)]
     proc = subprocess.Popen(cmd, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **popen_kwargs())
     _track(proc, inputs)
     # Drain stderr so the pipe never fills up
@@ -161,7 +187,7 @@ def reap(proc: subprocess.Popen) -> None:
 
 def capture(args: list[str], *, inputs=(), timeout: float = 60, job=None) -> bytes:
     """Run ffmpeg and return stdout (e.g. `-f image2pipe -c:v png -`). Raises ApiError on failure."""
-    cmd = [require(), '-hide_banner', '-nostdin', '-loglevel', 'error', *args]
+    cmd = [require(), '-hide_banner', '-nostdin', '-loglevel', 'error', *harden(args)]
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **popen_kwargs())
     _track(proc, inputs, job=job is not None)
     if job is not None:
@@ -195,7 +221,7 @@ def _last_line(err: bytes | str | None) -> str:
 
 def run(args: list[str], *, job=None, duration: float | None = None, inputs=(), progress_span: tuple[float, float] = (0.0, 1.0), timeout: float | None = None) -> None:
     """Run ffmpeg to completion, mapping `-progress` output to job progress. Raises ApiError / JobCancelled."""
-    cmd = [require(), '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *args]
+    cmd = [require(), '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *harden(args)]
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **popen_kwargs())
     _track(proc, inputs, job=True)
     if job is not None:
@@ -273,7 +299,7 @@ def parse_probe(text: str) -> dict:
         'format': None, 'duration': None, 'bitrate': None, 'width': None, 'height': None,
         'codedWidth': None, 'codedHeight': None, 'fps': None, 'vcodec': None, 'acodec': None,
         'rotation': 0, 'taken': None, 'camera': None, 'hasVideo': False, 'hasAudio': False,
-        'sampleRate': None,
+        'sampleRate': None, 'videoIndex': 0,
     }
     m = _RE_INPUT.search(text)
     if m:
@@ -285,10 +311,12 @@ def parse_probe(text: str) -> dict:
     if m:
         info['bitrate'] = int(m.group(1)) * 1000
     vm = _RE_VIDEO.search(text)
-    # Skip attached cover pictures (mjpeg/png "attached pic") in favour of a real video stream
-    for cand in _RE_VIDEO.finditer(text):
+    # Skip attached cover pictures (mjpeg/png "attached pic") in favour of a real video stream;
+    # videoIndex is its position among video streams, for `-map 0:v:<videoIndex>`
+    for n, cand in enumerate(_RE_VIDEO.finditer(text)):
         if 'attached pic' not in cand.group(3):
             vm = cand
+            info['videoIndex'] = n
             break
     if vm:
         info['hasVideo'] = True
@@ -365,7 +393,7 @@ def probe(abs_path: str, st: os.stat_result | None = None) -> dict:
         if hit is not None:
             _probe_cache.move_to_end(key)
             return dict(hit)
-    cmd = [require(), '-hide_banner', '-nostdin', '-i', abs_path]
+    cmd = [require(), '-hide_banner', '-nostdin', *harden(['-i', abs_path])]
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, **popen_kwargs())
         _track(proc, [abs_path])

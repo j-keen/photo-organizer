@@ -169,8 +169,9 @@ def _video_frame(absolute, size, info):
     if width and height and min(width, height) * min(1, size / max(width, height)) < 1:
         factor = min(1, size / max(width, height))
         scale = f'scale={max(1, round(width * factor))}:{max(1, round(height * factor))}'
+    stream = f"0:v:{info.get('videoIndex') or 0}"  # the movie, not an attached cover picture
     for t in (seek, 0.0) if seek else (0.0,):
-        data = ffmpeg.capture(['-ss', f'{t:.3f}', '-i', absolute, '-frames:v', '1',
+        data = ffmpeg.capture(['-ss', f'{t:.3f}', '-i', absolute, '-map', stream, '-frames:v', '1',
                                '-vf', scale, '-f', 'image2pipe', '-c:v', 'png', '-'],
                               inputs=[absolute], timeout=30)
         if data:
@@ -312,7 +313,7 @@ def stream(path: str, start: float = 0, ws: Workspace = Depends(deps.workspace))
         if not info.get('hasVideo'):
             raise ApiError('EINVAL', '재생할 영상이 없어요', status=415)
         args = ['-ss', str(start)] if start else []
-        args += ['-i', absolute, '-map', '0:v:0', '-map', '0:a:0?']
+        args += ['-i', absolute, '-map', f"0:v:{info.get('videoIndex') or 0}", '-map', '0:a:0?']
         if info.get('vcodec') == 'h264':
             args += ['-c:v', 'copy']
         else:

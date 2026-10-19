@@ -107,8 +107,16 @@ def _temp_for(final_abs):
     return os.path.join(os.path.dirname(final_abs), f'{fsutil.TMP_PREFIX}{uuid.uuid4().hex}{os.path.splitext(final_abs)[1]}')
 
 
-def _finish(temp, final):
-    fsutil.retry(os.replace, temp, final)
+def _finish(temp, final, *, replace=False):
+    if replace:
+        fsutil.retry(os.replace, temp, final)
+    else:
+        fsutil.publish_new(temp, final)  # never overwrites a file that appeared meanwhile
+
+
+def _vmap(info):
+    """Stream specifier of the movie itself (skips attached cover pictures)."""
+    return f"0:v:{info.get('videoIndex') or 0}"
 
 
 def _remove_temp(path):
@@ -163,12 +171,16 @@ def _result(ws, final, *, video=True):
     return result
 
 
+def _version(path):
+    st = os.stat(path)
+    return st.st_size, st.st_mtime_ns
+
+
 def _submit(jobs, ws, kind, final, work, *, in_place=False):
     temp = _temp_for(final)
+    before = _version(final) if in_place else None
 
     def execute(job):
-        job.cleanup.append(lambda: _remove_temp(temp))
-        job.cleanup.append(lambda: _release_name(final))
         try:
             job.check()
             work(job, temp)
@@ -176,18 +188,24 @@ def _submit(jobs, ws, kind, final, work, *, in_place=False):
             # Resolve again before publication to reject a changed parent link.
             ws.resolve(ws.rel(final))
             if in_place:
+                if _version(final) != before:
+                    raise ApiError('EBUSY', '처리하는 동안 원본이 바뀌어서 덮어쓰지 않았어요. 다시 시도해 주세요')
                 ffmpeg.release(final)
             elif os.path.lexists(final):
                 raise ApiError('EEXIST', '같은 이름의 파일이 생겼어요. 다시 시도해 주세요')
-            _finish(temp, final)
+            _finish(temp, final, replace=in_place)
             result = _result(ws, final)
             job.set_progress(1, '완료했어요')
             return result
+        except FileExistsError:
+            raise ApiError('EEXIST', '같은 이름의 파일이 생겼어요. 다시 시도해 주세요')
         except OSError as exc:
             raise from_os_error(exc, ws.rel(final), noun='파일') from exc
 
+    # Registered at submit time so it also runs when the job is cancelled before it starts
+    cleanup = [lambda: _remove_temp(temp), lambda: _release_name(final)]
     try:
-        job = jobs.submit(kind, execute, ws=ws, message='영상을 처리하는 중이에요')
+        job = jobs.submit(kind, execute, ws=ws, message='영상을 처리하는 중이에요', cleanup=cleanup)
     except BaseException:
         _release_name(final)
         raise
@@ -214,7 +232,7 @@ def trim(body: TrimBody, ws: Workspace = Depends(deps.workspace), jobs: JobManag
     final = _reserve(os.path.dirname(src), stem, 'cut', ext, numbered=True)
 
     def work(job, temp):
-        args = ['-y', '-ss', str(start), '-i', src, '-t', str(end - start), '-map', '0:v?', '-map', '0:a?']
+        args = ['-y', '-ss', str(start), '-i', src, '-t', str(end - start), '-map', _vmap(info), '-map', '0:a?']
         args += _encode() + ['-c:a', 'aac', '-b:a', '192k'] if accurate else ['-c', 'copy', '-avoid_negative_ts', 'make_zero']
         ffmpeg.run(args + _faststart(ext) + [temp], job=job, duration=end - start, inputs=[src])
 
@@ -273,7 +291,7 @@ def concat(body: ConcatBody, ws: Workspace = Depends(deps.workspace), jobs: JobM
                 index += 1
         filters = []
         for n, (_, _, _, duration) in enumerate(segments):
-            filters.append(f'[{video_indices[n]}:v:0]setpts=PTS-STARTPTS,scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p,trim=duration={duration},setpts=PTS-STARTPTS[v{n}]')
+            filters.append(f'[{video_indices[n]}:v:{segments[n][1].get("videoIndex") or 0}]setpts=PTS-STARTPTS,scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p,trim=duration={duration},setpts=PTS-STARTPTS[v{n}]')
             filters.append(f'[{audio_indices[n]}:a:0]aresample=48000,aformat=channel_layouts=stereo,apad,atrim=duration={duration},asetpts=PTS-STARTPTS[a{n}]')
         filters.append(''.join(f'[v{n}][a{n}]' for n in range(len(segments))) + f'concat=n={len(segments)}:v=1:a=1[v][a]')
         args += ['-filter_complex_threads', '1', '-filter_complex', ';'.join(filters), '-map', '[v]', '-map', '[a]']
@@ -316,7 +334,7 @@ def transform(body: TransformBody, ws: Workspace = Depends(deps.workspace), jobs
             angle = (-clockwise) % 360
             if angle > 180:
                 angle -= 360
-            prefix = ['-y', '-display_rotation:v:0', str(angle), '-i', src]
+            prefix = ['-y', f"-display_rotation:v:{info.get('videoIndex') or 0}", str(angle), '-i', src]
             try:
                 ffmpeg.run(prefix + ['-map', '0', '-c', 'copy'] + _faststart(ext) + [temp], job=job, duration=info.get('duration'), inputs=[src])
             except ApiError as exc:
@@ -324,9 +342,9 @@ def transform(body: TransformBody, ws: Workspace = Depends(deps.workspace), jobs
                     raise
                 job.check()
                 _remove_temp(temp)
-                ffmpeg.run(prefix + ['-map', '0:v', '-map', '0:a?', '-c', 'copy'] + _faststart(ext) + [temp], job=job, duration=info.get('duration'), inputs=[src])
+                ffmpeg.run(prefix + ['-map', _vmap(info), '-map', '0:a?', '-c', 'copy'] + _faststart(ext) + [temp], job=job, duration=info.get('duration'), inputs=[src])
         else:
-            args = ['-y', '-i', src, '-map', '0:v:0', '-map', '0:a?', '-vf', filters[body.op]] + _encode()
+            args = ['-y', '-i', src, '-map', _vmap(info), '-map', '0:a?', '-vf', filters[body.op]] + _encode()
             args += ['-c:a', 'copy'] if info.get('acodec') == 'aac' else ['-c:a', 'aac', '-b:a', '192k']
             args += ['-metadata:s:v:0', 'rotate=0'] + _faststart(ext) + [temp]
             ffmpeg.run(args, job=job, duration=info.get('duration'), inputs=[src])
@@ -348,7 +366,7 @@ def frame(body: FrameBody, ws: Workspace = Depends(deps.workspace)):
     final = _reserve(os.path.dirname(src), '', '', '', name=name)
     temp = _temp_for(final)
     try:
-        args = ['-y', '-ss', str(time), '-i', src, '-map', '0:v:0', '-frames:v', '1']
+        args = ['-y', '-ss', str(time), '-i', src, '-map', _vmap(info), '-frames:v', '1']
         args += ['-q:v', '2'] if body.format == 'jpg' else []
         ffmpeg.run(args + [temp], inputs=[src])
         if not os.path.isfile(temp):
@@ -358,6 +376,8 @@ def frame(body: FrameBody, ws: Workspace = Depends(deps.workspace)):
             raise ApiError('EEXIST', '같은 이름의 파일이 생겼어요. 다시 시도해 주세요')
         _finish(temp, final)
         return _result(ws, final, video=False)
+    except FileExistsError:
+        raise ApiError('EEXIST', '같은 이름의 파일이 생겼어요. 다시 시도해 주세요')
     except OSError as exc:
         raise from_os_error(exc, ws.rel(final), noun='파일') from exc
     finally:

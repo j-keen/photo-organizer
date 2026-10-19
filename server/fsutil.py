@@ -139,6 +139,15 @@ def atomic_write(target: str, chunks: Iterable[bytes]) -> int:
     return total
 
 
+def publish_new(tmp: str, final: str) -> None:
+    """Give a finished temp file its final name atomically, never overwriting an existing file (FileExistsError)."""
+    if IS_WINDOWS:
+        retry(os.rename, tmp, final)  # Windows rename refuses an existing target
+        return
+    os.link(tmp, final)  # POSIX: link() refuses an existing target, rename() would replace it
+    os.unlink(tmp)
+
+
 def same_file(a: str, b: str) -> bool:
     try:
         return os.path.samefile(a, b)

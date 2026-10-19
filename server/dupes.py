@@ -110,13 +110,15 @@ def prehash(abs_path) -> bytes:
     return digest.digest()
 
 
-def find_pairs(codes: np.ndarray, radius) -> list[tuple[int, int, int]]:
-    """Return unique ordered pairs with strict Hamming distance < radius."""
+def iter_pairs(codes: np.ndarray, radius):
+    """Yield (i, j, distance) with i < j and Hamming distance < radius, batch by batch.
+
+    Memory stays bounded even when thousands of near-identical files match each other (results are never collected).
+    """
     codes = np.asarray(codes)
     if codes.ndim != 2 or codes.dtype != np.uint8 or codes.shape[1] == 0:
         raise ValueError('Expected an (n, nbytes) uint8 array')
     codes = np.ascontiguousarray(codes)
-    pairs = []
     n = len(codes)
     job = _search_job.get()
 
@@ -126,22 +128,21 @@ def find_pairs(codes: np.ndarray, radius) -> list[tuple[int, int, int]]:
 
     check()
     if n < 2 or radius <= 0:
-        return pairs
+        return
     if USE_FAISS and faiss is not None:
         index = faiss.IndexBinaryFlat(codes.shape[1] * 8)
         for start in range(0, n, 4096):
             check()
             index.add(codes[start:start + 4096])
-        for start in range(0, n, 4096):
+        # Each query can match all n codes: size batches so one result set stays around 2M entries.
+        batch = max(16, min(4096, 2_000_000 // n))
+        for start in range(0, n, batch):
             check()
-            limits, distances, indices = index.range_search(codes[start:start + 4096], radius)
-            for offset in range(len(limits) - 1):
-                check()
-                i = start + offset
-                for position in range(int(limits[offset]), int(limits[offset + 1])):
-                    j = int(indices[position])
-                    if j > i:
-                        pairs.append((i, j, int(distances[position])))
+            limits, distances, indices = index.range_search(codes[start:start + batch], radius)
+            counts = np.diff(limits).astype(np.int64)  # faiss returns size_t limits
+            queries = np.repeat(np.arange(start, start + len(counts), dtype=np.int64), counts)
+            keep = indices > queries
+            yield from zip(queries[keep].tolist(), indices[keep].tolist(), distances[keep].tolist())
     else:
         # At most roughly 4 MB of XOR bytes per block, including 320-bit codes.
         block = max(1, min(256, int(math.sqrt(4 * 1024 * 1024 / codes.shape[1]))))
@@ -155,10 +156,13 @@ def find_pairs(codes: np.ndarray, radius) -> list[tuple[int, int, int]]:
                 for a, b in zip(rows.tolist(), columns.tolist()):
                     i, j = start + a, end + b
                     if i < j:
-                        pairs.append((i, j, int(distances[a, b])))
+                        yield i, j, int(distances[a, b])
     check()
-    pairs.sort()
-    return pairs
+
+
+def find_pairs(codes: np.ndarray, radius) -> list[tuple[int, int, int]]:
+    """All matching pairs, sorted (small inputs / tests). Scans use iter_pairs to keep memory bounded."""
+    return sorted(iter_pairs(codes, radius))
 
 
 class UnionFind:
@@ -398,16 +402,15 @@ def scan(ws, dirs, mode, threshold, videos, job) -> dict:
                         perceptual[i] = by_root[union.find(i)]
                 searchable = [i for i in members if i in perceptual and i not in failed]
                 if len(searchable) > 1:
-                    codes = np.array([list(perceptual[i]) for i in searchable], dtype=np.uint8)
+                    codes = np.frombuffer(b''.join(perceptual[i] for i in searchable), dtype=np.uint8).reshape(len(searchable), -1)
                     token = _search_job.set(job)
                     try:
-                        edges = find_pairs(codes, threshold * (5 if kind == 'video' else 1) + 1)
+                        # Edges go straight into the union-find: no quadratic pair list in memory
+                        for a, b, _ in iter_pairs(codes, threshold * (5 if kind == 'video' else 1) + 1):
+                            union.union(searchable[a], searchable[b])
                         stats['faiss'] = stats['faiss'] or bool(USE_FAISS and faiss is not None)
                     finally:
                         _search_job.reset(token)
-                    for a, b, _ in edges:
-                        job.check()
-                        union.union(searchable[a], searchable[b])
         job.set_progress(0.95, '묶는 중')
         components = defaultdict(list)
         for i in range(len(files)):

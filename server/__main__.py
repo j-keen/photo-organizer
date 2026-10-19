@@ -27,20 +27,23 @@ def _setup_console() -> None:
 
 def _probe_port(port: int) -> str:
     """'free' | 'ours' (a Fluid Identity server already answers) | 'busy' (something else / not bindable)."""
+    conn = http.client.HTTPConnection(HOST, port, timeout=0.6)
     try:
-        conn = http.client.HTTPConnection(HOST, port, timeout=0.6)
         conn.request('GET', '/api/health', headers={'Host': f'{HOST}:{port}'})
-        resp = conn.getresponse()
-        body = resp.read()
-        conn.close()
+        body = conn.getresponse().read()
         try:
-            if json.loads(body.decode('utf-8')).get('app') == APP_ID:
+            data = json.loads(body.decode('utf-8'))
+            if isinstance(data, dict) and data.get('app') == APP_ID:
                 return 'ours'
-        except ValueError:
+        except (ValueError, UnicodeDecodeError):
             pass
-        return 'busy'
+        return 'busy'  # something else answers on this port
+    except http.client.HTTPException:
+        return 'busy'  # not HTTP / closed the connection: still taken
     except (ConnectionRefusedError, socket.timeout, OSError):
         pass
+    finally:
+        conn.close()
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         if os.name == 'nt' and hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
