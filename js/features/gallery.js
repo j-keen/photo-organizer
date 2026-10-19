@@ -1215,7 +1215,7 @@
     }
 
     let lastClick = null; // { path, t, x, y } of the last plain item click (double-click recovery)
-    let syntheticOpenAt = 0;
+    let syntheticOpenAt = -Infinity; // not 0: performance.now() starts near 0, so 0 would swallow double-clicks in the first 0.6 s
 
     function noteClick(p, e, plain) {
         lastClick = plain && p ? { path: p, t: performance.now(), x: e.clientX, y: e.clientY } : null;
@@ -2876,6 +2876,10 @@
             }).observe(scroller);
 
             scroller.addEventListener('click', onClick);
+            // A click consumed by a card decoration (badges stop propagation) was still delivered: don't recover it
+            scroller.addEventListener('click', () => {
+                if (press) press.clicked = true;
+            }, true);
             scroller.addEventListener('dblclick', onDblClick);
             scroller.addEventListener('contextmenu', onContextMenu);
             scroller.addEventListener('pointerdown', onPointerDown);

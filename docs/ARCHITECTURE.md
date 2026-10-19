@@ -300,3 +300,48 @@ Stored in `.fluid-organizer/clips.json` via `App.wsdata` (`{ version: 1, clips: 
   there = `POST /api/dupes/quarantine { paths }` → moved to `<root>\_중복정리\NNN_<name>` + logged (the owner's own
   convention); `POST /api/dupes/restore { ids }` undoes it.
 - Client: `App.server.dupes.fingerprint(opts)`, `.scanV2(opts)`, `.frameUrl(path, t)`, `.quarantine(paths)`, `.restore(ids)`.
+
+## 9. Round 2 additions (shipped 2026-10-19) — read this before round 3
+
+**Core (js/core)**
+- `App.listCache` (core-listcache.js): per-workspace IndexedDB folder listings, stale-while-revalidate.
+  `get(dir)`, `list(dir, {mode: 'auto'|'names'|'full'})`, `needsFull(dir)`, `diff(old, new)`, `drop(dir, {recursive})`, `clear()`,
+  `retain(folders)`, `flush()`, `loadIndex()` / `saveIndex(snapshot)`, `gen(dir)`. In-app `fs:changed` patches the cache.
+- `App.nav.load(p, {focus, keepSelection, full, wait, recheck})`, `revalidate({full})`, `whenFresh()`, `revalidating`, `lastOpen`;
+  `nav.reload()` (F5) = full re-check. Events: `folder:revalidating {path}`, `folder:revalidated {path, changed, added, removed, updated}`,
+  `folder:loaded {cached}`, `view:changed {reason, revalidated?, diff?, background?}` — `view.recompute(reason, info)` merges `info`.
+- `App.index`: loads a snapshot at startup (`index:ready {snapshot: true}`), then re-checks; `fresh`, `fromSnapshot`, `size`,
+  `whenFresh()`, `scan({full})`, `syncFolder(dir, entries)`. Search also covers piece memos/chips (`meta.edit.pieces`) and marker notes.
+- `App.select.anchorIndex`; `range()` never collapses to one item when the anchor vanished (focus → nearest selected → last index).
+- `fs:missing {paths, dirs, silent}` when a cached entry turned out to be gone; the folder is re-checked.
+- `App.lock` (core-lock.js) — one writer per workspace: `.fluid-organizer/lock.json` + BroadcastChannel. `canWrite()`, `state`,
+  `owner`, `takeOver()`, `check()`, `nudge()`; event `lock:changed {state, canWrite}`. A read-only window: App.fs throws `EREADONLY`,
+  `App.catalog` refuses edits up front (nudge) and never saves, `App.wsdata.write/backup` are skipped, the status bar says 보기 전용.
+- `fs:changed` of type `restore` carries `from` (original paths, same order as `paths`).
+- `App.ui.toast(msg, { actions: [{label, run}] })` — several buttons (plus the older single `action`).
+
+**Features**
+- `App.workspace.flushHooks` — push `() => Promise`; awaited before a workspace switch/close (modules with their own debounced files).
+- `App.sidebar.folderMenuItems` — push `(folderPath) => items` to extend the folder tree's context menu.
+- `App.gallery`: `refresh()`/`invalidate()` morph cards IN PLACE (element identity kept, merged into one frame, deferred while the
+  pointer is down on an item, a gallery menu is open or a drag runs). `cardDecorators` run on a fresh element whose result is morphed
+  into the live card — compute from (card, entry) only. `App.gallery.busy`, `stats`; command `gallery.revealFocus` (Alt+G).
+  Volatile nodes inside cards (img, mosaic, svg, placeholders) have `pointer-events: none` so clicks land on stable boxes.
+- Viewer editing (`App.videoEdit`, `App.videoEditor.saveKept/savePieces/toClips`, `App.videoLossless`): `meta.edit` adds
+  `src: {size, mtime}` (applied only while the file matches; 2 s mtime tolerance) and `pieces: {"<start>": {memo, chips}}`; cuts may
+  sit inside removed runs. `App.viewer.openAt`, `playSequence`, `stopSegment`, `sequence`, `segment`; events `viewer:segment-ended`,
+  `viewer:sequence-ended`, `viewer:edit-ended`, `viewer:piece-select`. `vendor/mediabunny.min.js` (MPL-2.0) is lazy-loaded on the first
+  browser-side save (keyframe-aligned lossless MP4/MOV/WebM/MKV, in-memory, ~1 GB cap).
+- `App.clips` exactly as §8, plus `updateMany`; IndexedDB rescue copy (rev-stamped) for failed saves.
+- Duplicates (`App.dupes`: store, apply, verify, excludeFiles/Folders, markNotDuplicate, setFolderRole, setRules, trashDuplicates,
+  engine, ui.open(args), tools, picker). `dupes.json` adds `rules.folderPriority [{path, role: 'keep'|'remove'}]`,
+  `lastScan {id, at, scope, engine, counts, reviewed, choices}`, `extraRoots`. Events `dupes:changed {reason}`, `dupes:applied`,
+  `dupes:reviewed`, `dupes:fingerprints`. Settings `dupes.prebuildOnOpen`, `dupes.useServer`, `dupes.merge`, `dupes.upgradeToKeep`.
+  Files: duplicates.js + dupes-engine.js, dupes-picker.js, dupes-review.js, dupes-tools.js.
+- Server client: `App.server.supports('dupes-v2'|'job-pause'|'restart')`, `API_VERSION`/`apiVersion`/`outdated`, `restart()`,
+  `handoffUrl()`; `App.server.dupes.fingerprint/scanV2/start/frameUrl/stat/mediaUrl/quarantine/restore/quarantined/roots/pickRoot/
+  forgetRoot/isExternal` — exact JSON in docs/server-api.md "Duplicates v2" (apiVersion 2). Quarantine is ONE undo step unless
+  `{undoable: false}`. Groups are `sure` only when every member matches the keeper directly (`direct`).
+
+**Workspace data** (§6) also holds `clips.json`, `dupes.json`, `dupes-log.json`, `lock.json`. Other drives: duplicates removed there go to
+`<root>\_중복정리\NNN_<name>` (log `정리기록.json`); external fingerprints live in `%APPDATA%\FluidIdentity\fingerprints.sqlite`.

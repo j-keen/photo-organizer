@@ -194,8 +194,10 @@ clamped into the file; ignored for photos); `w` width 32–640 (default 160); `v
 | `GET /api/dupes/roots` | | `{roots: [{root, name, exists, source: 'picked'|'workspace', pickedAt}]}` |
 | `POST /api/dupes/roots/pick` | `{initialDir?}` | native folder dialog → `{root, name}` (remembered as allowed) or `{cancelled: true}` |
 | `POST /api/dupes/roots/forget` | `{root}` | `{ok}` (only picked roots; workspace roots stay allowed while they are recent) |
+| `GET /api/dupes/stat?path=<abs>` | | `{kind: 'file'|'dir', size, mtime}` (ms) of a file under an allowed root; `404 ENOENT` when gone, `403 EPERM` outside the roots. The review re-verifies the keeper with it right before removing (added at round-2 integration). |
+| `GET /api/dupes/media?path=<abs>` | | the file itself with Range/ETag (like `/api/fs/file`) so the review can play files on other drives; same errors as `stat` |
 
-Picked roots are stored in `%APPDATA%\FluidIdentity\roots.json` (12 most recent).
+Picked roots are stored in `%APPDATA%\FluidIdentity\roots.json` (12 most recent). Client: `App.server.dupes.stat(path)`, `.mediaUrl(path)`.
 
 ### Quarantine (external files only — workspace files go to the app trash with `App.fs.trash`)
 | Method & path | Body | Returns |
