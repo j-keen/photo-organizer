@@ -1,1 +1,628 @@
-/* Server status / settings */
+/* Local server: status-bar item, status popover, setup sheet, workspace chooser, '서버' card badge, media info (server team) */
+
+/* ---------- Status-bar item ---------- */
+#statusbar .srv-status {
+    height: 20px;
+    border: none;
+    background: transparent;
+    color: var(--text-3);
+    font: inherit;
+    font-size: var(--fs-xs);
+    white-space: nowrap;
+}
+
+#statusbar .srv-status:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+.srv-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-4);
+    flex-shrink: 0;
+    transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.srv-status[data-state="connected"] .srv-dot {
+    background: var(--success);
+    box-shadow: 0 0 0 3px var(--success-soft);
+}
+
+.srv-status[data-state="connecting"] .srv-dot {
+    background: var(--warning);
+    animation: srv-pulse 1.1s var(--ease) infinite;
+}
+
+.srv-status[data-state="detected"] {
+    color: var(--accent-2);
+    font-weight: 600;
+}
+
+.srv-status[data-state="detected"] .srv-dot {
+    background: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+    animation: srv-pulse 1.8s var(--ease) infinite;
+}
+
+.srv-status[data-state="offline"] {
+    color: var(--danger);
+}
+
+.srv-status[data-state="offline"] .srv-dot {
+    background: var(--danger);
+    box-shadow: 0 0 0 3px var(--danger-soft);
+    animation: srv-pulse 1.4s var(--ease) infinite;
+}
+
+@keyframes srv-pulse {
+    50% {
+        opacity: 0.35;
+    }
+}
+
+/* ---------- Shared bits ---------- */
+.srv-strong {
+    font-size: var(--fs);
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.01em;
+}
+
+.srv-muted {
+    margin-top: 2px;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--text-3);
+}
+
+.srv-section-title {
+    display: block;
+    margin-bottom: 8px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--text-3);
+}
+
+.srv-lead {
+    margin: 0 !important;
+    font-size: var(--fs);
+    line-height: 1.6;
+    color: var(--text-2);
+}
+
+.srv-dialog .dialog-body {
+    padding-bottom: 20px;
+}
+
+/* Korean copy: never break inside a word */
+.srv-pop,
+.srv-setup,
+.srv-chooser {
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+}
+
+/* Capability list (popover + setup sheet) */
+.srv-caps {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.srv-caps.compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 12px;
+}
+
+.srv-caps li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    height: 28px;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+
+.srv-cap-icon {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.srv-caps li.on .srv-cap-icon {
+    background: var(--success-soft);
+    color: var(--success);
+}
+
+.srv-caps li.off {
+    color: var(--text-4);
+}
+
+.srv-caps li.off .srv-cap-icon {
+    background: var(--bg-3);
+    color: var(--text-4);
+}
+
+.srv-cap-tech {
+    font-size: var(--fs-xs);
+    color: var(--text-4);
+}
+
+/* ---------- Status popover ---------- */
+.menu.srv-popover {
+    overflow: hidden;
+}
+
+.srv-pop {
+    width: 304px;
+}
+
+.srv-pop-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 14px 12px;
+}
+
+.srv-pop-logo {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: var(--r);
+    background: var(--accent-soft);
+    color: var(--accent-2);
+    flex-shrink: 0;
+}
+
+.srv-pop-state {
+    margin-top: 1px;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+}
+
+.srv-pop-state.bad {
+    color: var(--danger);
+}
+
+.srv-pop .srv-caps {
+    padding: 8px 14px 10px;
+    border-top: 1px solid var(--line-2);
+}
+
+.srv-pop-ws {
+    padding: 12px 14px;
+    border-top: 1px solid var(--line-2);
+}
+
+.srv-pop-ws .srv-section-title {
+    margin-bottom: 4px;
+}
+
+.srv-pop-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.srv-pop-root {
+    margin-top: 1px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    user-select: text;
+}
+
+.srv-pop-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--line-2);
+    background: var(--bg-1);
+}
+
+/* ---------- Workspace chooser ---------- */
+.srv-chooser {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.srv-pick {
+    display: flex;
+    min-height: 56px;
+}
+
+.srv-pick-btn {
+    width: 100%;
+    height: 52px;
+    gap: 8px;
+    border-radius: var(--r-lg);
+    font-size: var(--fs-md);
+}
+
+.srv-pick-waiting {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px dashed var(--accent-line);
+    border-radius: var(--r-lg);
+    background: var(--accent-soft);
+    animation: fade-in var(--dur) var(--ease);
+}
+
+.srv-path-row {
+    display: flex;
+    gap: 8px;
+}
+
+.srv-path-row .input {
+    flex: 1;
+    min-width: 0;
+}
+
+.srv-path-row .btn {
+    height: 32px;
+    padding: 0 16px;
+}
+
+.srv-field-error {
+    min-height: 16px;
+    margin-top: 6px;
+    font-size: var(--fs-xs);
+    color: var(--danger);
+}
+
+.srv-field-error:empty {
+    min-height: 0;
+    margin: 0;
+}
+
+.srv-recents {
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+}
+
+.srv-recent-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 296px;
+    margin: 0 -8px;
+    overflow-y: auto;
+}
+
+.srv-recent {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding-right: 6px;
+    border-radius: var(--r);
+    transition: background var(--dur-fast) var(--ease);
+}
+
+.srv-recent:hover {
+    background: var(--bg-3);
+}
+
+.srv-recent-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 1;
+    min-width: 0;
+    height: 52px;
+    padding: 0 8px;
+    border: none;
+    border-radius: var(--r);
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+}
+
+.srv-recent-main:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+.srv-recent-main:disabled {
+    cursor: default;
+}
+
+.srv-recent-icon {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: var(--r);
+    background: var(--accent-soft);
+    color: var(--accent);
+    flex-shrink: 0;
+}
+
+.srv-recent-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex: 1;
+    min-width: 0;
+}
+
+.srv-recent-name,
+.srv-recent-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.srv-recent-name {
+    font-weight: 600;
+}
+
+.srv-recent-path {
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+}
+
+.srv-recent-time {
+    font-size: var(--fs-xs);
+    color: var(--text-4);
+    white-space: nowrap;
+}
+
+.srv-recent-forget {
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease);
+}
+
+.srv-recent:hover .srv-recent-forget,
+.srv-recent-forget:focus-visible {
+    opacity: 1;
+}
+
+.srv-recent.missing .srv-recent-icon {
+    background: var(--bg-3);
+    color: var(--text-4);
+}
+
+.srv-recent.missing .srv-recent-name {
+    color: var(--text-3);
+}
+
+.srv-recent.missing .srv-recent-time {
+    color: var(--warning);
+}
+
+.srv-chooser-foot {
+    display: flex;
+    justify-content: flex-end;
+    margin: -6px -8px -8px 0;
+}
+
+/* ---------- Setup sheet ---------- */
+.srv-setup {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.srv-unlocks {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.srv-unlocks li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    padding: 9px 12px 9px 9px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    background: var(--bg-2);
+    font-size: var(--fs-sm);
+    line-height: 1.35;
+    color: var(--text);
+}
+
+.srv-unlock-icon {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--r);
+    background: var(--accent-soft);
+    color: var(--accent-2);
+    flex-shrink: 0;
+}
+
+.srv-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.srv-steps li {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    font-size: var(--fs);
+    line-height: 22px;
+    color: var(--text-2);
+}
+
+.srv-step-no {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--line-2);
+    border-radius: 50%;
+    background: var(--bg-3);
+    color: var(--text-2);
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.srv-code {
+    padding: 2px 6px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-xs);
+    background: var(--bg-3);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+}
+
+.srv-step-path {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    padding: 4px 4px 4px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    background: var(--bg-2);
+}
+
+.srv-path-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    user-select: text;
+}
+
+.srv-live {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 66px;
+    padding: 14px 16px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-lg);
+    background: var(--bg-2);
+    transition: background var(--dur-slow) var(--ease), border-color var(--dur-slow) var(--ease);
+}
+
+.srv-live-icon {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: var(--bg-3);
+    color: var(--text-3);
+    flex-shrink: 0;
+}
+
+.srv-live[data-state="ready"] {
+    background: var(--success-soft);
+    border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+
+.srv-live[data-state="ready"] .srv-live-icon {
+    background: var(--success);
+    color: #fff;
+    animation: srv-pop 360ms var(--ease);
+}
+
+.srv-live .srv-caps {
+    margin-top: 8px;
+}
+
+@keyframes srv-pop {
+    from {
+        transform: scale(0.6);
+        opacity: 0;
+    }
+}
+
+.srv-setup-foot {
+    display: flex;
+    justify-content: flex-end;
+}
+
+/* ---------- '서버' badge on cards the browser can't decode ---------- */
+.srv-badge {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    padding: 0 7px 0 6px;
+    border: none;
+    border-radius: var(--r-full);
+    background: rgba(0, 0, 0, 0.62);
+    backdrop-filter: blur(6px);
+    color: #fff;
+    font: inherit;
+    font-size: 10.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.srv-badge:hover {
+    background: var(--accent);
+    color: var(--on-accent);
+}
+
+.srv-badge:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+/* ---------- Inspector: media info ---------- */
+.srv-media {
+    font-size: var(--fs-sm);
+    color: var(--text-4);
+}
+
+.srv-clipboard {
+    position: fixed;
+    top: -1000px;
+    left: -1000px;
+    opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .srv-dot,
+    .srv-live-icon {
+        animation: none !important;
+    }
+}
