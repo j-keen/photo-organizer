@@ -64,6 +64,20 @@
     background: var(--bg-4);
 }
 
+/* Stable hit targets: thumbnails, mosaics, placeholders and icons change while background work runs. A press on a node
+   that is swapped before the release loses the click in Chrome, so presses always land on the card's own boxes. */
+.card-media > .card-img,
+.card-media > .card-ph,
+.card-media > .card-folder,
+.card-media > .card-mosaic,
+.card-media > .card-empty-badge,
+.card-media > .card-scrub-video,
+.lrow .lc-thumb > *,
+.card svg,
+.lrow svg {
+    pointer-events: none;
+}
+
 .card-img {
     position: absolute;
     inset: 0;
@@ -979,6 +993,93 @@
     transition: opacity var(--dur-fast) var(--ease), visibility 0s;
 }
 
+/* '정렬이 바뀌었어요 · 선택한 곳으로' — a background re-sort moved the focused item off screen; we don't jump */
+.sort-pill {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    z-index: 9;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 34px;
+    padding: 0 4px 0 12px;
+    border-radius: var(--r-full);
+    border: 1px solid var(--line-2);
+    background: var(--bg-1);
+    box-shadow: var(--sh-2);
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    transform: translate(-50%, -6px);
+    pointer-events: none;
+    transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease), visibility 0s linear var(--dur);
+}
+
+.sort-pill.show {
+    opacity: 1;
+    visibility: visible;
+    transform: translate(-50%, 0);
+    pointer-events: auto;
+    transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease), visibility 0s;
+}
+
+.sort-pill .sp-ico {
+    display: inline-flex;
+    color: var(--text-3);
+}
+
+.sort-pill .sp-go {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 26px;
+    padding: 0 10px 0 11px;
+    border: 0;
+    border-radius: var(--r-full);
+    background: var(--accent-soft);
+    color: var(--accent-2);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease);
+}
+
+.sort-pill .sp-go:hover {
+    background: var(--accent);
+    color: var(--on-accent);
+}
+
+.sort-pill .sp-go:focus-visible,
+.sort-pill .sp-x:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.sort-pill.is-down .sp-arrow {
+    transform: rotate(180deg);
+}
+
+.sort-pill .sp-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: 0;
+    border-radius: var(--r-full);
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+}
+
+.sort-pill .sp-x:hover {
+    background: var(--bg-3);
+    color: var(--text);
+}
+
 /* View bar controls (fit + mode) */
 .gv-controls {
     display: flex;
@@ -1287,7 +1388,8 @@ video.ql-media {
     .card-img,
     .mosaic-cell img,
     .card-scrub-video,
-    .type-pill {
+    .type-pill,
+    .sort-pill {
         transition: none;
     }
 
