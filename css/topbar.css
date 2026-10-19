@@ -326,7 +326,7 @@ span.crumb.current:hover {
     overflow: hidden;
 }
 
-@container viewbar (max-width: 860px) {
+@container viewbar (max-width: 720px) {
     .nav-rec-toggle > span:not(.spinner) {
         display: none;
     }
@@ -341,7 +341,7 @@ span.crumb.current:hover {
     }
 }
 
-@container viewbar (max-width: 660px) {
+@container viewbar (max-width: 560px) {
     .vb-count {
         display: none;
     }

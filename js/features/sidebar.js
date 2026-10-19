@@ -65,9 +65,11 @@
 
     const byName = (a, b) => compareNames(P.base(a), P.base(b));
 
+    // Icons requested from core (integration request); until they exist, fall back to the closest built-in
+    const ICON_FALLBACK = { 'chevrons-down-up': 'minus' };
+    const iconName = (name) => (ui.ICONS && !ui.ICONS[name] && ICON_FALLBACK[name] ? ICON_FALLBACK[name] : name);
     function icon(name, opts) {
-        const fallback = { 'list-collapse': 'minus', pin: 'star' };
-        return ui.icon(ui.ICONS && !ui.ICONS[name] && fallback[name] ? fallback[name] : name, opts);
+        return ui.icon(iconName(name), opts);
     }
 
     // Buttons shouldn't keep focus after a mouse click (a later Enter would re-press them instead of opening
@@ -928,9 +930,9 @@
             '-',
             { label: '폴더 찾기', icon: 'search', command: 'nav.filterTree' },
             { label: '현재 폴더 찾아가기', icon: 'eye', action: () => { clearFilter(); tree.reveal(App.state.cwd ?? ''); } },
-            { label: '폴더 모두 접기', icon: 'list-collapse', command: 'nav.collapseTree' },
+            { label: '폴더 모두 접기', icon: iconName('chevrons-down-up'), command: 'nav.collapseTree' },
             { label: '새로 고침', icon: 'refresh', command: 'nav.refreshTree', args: { path: '' } },
-        ].map((it) => (it.icon === 'list-collapse' && !ui.ICONS['list-collapse'] ? { ...it, icon: 'minus' } : it)), { anchor, align: 'end' });
+        ], { anchor, align: 'end' });
     }
 
     // ---------- Keyboard ----------
@@ -1320,7 +1322,7 @@
         },
     });
     App.commands.register({ id: 'nav.refreshTree', title: '폴더 트리 새로 고침', group: '이동', icon: 'refresh', when: ready, run: (a) => refreshTree(a && typeof a.path === 'string' ? a.path : '') });
-    App.commands.register({ id: 'nav.collapseTree', title: '폴더 모두 접기', group: '이동', icon: 'minus', when: ready, run: () => collapseAll() });
+    App.commands.register({ id: 'nav.collapseTree', title: '폴더 모두 접기', group: '이동', icon: iconName('chevrons-down-up'), when: ready, run: () => collapseAll() });
     App.commands.register({
         id: 'nav.toggleCounts',
         title: '폴더 옆 사진·영상 개수 켜고 끄기',
@@ -1350,7 +1352,7 @@
 
             const head = sectionHead('tree', '폴더', [
                 headAction('folder-plus', '새 폴더', () => App.commands.run('nav.newSubfolder', { path: App.state.cwd ?? '' })),
-                headAction('list-collapse', '모두 접기', () => collapseAll()),
+                headAction('chevrons-down-up', '모두 접기', () => collapseAll()),
                 headAction('more', '폴더 트리 설정', (e, b) => treeOptionsMenu(b)),
             ]);
             treeStickyEl = h('div', { class: 'tree-sticky' }, head, filterBox, filterInfo);
