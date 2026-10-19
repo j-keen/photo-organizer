@@ -41,7 +41,8 @@ module.exports = [
             assert.deepEqual(await cardNames(page), ['2024', 'beach.png']);
             await page.keyboard.press('Alt+ArrowUp');
             await page.waitForFunction(() => App.state.cwd === '');
-            assert.equal(await page.evaluate(() => App.select.focus), 'trip', 'returning up focuses the folder we came from');
+            // returning up focuses the folder we came from
+            await page.waitForFunction(() => App.select.focus === 'trip');
             await page.keyboard.press('Alt+ArrowLeft');
             await page.waitForFunction(() => App.state.cwd === 'trip');
             await page.keyboard.press('Alt+ArrowRight');

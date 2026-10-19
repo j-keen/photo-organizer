@@ -125,6 +125,79 @@ module.exports = [
         },
     },
     {
+        name: 'catalog edits are undoable with Ctrl+Z; rapid edits with a coalesceKey collapse into one step',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: SEED });
+            await page.evaluate(() => App.catalog.update('a.png', { rating: 4 }, { label: '별점' }));
+            await page.evaluate(() => {
+                for (const memo of ['h', 'he', 'hel', 'hello']) App.catalog.update('a.png', { memo }, { label: '메모', coalesceKey: 'memo:a.png' });
+            });
+            assert.deepEqual(await page.evaluate(() => App.undo.list().map((e) => e.label)), ['메모', '별점']);
+            await page.click('#gallery-scroll', { position: { x: 5, y: 5 } });
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => App.catalog.get('a.png').memo === '');
+            assert.equal(await page.evaluate(() => App.catalog.get('a.png').rating), 4);
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => App.catalog.get('a.png').rating === 0);
+            await page.keyboard.press('Control+y');
+            await page.waitForFunction(() => App.catalog.get('a.png').rating === 4);
+            // A no-op update doesn't create an undo step
+            await page.evaluate(() => App.catalog.update('a.png', { rating: 4 }));
+            assert.equal(await page.evaluate(() => App.undo.list().length), 1);
+        },
+    },
+    {
+        name: 'Ctrl+Z works inside the viewer too',
+        async run({ openApp, assert, card }) {
+            const { page } = await openApp({ seed: SEED });
+            await (await card(page, 'a.png')).dblclick();
+            await page.waitForSelector('#viewer:not([hidden]) .vw-media');
+            await page.evaluate(() => App.catalog.update('a.png', { label: 'red' }, { label: '색상 라벨' }));
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => App.catalog.get('a.png').label === null);
+            assert.ok(await page.isVisible('#viewer'), 'viewer stays open');
+        },
+    },
+    {
+        name: 'created and overwritten files can be undone and redone',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: SEED });
+            const p = await page.evaluate(() => App.fs.createFile('trip', 'note.png', new Blob(['new'])));
+            assert.equal(p, 'trip/note.png');
+            await page.evaluate(() => App.undo.undo());
+            assert.ok(!(await page.evaluate(() => window.__opfs.exists('trip/note.png'))));
+            await page.evaluate(() => App.undo.redo());
+            assert.ok(await page.evaluate(() => window.__opfs.exists('trip/note.png')));
+
+            const before = await page.evaluate(() => window.__opfs.read('b.png'));
+            await page.evaluate(() => App.fs.overwrite('b.png', new Blob(['changed'])));
+            assert.equal(await page.evaluate(() => window.__opfs.read('b.png')), 'changed');
+            assert.ok((await page.evaluate(() => App.fs.listTrash())).some((i) => i.reason === 'overwrite'), 'previous version kept in trash');
+            await page.evaluate(() => App.undo.undo());
+            assert.equal(await page.evaluate(() => window.__opfs.read('b.png')), before);
+            await page.evaluate(() => App.undo.redo());
+            assert.equal(await page.evaluate(() => window.__opfs.read('b.png')), 'changed');
+        },
+    },
+    {
+        name: 'undo history lists actions and undoTo rewinds several steps',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: SEED });
+            await page.evaluate(async () => {
+                await App.fs.mkdir('', 'one');
+                await App.fs.move(['a.png'], 'one');
+                App.catalog.update('b.png', { rating: 1 }, { label: '별점' });
+            });
+            const labels = await page.evaluate(() => App.undo.list().map((e) => e.label));
+            assert.equal(labels.length, 3);
+            assert.equal(labels[0], '별점');
+            await page.evaluate(() => App.undo.undoTo(3));
+            assert.ok(await page.evaluate(() => window.__opfs.exists('a.png')));
+            assert.ok(!(await page.evaluate(() => window.__opfs.exists('one'))));
+            assert.equal(await page.evaluate(() => App.undo.list({ redo: true }).length), 3);
+        },
+    },
+    {
         name: 'catalog persists across reloads and v1 sidecars are imported',
         async run({ openApp, assert, waitIdle }) {
             const { page } = await openApp({ seed: SEED });
