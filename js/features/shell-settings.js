@@ -572,6 +572,7 @@
                 box.setAttribute('aria-label', '설정');
                 dlg = { close, nav, title, desc, scroll, current: null };
                 closeBtn.addEventListener('click', () => close(null));
+                App.shell.passUndoKeys(box);
                 box.addEventListener('keydown', (e) => {
                     if (App.commands.comboFromEvent(e) === 'Mod+,') {
                         e.preventDefault();
@@ -709,6 +710,7 @@
                 box.classList.add('kb-dialog');
                 box.setAttribute('aria-label', '단축키');
                 helpState = { search, close };
+                App.shell.passUndoKeys(box);
                 renderShortcuts(scroll, { query });
                 search.focus();
             },

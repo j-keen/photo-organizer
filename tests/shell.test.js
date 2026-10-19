@@ -21,6 +21,17 @@ async function palTitles(page) {
     return page.$$eval('.pal-item .pal-title', (els) => els.map((e) => e.textContent));
 }
 
+/**
+ * Reload like a browser restart: flush pending catalog writes first (a reload mid-write would leave a torn JSON),
+ * then point the fake picker / __opfs helpers back at the same seeded folder (harness __useExistingWorkspace).
+ */
+async function restart(page) {
+    await page.evaluate(() => (App.fs.ready && App.catalog?.flush ? App.catalog.flush() : null));
+    await page.reload();
+    await page.waitForFunction(() => window.App && typeof window.__useExistingWorkspace === 'function');
+    await page.evaluate(() => window.__useExistingWorkspace());
+}
+
 async function closeDialogs(page) {
     await page.keyboard.press('Escape');
     await page.waitForFunction(() => !document.querySelector('.dialog-backdrop'));
@@ -53,8 +64,14 @@ module.exports = [
             // after an undoable action, undo shows up
             await page.evaluate(() => App.fs.mkdir('', 'new-folder'));
             await openPalette(page);
-            await page.keyboard.type('실행 취소');
-            await page.waitForFunction(() => [...document.querySelectorAll('.pal-item .pal-title')].some((e) => e.textContent === '실행 취소'));
+            // the undo row comes first and says what it will undo
+            await page.waitForFunction(() => /^실행 취소: /.test(document.querySelector('.pal-item .pal-title')?.textContent || ''));
+            assert.match(await page.$eval('.pal-item .pal-title', (e) => e.textContent), /new-folder/);
+            await page.keyboard.press('Enter');
+            await page.waitForFunction(() => !App.palette.isOpen && !App.undo.canUndo() && App.undo.canRedo());
+            await openPalette(page);
+            await page.waitForFunction(() => /^다시 실행: /.test(document.querySelector('.pal-item .pal-title')?.textContent || ''));
+            await closeDialogs(page);
         },
     },
     {
@@ -90,7 +107,8 @@ module.exports = [
             await openPalette(page);
             await page.keyboard.type('ㄱㅅㅎ');
             await page.waitForFunction(() => [...document.querySelectorAll('.pal-item .pal-title')].some((e) => e.textContent === '김수현.png'));
-            await page.click('.pal-item:has(.pal-title:text-is("김수현.png"))', { modifiers: ['Shift'] });
+            // titles carry <mark> highlights, so match the row by its title text rather than an exact-text selector
+            await page.locator('.pal-item', { has: page.locator('.pal-title', { hasText: /^김수현\.png$/ }) }).first().click({ modifiers: ['Shift'] });
             await page.waitForFunction(() => App.state.cwd === '배우' && App.select.list().join() === '배우/김수현.png');
             assert.ok(await page.isHidden('#viewer'), 'Shift+Enter/click reveals without opening the viewer');
 
@@ -238,7 +256,9 @@ module.exports = [
                 await page.click(`.shs-tab[data-page="${id}"]`);
                 await page.waitForFunction((p) => document.querySelector('.shs-tab.on')?.dataset.page === p && document.querySelector('.shs-page-body').children.length > 0, id);
             }
-            await page.selectOption('select[aria-label="보관 기간"]', '0').catch(() => {});
+            await page.click('.shs-tab[data-page="trash"]');
+            await page.selectOption('select[aria-label="보관 기간"]', '0');
+            assert.equal(await page.evaluate(() => App.settings.get('trash.retentionDays')), 0);
             // "Windows 설정" follows the OS theme and a manual toggle switches it off again
             await page.click('.shs-tab[data-page="general"]');
             await page.click('.shs-seg button[data-value="system"]');
@@ -264,7 +284,7 @@ module.exports = [
                 App.settings.set('view.sort', { key: 'name', dir: 'asc' });
                 App.settings.set('view.type', 'all');
             });
-            await page.reload();
+            await restart(page);
             await page.waitForFunction(() => App.fs.ready && App.state.cwd === '여행/제주' && App.view.source.type === 'folder', null, { timeout: 15000 });
             await page.waitForFunction(() => App.select.list().join() === '여행/제주/바다.png');
             assert.ok(await page.isHidden('#welcome'));
@@ -274,7 +294,7 @@ module.exports = [
             assert.equal(await page.evaluate(() => document.title), '제주 — ws — Fluid Identity');
             // turning auto-reopen off shows a one-click resume card instead
             await page.evaluate(() => App.settings.set('workspace.autoReopen', false));
-            await page.reload();
+            await restart(page);
             await page.waitForSelector('#welcome:not([hidden]) .wl-resume');
             assert.ok(!(await page.evaluate(() => App.fs.ready)));
             await page.click('.wl-resume-btn');
@@ -297,7 +317,7 @@ module.exports = [
                     return 'granted';
                 };
             });
-            await page.reload();
+            await restart(page);
             await page.waitForSelector('#welcome:not([hidden]) .wl-resume');
             assert.match(await page.textContent('.wl-resume'), /ws/);
             assert.match(await page.textContent('.wl-resume'), /방문할 때마다 허용/);
@@ -496,11 +516,67 @@ module.exports = [
         },
     },
     {
+        name: 'undo history: Ctrl+Alt+Z lists recent actions with times, click undoes back to there, redo list brings them back',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: SEED });
+            await page.evaluate(async () => {
+                await App.fs.mkdir('', 'h-one');
+                await App.fs.mkdir('', 'h-two');
+                await App.catalog.update('a-photo.png', { rating: 4 }, { label: '별점 4' });
+                await App.fs.mkdir('', 'h-three');
+            });
+            // the status bar says what Ctrl+Z will undo next
+            await page.waitForFunction(() => /h-three/.test(document.querySelector('.sb-undo')?.textContent || ''));
+            await page.keyboard.press('Control+Alt+z');
+            await page.waitForSelector('.hist-dialog .hist-row');
+            const rows = await page.$$eval('.hist-row.undo', (els) => els.map((e) => [e.querySelector('.hist-label').textContent, e.querySelector('.hist-time').textContent]));
+            assert.equal(rows.length, 4);
+            assert.match(rows[0][0], /h-three/);
+            assert.match(rows[1][0], /별점/);
+            assert.equal(rows[0][1], '방금 전');
+            // click the 3rd newest: undoes h-three, the rating and h-two in one go
+            await page.click('.hist-row.undo[data-index="2"]');
+            await page.waitForFunction(() => App.undo.list().length === 1 && App.undo.list({ redo: true }).length === 3);
+            assert.equal(await page.evaluate(() => __opfs.exists('h-two')), false);
+            assert.equal(await page.evaluate(() => __opfs.exists('h-one')), true);
+            assert.equal(await page.evaluate(() => App.catalog.get('a-photo.png').rating), 0);
+            await page.waitForFunction(() => document.querySelectorAll('.hist-row.redo').length === 3 && !document.querySelector('.hist-list.busy'));
+            // redo the next two (h-two, rating) from the redo list
+            await page.click('.hist-row.redo[data-index="1"]');
+            await page.waitForFunction(() => App.undo.list().length === 3 && App.undo.list({ redo: true }).length === 1);
+            assert.equal(await page.evaluate(() => App.catalog.get('a-photo.png').rating), 4);
+            // Ctrl+Z inside the dialog undoes the newest step
+            await page.waitForFunction(() => !document.querySelector('.hist-list.busy'));
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => App.undo.list().length === 2);
+            await page.keyboard.press('Escape');
+            await page.waitForFunction(() => !document.querySelector('.hist-dialog'));
+            // also reachable from the palette
+            await openPalette(page);
+            await page.keyboard.type('실행 취소 기록');
+            await page.waitForFunction(() => document.querySelector('.pal-item.active .pal-title')?.textContent === '실행 취소 기록');
+            await page.keyboard.press('Enter');
+            await page.waitForSelector('.hist-dialog .hist-row');
+            await page.keyboard.press('Escape');
+            await page.waitForFunction(() => !document.querySelector('.hist-dialog'));
+            // Ctrl+Z keeps working while the palette (empty box) or settings are open
+            await openPalette(page);
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => App.undo.list().length === 1);
+            await closeDialogs(page);
+            await page.keyboard.press('Control+,');
+            await page.waitForSelector('.shs-dialog .shs-tab.on');
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => App.undo.list().length === 0);
+            await closeDialogs(page);
+        },
+    },
+    {
         name: 'shell shortcuts never collide with other commands in the same scope',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: SEED });
             const clashes = await page.evaluate(() => {
-                const mine = ['palette.open', 'settings.open', 'help.shortcuts', 'view.zen', 'view.toggleSidebar', 'view.toggleInspector', 'workspace.open'];
+                const mine = ['palette.open', 'settings.open', 'help.shortcuts', 'edit.history', 'view.zen', 'view.toggleSidebar', 'view.toggleInspector', 'workspace.open'];
                 const out = [];
                 const all = App.commands.list();
                 for (const id of mine) {

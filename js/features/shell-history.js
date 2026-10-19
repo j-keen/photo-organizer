@@ -1,7 +1,7 @@
 /*
  * Undo history — '실행 취소 기록' (edit.history, Mod+Alt+Z): every undoable action with its time; click one to undo
  * back to (and including) it, or redo forward again. Plus a status-bar hint showing what Ctrl+Z will undo next,
- * and Ctrl+Z / Ctrl+Shift+Z inside the viewer when nothing else handles them there.
+ * (Ctrl+Z / Ctrl+Shift+Z themselves are core global commands; inside this dialog they act on the list.)
  *
  *   App.history.open() · close() · isOpen
  *   App.history.undoList() / redoList()   [{ label, time }] newest first (App.undo.list when the core has it)
@@ -289,21 +289,6 @@
             view = null;
         });
     }
-
-    // =====================================================================================================
-    // Ctrl+Z / Ctrl+Shift+Z inside the viewer (when the core's undo commands only listen in the main view)
-    // =====================================================================================================
-    function handledElsewhere(selfId, combo, layer) {
-        for (const c of App.commands.list()) {
-            if (c.id === selfId || !c.keys.includes(combo)) continue;
-            if (c.scope !== 'global' && c.scope !== layer) continue;
-            if (App.commands.isEnabled(c.id)) return true;
-        }
-        return false;
-    }
-
-    App.commands.register({ id: 'edit.viewerUndo', title: '실행 취소', keys: ['Mod+Z'], scope: 'viewer', hidden: true, palette: false, when: () => App.undo.canUndo() && !handledElsewhere('edit.viewerUndo', 'Mod+Z', 'viewer'), run: () => App.undo.undo() });
-    App.commands.register({ id: 'edit.viewerRedo', title: '다시 실행', keys: ['Mod+Shift+Z', 'Mod+Y'], scope: 'viewer', hidden: true, palette: false, when: () => App.undo.canRedo() && !handledElsewhere('edit.viewerRedo', 'Mod+Shift+Z', 'viewer'), run: () => App.undo.redo() });
 
     // =====================================================================================================
     // Status bar: what Ctrl+Z will undo next

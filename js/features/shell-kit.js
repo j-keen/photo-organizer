@@ -4,6 +4,7 @@
  *   App.shell.relTime(ms)        '방금 전' · '3분 전' · '어제' · '2026. 10. 3.'
  *   App.shell.stamp(date)        'YYYYMMDD-HHMMSS' (file-name friendly)
  *   App.shell.isAutomated()      true under Playwright/WebDriver — first-run tips stay out of the way
+ *   App.shell.passUndoKeys(box)  Ctrl+Z / Ctrl+Y keep working inside a shell dialog (outside text fields)
  * Extra icons used by the shell are added to App.ui.ICONS (only when the name is still free).
  */
 (() => {
@@ -67,5 +68,21 @@
         return el;
     }
 
-    App.shell = { relTime, stamp, dayStamp, isAutomated, addStatus };
+    /**
+     * Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y inside one of the shell's dialogs (settings, backups...): the core key handler
+     * stays out of dialogs, so forward them to the global undo commands. Text fields keep their native undo.
+     */
+    function passUndoKeys(box) {
+        box.addEventListener('keydown', (e) => {
+            if (e.defaultPrevented || e.isComposing || App.util.isTypingTarget(e.target)) return;
+            const combo = App.commands.comboFromEvent(e);
+            const id = combo === 'Mod+Z' ? 'edit.undo' : combo === 'Mod+Shift+Z' || combo === 'Mod+Y' ? 'edit.redo' : null;
+            if (!id) return;
+            e.preventDefault();
+            e.stopPropagation();
+            App.commands.run(id);
+        });
+    }
+
+    App.shell = { relTime, stamp, dayStamp, isAutomated, addStatus, passUndoKeys };
 })();

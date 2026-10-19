@@ -1284,6 +1284,12 @@
             close();
             return;
         }
+        // Empty box: Ctrl+Z / Ctrl+Y act on the library (there's no text to undo), and the list refreshes in place
+        if (!e.target.value && !e.isComposing && (combo === 'Mod+Z' || combo === 'Mod+Shift+Z' || combo === 'Mod+Y')) {
+            e.preventDefault();
+            Promise.resolve(App.commands.run(combo === 'Mod+Z' ? 'edit.undo' : 'edit.redo')).then(() => state && render());
+            return;
+        }
         switch (e.key) {
             case 'ArrowDown':
                 e.preventDefault();
