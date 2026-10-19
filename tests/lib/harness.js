@@ -157,6 +157,15 @@ function initScript() {
             else if (v.image) await writePath(root, rel, await makeImage(v.image));
             else if (v.video) await writePath(root, rel, await makeVideo(v.video));
             else if (v.bytes) await writePath(root, rel, new Uint8Array(v.bytes));
+            else if (v.bulk) {
+                // { bulk: { count, image: {...}, pattern: 'IMG_{n}.png' } } — many small files sharing one generated blob
+                const blob = await makeImage({ w: 48, h: 36, ...(v.bulk.image || {}) });
+                const pattern = v.bulk.pattern || 'IMG_{n}.png';
+                for (let i = 0; i < v.bulk.count; i++) {
+                    const name2 = pattern.replace('{n}', String(i + 1).padStart(5, '0'));
+                    await writePath(root, rel.replace(/\/?$/, '/') + name2, blob);
+                }
+            }
         }
         window.__fakeRoot = root;
         return true;

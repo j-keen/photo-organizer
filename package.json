@@ -5,7 +5,8 @@
   "description": "Local photo & video organizer (File System Access API + optional local Python server)",
   "scripts": {
     "test": "node tests/run.js",
-    "serve": "node tests/serve.js"
+    "serve": "node tests/serve.js",
+    "build": "node tools/build-single.js"
   },
   "devDependencies": {
     "playwright": "1.49.1"
