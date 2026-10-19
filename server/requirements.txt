@@ -1,0 +1,8 @@
+# Fluid Identity local server — tested versions (Python 3.10–3.13 on Windows; macOS/Linux work too)
+fastapi==0.146.0
+uvicorn[standard]==0.54.0
+numpy==2.5.4
+pillow==13.0.0
+pillow-heif==1.8.1
+faiss-cpu==1.15.1
+imageio-ffmpeg==0.6.0
