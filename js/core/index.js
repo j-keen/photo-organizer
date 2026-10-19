@@ -24,6 +24,8 @@
     const index = {
         ready: false,
         scanning: false,
+        /** folders that contain v1 "<file>.txt" memo sidecars (for the whole-library v1 import) */
+        sidecarFolders: [],
 
         get items() {
             return [...byPath.values()];
@@ -55,6 +57,7 @@
             index.scanning = true;
             const found = new Map();
             const folders = new Set(['']);
+            const sidecarDirs = new Set();
             const job = App.jobs.start({ title: '라이브러리 색인 중', total: 0, cancellable: false });
             const queue = [''];
             let scannedDirs = 0;
@@ -77,6 +80,7 @@
                             found.set(e.path, e);
                         }
                     }
+                    if (entries.sidecars?.length) sidecarDirs.add(dir);
                     scannedDirs++;
                     if (scannedDirs % 10 === 0) {
                         job.update(found.size, { detail: `${found.size}개 파일` });
@@ -90,6 +94,7 @@
             if (token !== scanToken) return;
             byPath = found;
             folderSet = folders;
+            index.sidecarFolders = [...sidecarDirs];
             index.scanning = false;
             index.ready = true;
             readyResolve();
@@ -110,9 +115,11 @@
             const words = text.toLowerCase().split(/\s+/).filter(Boolean);
             if (!words.length) return [];
             const out = [];
+            const chipName = (id) => App.chipset?.labelOf?.(id) || App.chipset?.nameOf?.(id) || '';
             for (const e of byPath.values()) {
                 const meta = App.catalog.peek(e.path);
-                const hay = (e.path + ' ' + (meta?.memo || '') + ' ' + (meta?.legacyTags || []).join(' ')).toLowerCase();
+                const chips = meta?.chips?.length ? meta.chips.map(chipName).join(' ') : '';
+                const hay = (e.path + ' ' + (meta?.memo || '') + ' ' + (meta?.legacyTags || []).join(' ') + ' ' + chips).toLowerCase();
                 if (words.every((w) => hay.includes(w))) {
                     out.push(e);
                     if (out.length >= limit) break;

@@ -198,6 +198,144 @@ module.exports = [
         },
     },
     {
+        name: 'shortcuts work with the Korean IME (jamo keys) and the literal + key',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: SEED });
+            const hits = await page.evaluate(() => {
+                const hits = [];
+                App.commands.register({ id: 'test.altR', title: 't', keys: 'Alt+R', run: () => hits.push('altR') });
+                App.commands.register({ id: 'test.j', title: 't', keys: 'J', run: () => hits.push('j') });
+                App.commands.register({ id: 'test.plus', title: 't', keys: 'Mod++', run: () => hits.push('plus') });
+                const fire = (init) => document.getElementById('gallery-scroll').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
+                fire({ key: 'ㄱ', code: 'KeyR', altKey: true });
+                fire({ key: 'ㅓ', code: 'KeyJ' });
+                fire({ key: 'Process', code: 'KeyJ' });
+                fire({ key: '+', code: 'Equal', ctrlKey: true, shiftKey: true });
+                return hits;
+            });
+            assert.deepEqual(hits, ['altR', 'j', 'j', 'plus']);
+            assert.equal(await page.evaluate(() => App.commands.displayCombo('Mod++')), 'Ctrl++');
+        },
+    },
+    {
+        name: 'nested dialogs: Esc closes only the top one',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: SEED });
+            await page.evaluate(() => {
+                window.__d1 = App.ui.dialog({ title: 'outer', body: 'a', actions: [{ label: 'ok', value: 1, kind: 'primary' }] });
+                window.__d2 = App.ui.dialog({ title: 'inner', body: 'b', actions: [{ label: 'ok', value: 2, kind: 'primary' }] });
+            });
+            await page.keyboard.press('Escape');
+            assert.equal(await page.locator('.dialog').count(), 1);
+            assert.equal(await page.textContent('.dialog-title'), 'outer');
+            await page.keyboard.press('Escape');
+            assert.equal(await page.locator('.dialog').count(), 0);
+        },
+    },
+    {
+        name: 'renameMany swaps names in one step and undo restores them',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: SEED });
+            await page.evaluate(() => App.catalog.update('a.png', { memo: 'was a' }, { undoable: false }));
+            const before = await page.evaluate(async () => [await window.__opfs.read('a.png'), await window.__opfs.read('b.png')]);
+            await page.evaluate(() => App.fs.renameMany([{ path: 'a.png', name: 'b.png' }, { path: 'b.png', name: 'a.png' }]));
+            assert.equal(await page.evaluate(() => window.__opfs.read('b.png')), before[0]);
+            assert.equal(await page.evaluate(() => App.catalog.get('b.png').memo), 'was a');
+            assert.equal(await page.evaluate(() => App.undo.list().length), 1);
+            assert.deepEqual(await page.evaluate(() => window.__opfs.list('')), ['.fluid-organizer/', 'a.png', 'b.png', 'old.png', 'old.png.txt', 'trip/']);
+            await page.evaluate(() => App.undo.undo());
+            assert.equal(await page.evaluate(() => window.__opfs.read('a.png')), before[0]);
+            assert.equal(await page.evaluate(() => App.catalog.get('a.png').memo), 'was a');
+            const err = await page.evaluate(() => App.fs.renameMany([{ path: 'a.png', name: 'old.png' }]).then(() => null, (e) => e.code));
+            assert.equal(err, 'EEXIST');
+        },
+    },
+    {
+        name: 'move with onConflict: skip / replace, and undo brings the replaced file back',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: { ...SEED, 'trip/a.png': { image: { label: 'old A' } }, 'trip/b.png': { image: {} } } });
+            const oldA = await page.evaluate(() => window.__opfs.read('trip/a.png'));
+            const res = await page.evaluate(async () => {
+                const seen = [];
+                const r = await App.fs.move(['a.png', 'b.png'], 'trip', {
+                    onConflict: async (conflicts) => {
+                        seen.push(...conflicts.map((c) => c.name));
+                        return new Map([['a.png', 'replace'], ['b.png', 'skip']]);
+                    },
+                });
+                return { seen, moved: r.map((x) => x.to) };
+            });
+            assert.deepEqual(res.seen.sort(), ['a.png', 'b.png']);
+            assert.deepEqual(res.moved, ['trip/a.png']);
+            assert.ok(await page.evaluate(() => window.__opfs.exists('b.png')), 'skipped item stays');
+            await page.evaluate(() => App.undo.undo());
+            assert.ok(await page.evaluate(() => window.__opfs.exists('a.png')));
+            assert.equal(await page.evaluate(() => window.__opfs.read('trip/a.png')), oldA, 'replaced file restored');
+            const cancelled = await page.evaluate(() => App.fs.move(['a.png'], 'trip', { onConflict: async () => null }).then((r) => r.cancelled));
+            assert.equal(cancelled, true);
+        },
+    },
+    {
+        name: 'a failing item does not abort the rest of a batch',
+        allowErrors: [/move failed|찾을 수 없어요/],
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: SEED });
+            const r = await page.evaluate(async () => {
+                const res = await App.fs.move(['a.png', 'ghost.png', 'b.png'], 'trip');
+                return { moved: res.map((x) => x.to), failed: res.failed.map((f) => f.path) };
+            });
+            assert.deepEqual(r.moved, ['trip/a.png', 'trip/b.png']);
+            assert.deepEqual(r.failed, ['ghost.png']);
+            await page.evaluate(() => App.undo.undo());
+            assert.ok(await page.evaluate(() => window.__opfs.exists('a.png') && window.__opfs.exists('b.png')));
+        },
+    },
+    {
+        name: 'trash undo/redo/undo cycles keep working',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: SEED });
+            await page.evaluate(() => App.fs.trash(['a.png'], { silent: true }));
+            for (let i = 0; i < 2; i++) {
+                await page.evaluate(() => App.undo.undo());
+                assert.ok(await page.evaluate(() => window.__opfs.exists('a.png')), `restored (cycle ${i})`);
+                await page.evaluate(() => App.undo.redo());
+                assert.ok(!(await page.evaluate(() => window.__opfs.exists('a.png'))), `trashed again (cycle ${i})`);
+            }
+            assert.equal((await page.evaluate(() => App.fs.listTrash())).length, 1);
+        },
+    },
+    {
+        name: 'an empty JSON file (interrupted first write) is treated as missing',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: { ...SEED, '.fluid-organizer/chipsets.json': '' } });
+            assert.equal(await page.evaluate(() => App.fs.readJSON('.fluid-organizer/chipsets.json', 'fallback')), 'fallback');
+            assert.equal(await page.evaluate(() => App.wsdata.read('chipsets', 'fb')), 'fb');
+        },
+    },
+    {
+        name: 'nav load hooks, history jump and chip names in search',
+        async run({ openApp, assert, cardNames }) {
+            const { page } = await openApp({ seed: SEED });
+            await page.evaluate(() => {
+                App.nav.loadHooks.push((p, entries) => (p === 'trip' ? { entries: entries.filter((e) => e.kind === 'dir'), source: { title: 'hooked' } } : null));
+            });
+            await page.evaluate(() => App.nav.go('trip'));
+            assert.deepEqual(await cardNames(page), ['inner']);
+            assert.equal(await page.evaluate(() => App.view.source.title), 'hooked');
+            await page.evaluate(() => App.nav.go('trip/inner'));
+            await page.evaluate(() => App.nav.jump(-2));
+            await page.waitForFunction(() => App.state.cwd === '');
+            assert.equal(await page.evaluate(() => App.nav.fwd.length), 2);
+            await page.waitForFunction(() => App.index.ready);
+            const hits = await page.evaluate(() => {
+                window.App.chipset = window.App.chipset || { labelOf: (id) => (id === 'c-kim' ? '배우 › 김수현' : '') };
+                App.catalog.update('b.png', { chips: ['c-kim'] }, { undoable: false });
+                return App.index.search('김수현').map((e) => e.path);
+            });
+            assert.deepEqual(hits, ['b.png']);
+        },
+    },
+    {
         name: 'catalog persists across reloads and v1 sidecars are imported',
         async run({ openApp, assert, waitIdle }) {
             const { page } = await openApp({ seed: SEED });

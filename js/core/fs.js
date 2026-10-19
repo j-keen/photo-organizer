@@ -290,7 +290,10 @@
 
         async readJSON(p, fallback = null) {
             try {
-                return JSON.parse(await this.readText(p));
+                const text = await this.readText(p);
+                // A 0-byte file is what an interrupted *first* write leaves behind — treat it as missing
+                if (!text.trim()) return fallback;
+                return JSON.parse(text);
             } catch (e) {
                 if (e.code === 'ENOENT') return fallback;
                 if (e instanceof SyntaxError) {
@@ -376,17 +379,40 @@
             this.emitChange({ type: 'create', paths: [p], dirs: [dirPath] });
             if (undoable) {
                 let ids = null;
+                let current = p;
                 App.undo.push({
                     label: label || `"${finalName}" 만들기`,
                     undo: async () => {
-                        ids = await this.trash([p], { undoable: false, silent: true });
+                        ids = await this.trash([current], { undoable: false, silent: true });
                     },
                     redo: async () => {
-                        if (ids) await this.restore(ids);
+                        if (!ids) return;
+                        const restored = await this.restore(ids);
+                        if (restored[0]) current = restored[0];
                     },
                 });
             }
             return p;
+        },
+
+        /**
+         * Keep a copy of a file (or of `data`) in the app trash — e.g. the original before an in-place edit.
+         * The copy shows up in the trash panel and can be restored next to the file. Returns the trash item id.
+         */
+        async trashCopy(p, { name, data, reason = 'copy' } = {}) {
+            const batchDir = P.join(TRASH_DIR, 'c' + Date.now().toString(36));
+            const finalName = name || P.base(p);
+            const target = P.join(batchDir, finalName);
+            if (data != null) await this.backend.write(target, data);
+            else await this.backend.copy(p, batchDir, finalName);
+            const st = await this.backend.stat(target);
+            const meta = App.catalog?.peek(p);
+            const item = { id: App.util.uid('t'), name: finalName, kind: 'file', size: st.size, originalPath: p, trashPath: target, deletedAt: Date.now(), reason, catalog: meta ? { '': JSON.parse(JSON.stringify(meta)) } : null };
+            await this._updateTrashManifest((m) => {
+                m.items.push(item);
+            });
+            App.bus.emit('trash:changed');
+            return item.id;
         },
 
         /**
@@ -458,11 +484,45 @@
         },
 
         /**
-         * Move paths into destDir. Name clashes get " (2)" suffixes. Returns [{ from, to }] for moved items.
-         * opts: { undoable = true, label }
+         * Ask the caller how to resolve name clashes before a move/copy.
+         * onConflict(conflicts: [{ src, name, dest, isDir }]) -> Map(src -> 'keep' | 'skip' | 'replace') | null (cancel)
+         * Without onConflict every clash keeps both (numbered name). Returns null when the user cancelled.
          */
-        async move(paths, destDir, { undoable = true, label } = {}) {
+        async _planConflicts(paths, destDir, onConflict) {
+            if (!onConflict) return new Map();
+            const conflicts = [];
+            for (const src of paths) {
+                if (P.parent(src) === destDir || P.isInside(destDir, src)) continue;
+                const dest = P.join(destDir, P.base(src));
+                if (await this.backend.exists(dest)) {
+                    const st = await this.backend.stat(src).catch(() => null);
+                    conflicts.push({ src, name: P.base(src), dest, isDir: st?.kind === 'dir' });
+                }
+            }
+            if (!conflicts.length) return new Map();
+            const decisions = await onConflict(conflicts);
+            return decisions || null;
+        },
+
+        _reportFailures(failed, verb) {
+            if (!failed.length) return;
+            const first = failed[0];
+            const more = failed.length > 1 ? ` 외 ${failed.length - 1}개` : '';
+            App.ui?.toast(`"${P.base(first.path)}"${more}을(를) ${verb}지 못했어요: ${first.error.message || first.error}`, { type: 'error' });
+        },
+
+        /**
+         * Move paths into destDir. Returns [{ from, to }] for moved items (+ `.failed` = [{ path, error }]).
+         * Name clashes get " (2)" suffixes unless opts.onConflict decides (see _planConflicts).
+         * One failing item never aborts the rest: everything that moved is still announced and undoable.
+         * opts: { undoable = true, label, onConflict }
+         */
+        async move(paths, destDir, { undoable = true, label, onConflict } = {}) {
             const results = [];
+            const failed = [];
+            const replacedIds = [];
+            const decisions = await this._planConflicts(paths, destDir, onConflict);
+            if (!decisions) return Object.assign([], { failed, cancelled: true });
             const reserved = new Set();
             const job = paths.length > 20 ? App.jobs?.start({ title: '이동하는 중', total: paths.length }) : null;
             try {
@@ -473,18 +533,30 @@
                         App.ui?.toast(`"${P.base(src)}"을(를) 자기 안으로 옮길 수 없어요`, { type: 'warning' });
                         continue;
                     }
-                    const st = await this.backend.stat(src);
-                    const name = await this.uniqueName(destDir, P.base(src), { isDir: st.kind === 'dir', reserved });
-                    await this.backend.move(src, destDir, name);
-                    if (st.kind === 'file') await this._moveSidecar(src, destDir, name);
-                    const to = P.join(destDir, name);
-                    App.catalog?.relocate(src, to);
-                    results.push({ from: src, to });
-                    job?.update(results.length);
+                    try {
+                        const decision = decisions.get(src) || 'keep';
+                        if (decision === 'skip') continue;
+                        const st = await this.backend.stat(src);
+                        if (decision === 'replace') {
+                            replacedIds.push(...(await this.trash([P.join(destDir, P.base(src))], { undoable: false, silent: true })));
+                        }
+                        const name = await this.uniqueName(destDir, P.base(src), { isDir: st.kind === 'dir', reserved });
+                        await this.backend.move(src, destDir, name);
+                        if (st.kind === 'file') await this._moveSidecar(src, destDir, name);
+                        const to = P.join(destDir, name);
+                        App.catalog?.relocate(src, to);
+                        results.push({ from: src, to });
+                    } catch (e) {
+                        console.error('[fs] move failed', src, e);
+                        failed.push({ path: src, error: e });
+                    }
+                    job?.update(results.length + failed.length);
                 }
             } finally {
                 job?.finish();
             }
+            results.failed = failed;
+            this._reportFailures(failed, '옮기');
             if (!results.length) return results;
             this.emitChange({
                 type: 'move',
@@ -495,6 +567,7 @@
             });
             if (undoable) {
                 const n = results.length;
+                let replaced = replacedIds;
                 App.undo.push({
                     label: label || (n === 1 ? `"${P.base(results[0].from)}" 이동` : `${n}개 이동`),
                     undo: async () => {
@@ -509,46 +582,148 @@
                                 }
                             }
                         }
+                        if (replaced.length) await this.restore(replaced);
                     },
-                    redo: () => this.move(results.map((r) => r.from), destDir, { undoable: false }),
+                    redo: async () => {
+                        const again = await this.move(results.map((r) => r.from), destDir, { undoable: false, onConflict: onConflict ? async () => decisions : undefined });
+                        replaced = again.replacedIds || [];
+                    },
                 });
             }
+            results.replacedIds = replacedIds;
             return results;
         },
 
-        /** Copy paths into destDir (catalog metadata is copied too). Returns [{ from, to }]. */
-        async copy(paths, destDir, { undoable = true } = {}) {
+        /** Copy paths into destDir (catalog metadata is copied too). Returns [{ from, to }] (+ `.failed`). opts: { undoable, onConflict } */
+        async copy(paths, destDir, { undoable = true, onConflict } = {}) {
             const results = [];
+            const failed = [];
+            const replacedIds = [];
+            const decisions = await this._planConflicts(paths, destDir, onConflict);
+            if (!decisions) return Object.assign([], { failed, cancelled: true });
             const reserved = new Set();
             const job = paths.length > 5 ? App.jobs?.start({ title: '복사하는 중', total: paths.length }) : null;
             try {
                 for (const src of paths) {
                     if (job?.cancelled) break;
                     if (P.isInside(destDir, src)) continue;
-                    const st = await this.backend.stat(src);
-                    const name = await this.uniqueName(destDir, P.base(src), { isDir: st.kind === 'dir', reserved });
-                    await this.backend.copy(src, destDir, name);
-                    const to = P.join(destDir, name);
-                    App.catalog?.copy(src, to);
-                    results.push({ from: src, to });
-                    job?.update(results.length);
+                    try {
+                        const decision = decisions.get(src) || 'keep';
+                        if (decision === 'skip') continue;
+                        const st = await this.backend.stat(src);
+                        if (decision === 'replace') {
+                            replacedIds.push(...(await this.trash([P.join(destDir, P.base(src))], { undoable: false, silent: true })));
+                        }
+                        const name = await this.uniqueName(destDir, P.base(src), { isDir: st.kind === 'dir', reserved });
+                        await this.backend.copy(src, destDir, name);
+                        const to = P.join(destDir, name);
+                        App.catalog?.copy(src, to);
+                        results.push({ from: src, to });
+                    } catch (e) {
+                        console.error('[fs] copy failed', src, e);
+                        failed.push({ path: src, error: e });
+                    }
+                    job?.update(results.length + failed.length);
                 }
             } finally {
                 job?.finish();
             }
+            results.failed = failed;
+            this._reportFailures(failed, '복사하');
             if (!results.length) return results;
             this.emitChange({ type: 'copy', paths: results.map((r) => r.to), from: results.map((r) => r.from), to: results.map((r) => r.to), dirs: [destDir] });
             if (undoable) {
+                let copies = results.map((r) => r.to);
+                let replaced = replacedIds;
                 App.undo.push({
                     label: results.length === 1 ? `"${P.base(results[0].from)}" 복사` : `${results.length}개 복사`,
-                    undo: () => this.removePermanently(results.map((r) => r.to)),
-                    redo: () => this.copy(results.map((r) => r.from), destDir, { undoable: false }),
+                    undo: async () => {
+                        // Copies go to the trash too (soft delete), so even this undo can be recovered
+                        await this.trash(copies, { undoable: false, silent: true });
+                        if (replaced.length) await this.restore(replaced);
+                    },
+                    redo: async () => {
+                        const again = await this.copy(results.map((r) => r.from), destDir, { undoable: false, onConflict: onConflict ? async () => decisions : undefined });
+                        copies = again.map((r) => r.to);
+                        replaced = again.replacedIds || [];
+                    },
+                });
+            }
+            results.replacedIds = replacedIds;
+            return results;
+        },
+
+        /**
+         * Rename many items in one go (batch rename). pairs: [{ path, name }]. Swaps and chains (a→b, b→a) work
+         * through hidden temporary names. Emits ONE fs:changed and pushes ONE undo entry. Returns [{ from, to }].
+         * Throws (EINVAL / EEXIST) before touching anything if a name is invalid or would collide.
+         */
+        async renameMany(pairs, { undoable = true, label } = {}) {
+            const items = pairs.filter((x) => P.base(x.path) !== x.name);
+            if (!items.length) return [];
+            const sources = new Set(items.map((x) => x.path.toLowerCase()));
+            const targets = new Set();
+            for (const it of items) {
+                const err = this.validateName(it.name);
+                if (err) throw fsError('EINVAL', `${it.name}: ${err}`);
+                const dest = P.join(P.parent(it.path), it.name);
+                const key = dest.toLowerCase();
+                if (targets.has(key)) throw fsError('EEXIST', `같은 이름이 두 번 나와요: ${it.name}`);
+                targets.add(key);
+                if (!sources.has(key) && (await this.backend.exists(dest))) throw fsError('EEXIST', `"${it.name}"이(가) 이미 있어요`);
+            }
+            const stamp = Date.now().toString(36);
+            const staged = [];
+            const job = items.length > 20 ? App.jobs?.start({ title: '이름 바꾸는 중', total: items.length * 2, cancellable: false }) : null;
+            try {
+                for (const [i, it] of items.entries()) {
+                    const dir = P.parent(it.path);
+                    const tmp = `.fi-rename-${stamp}-${i}`;
+                    const st = await this.backend.stat(it.path);
+                    await this.backend.move(it.path, dir, tmp);
+                    if (st.kind === 'file') await this._moveSidecar(it.path, dir, tmp);
+                    App.catalog?.relocate(it.path, P.join(dir, tmp));
+                    staged.push({ from: it.path, tmp: P.join(dir, tmp), to: P.join(dir, it.name), kind: st.kind });
+                    job?.step();
+                }
+                for (const s of staged) {
+                    await this.backend.move(s.tmp, P.parent(s.to), P.base(s.to));
+                    if (s.kind === 'file') await this._moveSidecar(s.tmp, P.parent(s.to), P.base(s.to));
+                    App.catalog?.relocate(s.tmp, s.to);
+                    s.done = true;
+                    job?.step();
+                }
+            } catch (e) {
+                // Never leave anything under a temporary name
+                for (const s of [...staged].reverse()) {
+                    if (s.done) continue;
+                    try {
+                        await this.backend.move(s.tmp, P.parent(s.from), P.base(s.from));
+                        if (s.kind === 'file') await this._moveSidecar(s.tmp, P.parent(s.from), P.base(s.from));
+                        App.catalog?.relocate(s.tmp, s.from);
+                    } catch (e2) {
+                        console.error('[fs] rename rollback failed', s, e2);
+                    }
+                }
+                const done = staged.filter((s) => s.done);
+                if (done.length) this.emitChange({ type: 'rename', paths: done.map((s) => s.to), from: done.map((s) => s.from), to: done.map((s) => s.to), dirs: done.map((s) => P.parent(s.to)) });
+                throw e;
+            } finally {
+                job?.finish();
+            }
+            const results = staged.map((s) => ({ from: s.from, to: s.to }));
+            this.emitChange({ type: 'rename', paths: results.map((r) => r.to), from: results.map((r) => r.from), to: results.map((r) => r.to), dirs: results.map((r) => P.parent(r.to)) });
+            if (undoable) {
+                App.undo.push({
+                    label: label || (results.length === 1 ? `이름 바꾸기 "${P.base(results[0].from)}"` : `${results.length}개 이름 바꾸기`),
+                    undo: () => this.renameMany(results.map((r) => ({ path: r.to, name: P.base(r.from) })), { undoable: false }),
+                    redo: () => this.renameMany(results.map((r) => ({ path: r.from, name: P.base(r.to) })), { undoable: false }),
                 });
             }
             return results;
         },
 
-        /** Delete for real (no trash). Internal use: undoing copies, emptying trash. */
+        /** Delete for real (no trash). Internal use: emptying the trash. */
         async removePermanently(paths) {
             for (const p of paths) {
                 await this.backend.remove(p);
@@ -572,35 +747,42 @@
             });
         },
 
-        /** Move paths to the app trash (restorable). Returns trash item ids. */
-        async trash(paths, { undoable = true, silent = false } = {}) {
+        /** Move paths to the app trash (restorable). Returns trash item ids. opts: { undoable, silent, label } */
+        async trash(paths, { undoable = true, silent = false, label: customLabel } = {}) {
             if (!paths.length) return [];
-            const batch = 'b' + Date.now().toString(36);
+            const batch = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
             const batchDir = P.join(TRASH_DIR, batch);
             const items = [];
+            const failed = [];
             const job = paths.length > 20 ? App.jobs?.start({ title: '휴지통으로 옮기는 중', total: paths.length }) : null;
             try {
                 for (const src of paths) {
                     if (job?.cancelled) break;
-                    const st = await this.backend.stat(src);
-                    const name = await this.uniqueName(batchDir, P.base(src), { isDir: st.kind === 'dir' });
-                    await this.backend.move(src, batchDir, name);
-                    if (st.kind === 'file') await this._moveSidecar(src, batchDir, name);
-                    items.push({
-                        id: App.util.uid('t'),
-                        name: P.base(src),
-                        kind: st.kind,
-                        size: st.size,
-                        originalPath: src,
-                        trashPath: P.join(batchDir, name),
-                        deletedAt: Date.now(),
-                        catalog: App.catalog ? App.catalog.take(src) : null,
-                    });
-                    job?.update(items.length);
+                    try {
+                        const st = await this.backend.stat(src);
+                        const name = await this.uniqueName(batchDir, P.base(src), { isDir: st.kind === 'dir' });
+                        await this.backend.move(src, batchDir, name);
+                        if (st.kind === 'file') await this._moveSidecar(src, batchDir, name);
+                        items.push({
+                            id: App.util.uid('t'),
+                            name: P.base(src),
+                            kind: st.kind,
+                            size: st.size,
+                            originalPath: src,
+                            trashPath: P.join(batchDir, name),
+                            deletedAt: Date.now(),
+                            catalog: App.catalog ? App.catalog.take(src) : null,
+                        });
+                    } catch (e) {
+                        console.error('[fs] trash failed', src, e);
+                        failed.push({ path: src, error: e });
+                    }
+                    job?.update(items.length + failed.length);
                 }
             } finally {
                 job?.finish();
             }
+            this._reportFailures(failed, '휴지통으로 옮기');
             if (!items.length) return [];
             await this._updateTrashManifest((m) => {
                 m.items.push(...items);
@@ -610,22 +792,24 @@
             this.emitChange({ type: 'trash', paths: trashed, from: trashed, dirs: trashed.map((p) => P.parent(p)) });
 
             const ids = items.map((i) => i.id);
-            const label = items.length === 1 ? `"${items[0].name}" 삭제` : `${items.length}개 삭제`;
+            const label = customLabel || (items.length === 1 ? `"${items[0].name}" 삭제` : `${items.length}개 삭제`);
             if (undoable) {
+                let currentIds = ids;
+                let restoredPaths = [];
                 App.undo.push({
                     label,
-                    undo: () => this.restore(ids),
+                    undo: async () => {
+                        restoredPaths = await this.restore(currentIds);
+                    },
                     redo: async () => {
-                        const m = await this.readTrashManifest();
-                        const paths2 = m.items.filter((i) => ids.includes(i.id)).map((i) => i.restoredTo || i.originalPath);
-                        await this.trash(paths2, { undoable: false, silent: true });
+                        if (restoredPaths.length) currentIds = await this.trash(restoredPaths, { undoable: false, silent: true });
                     },
                 });
             }
             if (!silent) {
                 App.ui?.toast(`${label} — 휴지통으로 옮겼어요`, {
                     type: 'success',
-                    action: { label: '실행 취소', run: () => App.undo.undo() },
+                    action: undoable ? { label: '실행 취소', run: () => App.undo.undo() } : undefined,
                 });
             }
             return ids;
