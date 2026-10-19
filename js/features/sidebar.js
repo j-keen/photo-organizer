@@ -5,17 +5,19 @@
  *   App.sidebar.refreshSection(id), App.sidebar.scrollEl
  *   App.tree.reveal(path), refresh(dir), children (Map dir -> child dir paths), focus(), filter(text), clearFilter(),
  *            countsFor(path) -> {i, v, s, ri, rv, rs} | null (direct / recursive photos, videos, bytes),
- *            folderInfo(path) -> '사진 n · 영상 n · 폴더 n (하위 포함 m개 · 3.4 GB)' | '비어 있음' | null,
+ *            folderInfo(path) -> '사진 n · 영상 n · 폴더 n · 전체 3.4 GB (하위 포함 m개)' | '비어 있음' | '계산 중…',
  *            emptyKind(path) -> 'empty' | 'nomedia' | null, countText(path), hasKids(path), isFolder(path),
  *            menuItems(path), openMenu(path, pos), startNewFolder(parent), startRename(path), trashFolder(path), openFolder(path)
  * Events: 'nav:counts' after the per-folder photo/video counts were recomputed.
- * Empty folders (no photos/videos at any depth) get a dimmed, dashed folder icon; hovering a row shows its summary.
+ * Empty folders (no photos/videos at any depth) get a dimmed, dashed folder icon and a '비어 있음' tag; hovering a row
+ * shows its summary.
  *
  * The tree is a virtualized flat list (only rows near the viewport exist) so huge libraries and big filter results
  * stay smooth. Rows: click = open, twisty / double-click = expand, right-click = menu, drag = move (Ctrl = copy),
  * drop target for gallery items, other folders and files from the OS (hover 0.6s to expand, edges auto-scroll).
  * Keyboard (Ctrl+Shift+E): ↑↓ PgUp/PgDn Home/End move, →← expand/collapse, Enter/Space open, F2 rename,
- * Delete trash, Ctrl+Shift+N new folder, Ctrl+D favorite, typing starts the filter, Esc back to the gallery.
+ * Delete trash, Ctrl+Shift+N new folder, Ctrl+D favorite, Menu key / Shift+F10 folder menu, typing starts the filter,
+ * Esc back to the gallery. Every change (new folder, rename, trash, drop) is exactly one Ctrl+Z step.
  * Filter box (Ctrl+Shift+F): name or Hangul initials ('ㄱㅅ' → '김수현') over every folder of the workspace index.
  */
 (() => {
@@ -57,6 +59,7 @@
     let idxKids = null; // Map parent -> sorted child folder paths (from App.index)
     let folderSet = null; // Set of every folder path (from App.index)
     let dragSrcEl = null;
+    let kbdMenuAt = -Infinity; // when the Menu key / Shift+F10 last opened a row menu
     let countMode = App.settings.get('tree.counts', 'direct'); // 'direct' | 'recursive' | 'off'
     const sections = [];
     const rowIds = new Map();
@@ -65,9 +68,12 @@
 
     const byName = (a, b) => compareNames(P.base(a), P.base(b));
 
-    // Icons requested from core (integration request); until they exist, fall back to the closest built-in
-    const ICON_FALLBACK = { 'chevrons-down-up': 'minus' };
-    const iconName = (name) => (ui.ICONS && !ui.ICONS[name] && ICON_FALLBACK[name] ? ICON_FALLBACK[name] : name);
+    // Icons requested from core (integration request); until one of them exists, fall back to the closest built-in
+    const ICON_FALLBACK = { 'list-collapse': ['chevrons-down-up', 'minus'] };
+    const iconName = (name) => {
+        if (!ui.ICONS || ui.ICONS[name] || !ICON_FALLBACK[name]) return name;
+        return ICON_FALLBACK[name].find((n) => ui.ICONS[n]) || name;
+    };
     function icon(name, opts) {
         return ui.icon(iconName(name), opts);
     }
@@ -75,9 +81,8 @@
     // Buttons shouldn't keep focus after a mouse click (a later Enter would re-press them instead of opening
     // the selected gallery item); keyboard users still Tab to them and press Enter/Space.
     function noMouseFocus(el) {
-        el.addEventListener('mousedown', (e) => {
-            if (e.button === 0) e.preventDefault();
-        });
+        // Any mouse button: a right-click would otherwise focus it and leave a focus ring behind the menu
+        el.addEventListener('mousedown', (e) => e.preventDefault());
         return el;
     }
 
@@ -196,7 +201,7 @@
 
     /** 'empty' (no photos/videos, no subfolders), 'nomedia' (only subfolders without photos/videos) or null */
     function emptyKind(p) {
-        if (!App.index.ready) return null;
+        if (!App.index.ready || !idxKids) return null; // counts not computed yet
         const c = counts.get(p);
         if (c && c.ri + c.rv > 0) return null;
         const kids = kidsOf(p);
@@ -204,17 +209,22 @@
         return kids.length ? 'nomedia' : 'empty';
     }
 
-    /** One-line folder summary for tooltips; null until the index is ready */
+    const CALCULATING = '계산 중…';
+
+    /**
+     * One-line folder summary for tooltips: direct photos · videos · subfolders, then the total size of every
+     * photo/video inside (subfolders included). '계산 중…' until the workspace index is ready.
+     */
     function folderInfo(p) {
-        if (!App.index.ready) return null;
+        if (!App.index.ready || !idxKids) return CALCULATING;
         const kind = emptyKind(p);
         const kids = kidsOf(p) || [];
         if (kind === 'empty') return '비어 있음';
         if (kind === 'nomedia') return `비어 있음 · 사진·영상 없는 하위 폴더 ${formatCount(kids.length)}개`;
         const c = counts.get(p) || { i: 0, v: 0, s: 0, ri: 0, rv: 0, rs: 0 };
-        const head = `사진 ${formatCount(c.i)} · 영상 ${formatCount(c.v)} · 폴더 ${formatCount(kids.length)}`;
+        const head = `사진 ${formatCount(c.i)} · 영상 ${formatCount(c.v)} · 폴더 ${formatCount(kids.length)} · 전체 ${formatBytes(c.rs)}`;
         const deeper = c.ri + c.rv !== c.i + c.v;
-        return deeper ? `${head} (하위 포함 ${formatCount(c.ri + c.rv)}개 · ${formatBytes(c.rs)})` : `${head} (${formatBytes(c.rs)})`;
+        return deeper ? `${head} (하위 포함 ${formatCount(c.ri + c.rv)}개)` : head;
     }
 
     function countText(p) {
@@ -392,18 +402,25 @@
             ic.dataset.icon = iconName;
             ic.innerHTML = ui.icon(iconName, { size: 15 });
         }
-        el.classList.toggle('is-empty', !!emptyKind(p));
+        const empty = emptyKind(p);
+        el.classList.toggle('is-empty', !!empty);
         if (el.classList.contains('editing')) {
             delete el.dataset.tip;
             return;
         }
-        // Explorer-style summary when hovering the row (direct counts, recursive total and size)
+        // Explorer-style summary when hovering the row (direct counts, folders, total size incl. subfolders)
         const info = folderInfo(p);
-        if (info) {
-            if (el.dataset.tip !== info) el.dataset.tip = info;
-        } else delete el.dataset.tip;
+        if (el.dataset.tip !== info) el.dataset.tip = info;
+        // Empty folders say so right in the row (dimmed), where the count would be
+        let tag = el.querySelector(':scope > .tree-empty-tag');
+        if (empty && p !== '') {
+            if (!tag) {
+                tag = h('span', { class: 'tree-empty-tag', text: '비어 있음' });
+                el.append(tag);
+            }
+        } else if (tag) tag.remove();
         let cnt = el.querySelector(':scope > .tree-count');
-        const c = countText(p);
+        const c = empty ? null : countText(p);
         if (c && c.text) {
             if (!cnt) {
                 cnt = h('span', { class: 'tree-count' });
@@ -605,6 +622,10 @@
     function focusTree() {
         if (!App.fs.ready || !treeEl) return;
         if (App.layout && !App.layout.isVisible('sidebar')) App.layout.setPanel('sidebar', true);
+        if (treeSection && treeSection.classList.contains('collapsed')) {
+            toggleSection('tree', treeSection);
+            buildRows();
+        }
         if (focusPath == null || !rowIndex.has(focusPath)) {
             const i = cursorIndex();
             focusPath = i >= 0 ? rows[i].p : null;
@@ -866,8 +887,22 @@
             }
             focusPath = next ?? (i > 0 ? rows[i - 1].p : P.parent(p));
         }
+        // One undo entry of our own: undo restores, redo trashes wherever the folder came back to
+        const name = nameOf(p);
         try {
-            await App.fs.trash([p]);
+            let ids = await App.fs.trash([p], { undoable: false, silent: true });
+            if (!ids.length) return;
+            let restored = [];
+            App.undo.push({
+                label: `‘${name}’ 폴더 삭제`,
+                undo: async () => {
+                    restored = await App.fs.restore(ids);
+                },
+                redo: async () => {
+                    if (restored.length) ids = await App.fs.trash(restored, { undoable: false, silent: true });
+                },
+            });
+            ui.toast(`‘${name}’ 폴더를 휴지통으로 옮겼어요`, { type: 'success', action: { label: '실행 취소', run: () => App.undo.undo() } });
         } catch (e) {
             ui.toast(`휴지통으로 옮기지 못했어요: ${e.message || e}`, { type: 'error' });
         }
@@ -915,6 +950,22 @@
         ui.menu(menuItems(p), pos);
     }
 
+    /** Keyboard (Menu key / Shift+F10): open the folder menu under the cursor row, then return to the tree */
+    function openRowMenu(i) {
+        const r = rows[i];
+        if (!r) return;
+        focusPath = r.p;
+        ensureVisible(i);
+        renderWindow();
+        const el = rendered.get(r.key)?.el;
+        const box = el ? el.querySelector('.tree-name') || el : null;
+        const rect = box ? box.getBoundingClientRect() : null;
+        const pos = rect ? { x: Math.round(rect.left + 12), y: Math.round(rect.bottom + 2) } : { anchor: treeEl, align: 'start' };
+        openMenu(r.p, pos);
+        // Keyboard users start on the first item (↑↓ Enter, Esc closes and the tree keeps focus)
+        document.querySelector('.menu .menu-item:not(.disabled)')?.classList.add('active');
+    }
+
     function treeOptionsMenu(anchor) {
         const setMode = (m) => {
             countMode = m;
@@ -930,7 +981,7 @@
             '-',
             { label: '폴더 찾기', icon: 'search', command: 'nav.filterTree' },
             { label: '현재 폴더 찾아가기', icon: 'eye', action: () => { clearFilter(); tree.reveal(App.state.cwd ?? ''); } },
-            { label: '폴더 모두 접기', icon: iconName('chevrons-down-up'), command: 'nav.collapseTree' },
+            { label: '폴더 모두 접기', icon: iconName('list-collapse'), command: 'nav.collapseTree' },
             { label: '새로 고침', icon: 'refresh', command: 'nav.refreshTree', args: { path: '' } },
         ], { anchor, align: 'end' });
     }
@@ -991,6 +1042,13 @@
             case 'Delete':
                 if (!inTree) return false;
                 if (r && r.p) trashFolder(r.p);
+                return true;
+            case 'ContextMenu':
+            case 'F10':
+                // Menu key / Shift+F10: the folder menu for the row under the cursor
+                if (e.key === 'F10' && (!e.shiftKey || mod || e.altKey)) return false;
+                kbdMenuAt = performance.now();
+                if (r && !r.phantom) openRowMenu(i);
                 return true;
             default:
                 break;
@@ -1322,7 +1380,7 @@
         },
     });
     App.commands.register({ id: 'nav.refreshTree', title: '폴더 트리 새로 고침', group: '이동', icon: 'refresh', when: ready, run: (a) => refreshTree(a && typeof a.path === 'string' ? a.path : '') });
-    App.commands.register({ id: 'nav.collapseTree', title: '폴더 모두 접기', group: '이동', icon: iconName('chevrons-down-up'), when: ready, run: () => collapseAll() });
+    App.commands.register({ id: 'nav.collapseTree', title: '폴더 모두 접기', group: '이동', icon: iconName('list-collapse'), when: ready, run: () => collapseAll() });
     App.commands.register({
         id: 'nav.toggleCounts',
         title: '폴더 옆 사진·영상 개수 켜고 끄기',
@@ -1352,7 +1410,7 @@
 
             const head = sectionHead('tree', '폴더', [
                 headAction('folder-plus', '새 폴더', () => App.commands.run('nav.newSubfolder', { path: App.state.cwd ?? '' })),
-                headAction('chevrons-down-up', '모두 접기', () => collapseAll()),
+                headAction('list-collapse', '모두 접기', () => collapseAll()),
                 headAction('more', '폴더 트리 설정', (e, b) => treeOptionsMenu(b)),
             ]);
             treeStickyEl = h('div', { class: 'tree-sticky' }, head, filterBox, filterInfo);
@@ -1397,6 +1455,12 @@
             });
             treeSection.addEventListener('contextmenu', (e) => {
                 if (e.target.closest('input')) return;
+                if (performance.now() - kbdMenuAt < 1000) {
+                    // The Menu key already opened the cursor row's menu on keydown; ignore the follow-up event
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return;
+                }
                 const row = rowFromEvent(e);
                 if (!row && !e.target.closest('.tree-body')) return;
                 e.preventDefault();

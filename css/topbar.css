@@ -123,6 +123,29 @@ span.crumb.current:hover {
 .topbar-search .input {
     height: 30px;
     background: var(--bg-2);
+    text-overflow: ellipsis;
+}
+
+.topbar-search .input::placeholder {
+    text-overflow: ellipsis;
+}
+
+/* Narrow windows: the box shrinks before the breadcrumb disappears; the placeholder stays short enough to read */
+@media (max-width: 860px) {
+    .topbar-search {
+        width: clamp(150px, 24vw, 220px);
+    }
+
+    .topbar-search.focused {
+        width: clamp(200px, 34vw, 300px);
+    }
+}
+
+/* Korean hints wrap between words */
+.sg-sub,
+.sg-scope-label,
+.vb-count {
+    word-break: keep-all;
 }
 
 .topbar-search.has-text .input {
@@ -293,6 +316,21 @@ span.crumb.current:hover {
 #viewbar {
     container-type: inline-size;
     container-name: viewbar;
+    /* never paint over the inspector when the gallery column is very narrow; scrolls sideways instead */
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+}
+
+#viewbar::-webkit-scrollbar {
+    display: none;
+}
+
+/* Very narrow gallery column: the breadcrumb already names the folder */
+@container viewbar (max-width: 400px) {
+    #viewbar > .vb-title {
+        display: none;
+    }
 }
 
 #viewbar > * {

@@ -368,6 +368,38 @@ mark.hl {
     color: var(--accent-2);
 }
 
+/* '비어 있음' in place of the count; hidden while the row's hover actions show */
+.tree-empty-tag {
+    flex-shrink: 0;
+    padding: 0 6px;
+    height: 17px;
+    line-height: 17px;
+    border-radius: var(--r-full);
+    border: 1px dashed var(--line-3);
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    color: var(--text-4);
+}
+
+.tree-row:hover .tree-empty-tag {
+    display: none;
+}
+
+.tree-row.current .tree-empty-tag {
+    color: var(--accent-2);
+    border-color: var(--accent-line);
+}
+
+/* Korean hints wrap between words, not in the middle of one */
+.tree-edit-error,
+.tree-empty,
+.tree-filter-info,
+.fav-empty-text,
+.nav-drag-hint-text small {
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+}
+
 .tree-actions {
     display: none;
     align-items: center;

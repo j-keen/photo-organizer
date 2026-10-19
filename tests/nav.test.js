@@ -199,6 +199,32 @@ module.exports = [
             await page.keyboard.press('Control+Shift+E');
             await page.keyboard.press('Control+Shift+E');
             assert.equal(await page.evaluate(() => document.activeElement.id), 'gallery-scroll', 'the shortcut toggles back to the gallery');
+
+            // Shift+F10 and the Menu key open the folder menu of the row under the cursor; Esc returns to the tree
+            await page.keyboard.press('Control+Shift+E');
+            await moveTo('family');
+            await page.keyboard.press('Shift+F10');
+            await page.waitForSelector('.menu');
+            assert.equal(await page.textContent('.menu .menu-header'), 'family');
+            assert.ok(await page.isVisible('.menu .menu-item.active'), 'first item is ready for the keyboard');
+            await page.keyboard.press('Escape');
+            await page.waitForFunction(() => !document.querySelector('.menu'));
+            assert.equal(await page.evaluate(() => document.activeElement.id), 'folder-tree');
+            await moveTo('trip');
+            await page.keyboard.press('ContextMenu');
+            await page.waitForSelector('.menu');
+            assert.equal(await page.textContent('.menu .menu-header'), 'trip');
+            await page.keyboard.press('Escape');
+            await page.waitForFunction(() => !document.querySelector('.menu'));
+
+            // Ctrl+Shift+E opens a collapsed tree section instead of focusing an invisible tree
+            await page.keyboard.press('Escape');
+            await page.click('.tree-section .sb-head-title');
+            await page.waitForSelector('.tree-section.collapsed');
+            await page.keyboard.press('Control+Shift+E');
+            await page.waitForSelector('.tree-section:not(.collapsed)');
+            assert.equal(await page.evaluate(() => document.activeElement.id), 'folder-tree');
+            assert.equal(await cursor(), 'trip');
         },
     },
     {
@@ -258,18 +284,35 @@ module.exports = [
             const count = (p) => page.evaluate((q) => document.querySelector(`.tree-row[data-path="${q}"] .tree-count`)?.textContent || '', p);
             const tip = (p) => page.getAttribute(row(p), 'data-tip');
             assert.equal(await count('trip'), '1');
-            assert.match(await tip('trip'), /^사진 1 · 영상 0 · 폴더 1 \(하위 포함 3개 · [\d.]+ KB\)$/);
-            assert.match(await tip('family'), /^사진 1 · 영상 0 · 폴더 0 \([\d.]+ KB\)$/);
-            // Empty folders: dashed + dimmed, '비어 있음' in the tooltip (also when only empty subfolders are inside)
+            // Tooltip: direct photos · videos · folders, total size including subfolders
+            const sizes = await page.evaluate(() => ({
+                trip: App.index.items.filter((e) => e.path.startsWith('trip/')).reduce((s, e) => s + e.size, 0),
+                family: App.index.items.filter((e) => e.path.startsWith('family/')).reduce((s, e) => s + e.size, 0),
+            }));
+            const fmt = (n) => page.evaluate((x) => App.util.formatBytes(x), n);
+            assert.equal(await tip('trip'), `사진 1 · 영상 0 · 폴더 1 · 전체 ${await fmt(sizes.trip)} (하위 포함 3개)`);
+            assert.equal(await tip('family'), `사진 1 · 영상 0 · 폴더 0 · 전체 ${await fmt(sizes.family)}`);
+            // Before the index is ready the summary says it's still being calculated
+            assert.equal(await page.evaluate(() => {
+                App.index.ready = false;
+                const t = App.tree.folderInfo('trip');
+                App.index.ready = true;
+                return t;
+            }), '계산 중…');
+            assert.ok(await page.evaluate(() => App.index.ready));
+            // Empty folders: dashed + dimmed with a '비어 있음' tag, also in the tooltip (also when only empty subfolders are inside)
             assert.equal(await count('empty'), '');
+            assert.equal(await page.textContent(`${row('empty')} .tree-empty-tag`), '비어 있음');
             assert.equal(await tip('empty'), '비어 있음');
             assert.ok(await page.isVisible(`${row('empty')}.is-empty`));
             assert.equal(await tip('shell'), '비어 있음 · 사진·영상 없는 하위 폴더 1개');
             assert.ok(await page.isVisible(`${row('shell')}.is-empty`));
             assert.ok(!(await page.isVisible(`${row('trip')}.is-empty`)));
+            assert.equal(await page.locator(`${row('trip')} .tree-empty-tag`).count(), 0);
             await page.evaluate(() => App.fs.copy(['family/f1.png'], 'empty'));
             await page.waitForFunction(() => !document.querySelector('.tree-row[data-path="empty"]').classList.contains('is-empty'));
-            assert.match(await tip('empty'), /^사진 1 · 영상 0 · 폴더 0/);
+            assert.equal(await page.locator(`${row('empty')} .tree-empty-tag`).count(), 0);
+            assert.match(await tip('empty'), /^사진 1 · 영상 0 · 폴더 0 · 전체 /);
             await page.evaluate(() => App.fs.move(['a.png', 'b.png'], 'trip'));
             await page.waitForFunction(() => document.querySelector('.tree-row[data-path="trip"] .tree-count')?.textContent === '3');
             await page.hover(`${row('trip')} .tree-count`);
@@ -345,92 +388,106 @@ module.exports = [
         },
     },
     {
-        name: 'one Ctrl+Z undoes each tree, breadcrumb and favorites action; Ctrl+Shift+Z redoes it',
+        name: 'one Ctrl+Z undoes each nav action and Ctrl+Y redoes it — exactly one undo entry per action',
         async run({ openApp, assert }) {
-            const { page } = await openApp({ seed: SEED });
+            const { page } = await openApp({ seed: { ...SEED, 'scratch/': null, 'old/': null } });
             await ready(page);
             const exists = (p) => page.evaluate((q) => window.__opfs.exists(q), p);
             const favs = (list) => page.waitForFunction((l) => App.navFavorites.list().join() === l, list);
-            // Ctrl+Z belongs to the app (text fields keep their own); press it from the gallery like a user would
-            const undo = async () => {
+            const depth = () => page.evaluate(() => App.undo.list().length);
+            const labels = () => page.evaluate(() => App.undo.list().map((e) => e.label).join(' | '));
+            // Ctrl+Z / Ctrl+Y belong to the app (text fields keep their own); press them from the gallery like a user
+            const key = async (combo) => {
                 await page.evaluate(() => document.getElementById('gallery-scroll').focus());
-                await page.keyboard.press('Control+z');
+                await page.keyboard.press(combo);
             };
-            const redo = () => page.keyboard.press('Control+Shift+z');
+            // act() must push exactly one undo entry; one Ctrl+Z makes undone() true, one Ctrl+Y makes done() true again
+            const check = async (what, act, done, undone) => {
+                const d0 = await depth();
+                await act();
+                await done();
+                await page.waitForTimeout(120); // late, duplicate pushes would land here
+                assert.equal(await depth(), d0 + 1, `${what}: one undo entry, got [${await labels()}]`);
+                await key('Control+z');
+                await undone();
+                await page.waitForFunction((d) => App.undo.list().length === d && App.undo.canRedo(), d0);
+                await key('Control+y');
+                await done();
+                await page.waitForFunction((d) => App.undo.list().length === d, d0 + 1);
+            };
 
             // New folder (inline in the tree)
-            await page.evaluate(() => App.tree.startNewFolder('trip'));
-            const input = page.locator('.tree-row.phantom input.tree-edit');
-            await input.waitFor();
-            await input.fill('made');
-            await input.press('Enter');
-            await waitExists(page, 'trip/made');
-            await undo();
-            await waitExists(page, 'trip/made', false);
-            assert.ok(await exists('trip/x.png'));
+            await check('new folder', async () => {
+                await page.evaluate(() => App.tree.startNewFolder('trip'));
+                const input = page.locator('.tree-row.phantom input.tree-edit');
+                await input.waitFor();
+                await input.fill('made');
+                await input.press('Enter');
+            }, () => waitExists(page, 'trip/made'), () => waitExists(page, 'trip/made', false));
 
             // Inline rename
-            await page.evaluate(() => App.tree.startRename('family'));
-            const edit = page.locator(`${row('family')} input.tree-edit`);
-            await edit.waitFor();
-            await edit.fill('kin');
-            await edit.press('Enter');
-            await waitExists(page, 'kin');
-            await undo();
-            // OPFS can't move folders natively, so App.fs copies then deletes: wait for both halves
-            await waitExists(page, 'family');
-            await waitExists(page, 'kin', false);
-            assert.ok(await exists('family/f1.png'));
+            await check('rename', async () => {
+                await page.evaluate(() => App.tree.startRename('old'));
+                const edit = page.locator(`${row('old')} input.tree-edit`);
+                await edit.waitFor();
+                await edit.fill('older');
+                await edit.press('Enter');
+            }, async () => {
+                await waitExists(page, 'older');
+                await waitExists(page, 'old', false);
+            }, async () => {
+                // OPFS can't move folders natively, so App.fs copies then deletes: wait for both halves
+                await waitExists(page, 'old');
+                await waitExists(page, 'older', false);
+            });
 
-            // Two files dropped on a tree row move back with one Ctrl+Z
-            assert.ok(await synthDrop(page, { to: row('family'), paths: ['a.png', 'b.png'] }));
-            await waitExists(page, 'family/b.png');
-            await undo();
-            await waitExists(page, 'a.png');
-            await waitExists(page, 'b.png');
-            await waitExists(page, 'family/a.png', false);
+            // Trash a folder from the tree (empty folders skip the confirmation)
+            await check('trash folder', () => page.evaluate(() => App.tree.trashFolder('scratch')), () => waitExists(page, 'scratch', false), () => waitExists(page, 'scratch'));
 
-            // Ctrl+drop on a breadcrumb copies; one Ctrl+Z removes the copy
+            // Two files dropped on a tree row: one entry
+            await check('drop move (2 files)', () => synthDrop(page, { to: row('family'), paths: ['a.png', 'b.png'] }), async () => {
+                await waitExists(page, 'family/a.png');
+                await waitExists(page, 'family/b.png');
+            }, async () => {
+                await waitExists(page, 'a.png');
+                await waitExists(page, 'b.png');
+                await waitExists(page, 'family/a.png', false);
+            });
+
+            // A folder dragged onto another folder
+            await check('drop move (folder)', () => synthDrop(page, { from: row('older'), to: row('trip'), paths: ['older'] }), () => waitExists(page, 'trip/older'), () => waitExists(page, 'older'));
+
+            // Ctrl+drop on a breadcrumb copies
             await page.evaluate(() => App.nav.go('trip/inner'));
             await page.waitForFunction(() => App.state.cwd === 'trip/inner');
-            assert.ok(await synthDrop(page, { to: '.crumb.root', paths: ['trip/inner/y.png'], ctrl: true }));
-            await waitExists(page, 'y.png');
-            await undo();
-            await waitExists(page, 'y.png', false);
+            await check('drop copy (breadcrumb)', () => synthDrop(page, { to: '.crumb.root', paths: ['trip/inner/y.png'], ctrl: true }), () => waitExists(page, 'y.png'), () => waitExists(page, 'y.png', false));
             assert.ok(await exists('trip/inner/y.png'));
 
-            // Trashing a folder from the tree
-            await page.evaluate(() => App.tree.trashFolder('empty'));
-            await waitExists(page, 'empty', false);
-            await undo();
-            await waitExists(page, 'empty');
+            // Files from the OS: the whole import is one entry
+            await check('import (2 files)', () => synthDrop(page, { to: row('empty'), files: [{ name: 'd1.png', text: 'x' }, { name: 'd2.png', text: 'y' }] }), async () => {
+                await waitExists(page, 'empty/d1.png');
+                await waitExists(page, 'empty/d2.png');
+            }, async () => {
+                await waitExists(page, 'empty/d1.png', false);
+                await waitExists(page, 'empty/d2.png', false);
+            });
 
-            // Favorites: add, pin several at once, reorder, remove — one Ctrl+Z each, redo with Ctrl+Shift+Z
+            // Favorites: add (Ctrl+D), pin several by dropping, reorder by dragging, remove from the menu
             await page.evaluate(() => App.nav.go('trip'));
             await page.waitForFunction(() => App.state.cwd === 'trip');
-            await page.evaluate(() => document.getElementById('gallery-scroll').focus());
-            await page.keyboard.press('Control+d');
-            await favs('trip');
-            await undo();
-            await favs('');
-            await redo();
-            await favs('trip');
-            assert.ok(await synthDrop(page, { to: '.fav-row[data-path="trip"]', paths: ['family', 'empty'], edge: 'bottom' }));
-            await favs('trip,family,empty');
-            await undo();
-            await favs('trip');
-            await redo();
-            await favs('trip,family,empty');
-            assert.ok(await synthDrop(page, { from: '.fav-row[data-path="empty"]', to: '.fav-row[data-path="trip"]', fav: 'empty', edge: 'top' }));
+            await check('favorite add', () => key('Control+d'), () => favs('trip'), () => favs(''));
+            await check('favorite pin by drop', () => synthDrop(page, { to: '.fav-row[data-path="trip"]', paths: ['family', 'empty'], edge: 'bottom' }), () => favs('trip,family,empty'), () => favs('trip'));
+            await check('favorite reorder', () => synthDrop(page, { from: '.fav-row[data-path="empty"]', to: '.fav-row[data-path="trip"]', fav: 'empty', edge: 'top' }), () => favs('empty,trip,family'), () => favs('trip,family,empty'));
+            await check('favorite remove', async () => {
+                await page.click('.fav-row[data-path="family"]', { button: 'right' });
+                await clickMenu(page, '즐겨찾기에서 빼기');
+            }, () => favs('empty,trip'), () => favs('empty,trip,family'));
+            await waitFavFile(page, 'empty,trip');
+            // Ctrl+Shift+Z is redo too
+            await key('Control+z');
             await favs('empty,trip,family');
-            await undo();
-            await favs('trip,family,empty');
-            await page.click('.fav-row[data-path="family"]', { button: 'right' });
-            await clickMenu(page, '즐겨찾기에서 빼기');
-            await favs('trip,empty');
-            await undo();
-            await favs('trip,family,empty');
-            await waitFavFile(page, 'trip,family,empty');
+            await key('Control+Shift+z');
+            await favs('empty,trip');
         },
     },
     {

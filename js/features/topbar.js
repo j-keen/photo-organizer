@@ -33,8 +33,9 @@
     const byName = (a, b) => compareNames(P.base(a), P.base(b));
 
     function noMouseFocus(root) {
+        // Any mouse button: a right-click (history menu, crumb menu) must not leave a focus ring behind either
         root.addEventListener('mousedown', (e) => {
-            if (e.button === 0 && e.target.closest?.('button')) e.preventDefault();
+            if (e.target.closest?.('button')) e.preventDefault();
         });
         // Enter/Space on a keyboard-focused button press it instead of running gallery shortcuts
         root.addEventListener('keydown', (e) => {
@@ -54,10 +55,12 @@
     }
 
     // ---------- History (back / forward) ----------
+    // Several steps at once. Uses core App.nav.jump(delta) when it exists (integration request), else edits the stacks.
     function jumpBack(i) {
         const nav = App.nav;
         const target = nav.back[i];
         if (target == null) return;
+        if (typeof nav.jump === 'function') return nav.jump(-(nav.back.length - i));
         const skipped = nav.back.slice(i + 1).reverse();
         nav.fwd.push(App.state.cwd, ...skipped);
         nav.back = nav.back.slice(0, i);
@@ -68,6 +71,7 @@
         const nav = App.nav;
         const target = nav.fwd[i];
         if (target == null) return;
+        if (typeof nav.jump === 'function') return nav.jump(nav.fwd.length - i);
         const skipped = nav.fwd.slice(i + 1).reverse();
         nav.back.push(App.state.cwd, ...skipped);
         nav.fwd = nav.fwd.slice(0, i);
@@ -815,14 +819,6 @@
     });
     App.commands.register({ id: 'search.scope', title: '검색 범위 바꾸기 (전체 ↔ 현재 폴더)', group: '보기', icon: 'filter', keys: ['Alt+S'], allowInInput: true, when: () => App.fs.ready, run: () => setSearchScope(searchScope === 'all' ? 'folder' : 'all') });
     App.commands.register({ id: 'nav.history', title: '이동 기록 보기', group: '이동', icon: 'clock', keys: ['Mod+H'], when: () => App.fs.ready && App.state.cwd != null, run: () => fullHistoryMenu() });
-    // Undo/redo work on every layer (scope 'global': also in the viewer). Core is taking these over; whichever
-    // registers first wins, so this works both before and after that change. Text fields keep their own Ctrl+Z.
-    if (!App.commands.get('edit.undo')) {
-        App.commands.register({ id: 'edit.undo', title: '실행 취소', group: '편집', icon: 'undo', keys: ['Mod+Z'], scope: 'global', when: () => App.undo.canUndo(), run: () => App.undo.undo() });
-    }
-    if (!App.commands.get('edit.redo')) {
-        App.commands.register({ id: 'edit.redo', title: '다시 실행', group: '편집', icon: 'redo', keys: ['Mod+Shift+Z', 'Mod+Y'], scope: 'global', when: () => App.undo.canRedo(), run: () => App.undo.redo() });
-    }
     App.commands.register({
         id: 'view.toggleTheme',
         title: '테마 바꾸기',
@@ -855,7 +851,7 @@
                 class: 'input',
                 id: 'search-input',
                 type: 'search',
-                placeholder: '파일·메모·칩 검색 (초성 ㄱㅅ도 돼요)',
+                placeholder: '파일·메모·칩 검색',
                 spellcheck: 'false',
                 autocomplete: 'off',
                 role: 'combobox',
@@ -900,7 +896,7 @@
                 backBtn, fwdBtn, upBtn);
 
             const center = h('div', { id: 'topbar-center' }, crumbs);
-            searchBox = h('div', { class: 'search-box topbar-search', 'data-tip': '검색', 'data-tip-keys': 'Mod+F' }, h('span', { html: ui.icon('search', { size: 14 }) }), searchInput, searchCount, searchClear);
+            searchBox = h('div', { class: 'search-box topbar-search', 'data-tip': '파일 이름·메모·칩 검색 · 초성(ㄱㅅㅎ → 김수현)도 돼요', 'data-tip-keys': 'Mod+F' }, h('span', { html: ui.icon('search', { size: 14 }) }), searchInput, searchCount, searchClear);
             const menuBtn = iconBtn('more', '메뉴');
             menuBtn.addEventListener('click', () => appMenu(menuBtn));
             const right = h('div', { id: 'topbar-right' }, searchBox, iconBtn('panel-right', '정보 패널 열고 닫기', 'view.toggleInspector'), menuBtn);

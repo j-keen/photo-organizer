@@ -197,7 +197,7 @@
             }
             try {
                 const file = await entryFile(entry);
-                const p = await App.fs.createFile(into, file.name, file);
+                const p = await App.fs.createFile(into, file.name, file, { undoable: false });
                 if (top) created.push(p);
                 stats.files++;
                 if (App.util.mediaType(file.name) === 'other') stats.other++;
@@ -216,7 +216,7 @@
                     if (job.cancelled) break;
                     if (App.fs.isHiddenName(file.name)) continue;
                     try {
-                        created.push(await App.fs.createFile(dir, file.name, file));
+                        created.push(await App.fs.createFile(dir, file.name, file, { undoable: false }));
                         stats.files++;
                         if (App.util.mediaType(file.name) === 'other') stats.other++;
                     } catch (err) {
@@ -233,15 +233,19 @@
         }
 
         if (created.length) {
+            // The whole drop is ONE undo entry (files and folders were written with { undoable: false }).
+            // Undo moves the imported items to the app trash; redo brings them back from there.
+            let current = created.slice();
             let trashed = null;
             const n = stats.files;
             App.undo.push({
-                label: `가져오기 ${formatCount(n)}개`,
+                label: `‘${name}’에 ${formatCount(n)}개 가져오기`,
                 undo: async () => {
-                    trashed = await App.fs.trash(created, { undoable: false, silent: true });
+                    trashed = await App.fs.trash(current, { undoable: false, silent: true });
                 },
                 redo: async () => {
-                    if (trashed && trashed.length) await App.fs.restore(trashed);
+                    if (trashed && trashed.length) current = await App.fs.restore(trashed);
+                    trashed = null;
                 },
             });
             const folderPart = stats.folders ? ` · 폴더 ${formatCount(stats.folders)}개 포함` : '';
