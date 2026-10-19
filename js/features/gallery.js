@@ -7,7 +7,7 @@
  *
  * Interaction: click / Ctrl+click / Shift+click, lasso on empty space (Shift adds, Ctrl toggles, auto-scrolls near the
  * edges), arrow keys + PageUp/PageDown + type-ahead, double-click or Enter opens, Ctrl+wheel zooms, drag selection onto
- * folders to move (Ctrl = copy), drop files from Explorer to import, hover a video card to scrub through it.
+ * folders to move (Ctrl = copy), drop files from Explorer to import, hover a video card to play it (muted; Shift scrubs).
  *
  * Extension points:
  *   App.gallery.cardDecorators.push((card, entry) => {...})   grid cards, after they render
@@ -22,7 +22,7 @@
  *   App.gallery.clipboard / App.gallery.quicklook      see gallery-clipboard.js / gallery-quicklook.js
  * Drag data type for internal drags: 'application/x-fi-paths' (JSON array of paths).
  * Events: 'gallery:zoom' {size}, 'gallery:mode' {mode}, 'gallery:fit' {fit}, 'gallery:folders' (folder stats refreshed).
- * Settings: gallery.size, gallery.mode, gallery.fit, gallery.scrub.
+ * Settings: gallery.size, gallery.mode, gallery.fit, gallery.scrub (hover preview on/off), gallery.hoverPlay (play vs. scrub).
  */
 (() => {
     'use strict';
@@ -138,14 +138,20 @@
         const get = (d) => {
             let s = map.get(d);
             if (!s) {
-                s = { images: 0, videos: 0, dirs: 0, samples: [] };
+                // dirs = direct subfolders; allDirs/images/videos/bytes include everything below
+                s = { images: 0, videos: 0, dirs: 0, allDirs: 0, bytes: 0, samples: [] };
                 map.set(d, s);
             }
             return s;
         };
         for (const f of App.index.folders) {
             get(f);
-            if (f !== '') get(P.parent(f)).dirs++;
+            if (f === '') continue;
+            get(P.parent(f)).dirs++;
+            for (let a = P.parent(f); ; a = P.parent(a)) {
+                get(a).allDirs++;
+                if (a === '') break;
+            }
         }
         for (const e of App.index.items) {
             const isImage = e.type === 'image';
@@ -157,6 +163,7 @@
                 const s = get(d);
                 if (isImage) s.images++;
                 else s.videos++;
+                s.bytes += e.size || 0;
                 // Prefer direct children, then shallower descendants; photos before videos (cheaper thumbnails)
                 if (thumbable) offerSample(s.samples, e, depth * 2 + (isImage ? 0 : 1));
                 if (d === '') break;
@@ -165,7 +172,7 @@
             }
         }
         const sig = new Map();
-        for (const [d, s] of map) sig.set(d, `${s.images}|${s.videos}|${s.dirs}|${s.samples.map((x) => `${x.e.path}:${x.e.mtime || 0}`).join(',')}`);
+        for (const [d, s] of map) sig.set(d, `${s.images}|${s.videos}|${s.dirs}|${s.bytes}|${s.samples.map((x) => `${x.e.path}:${x.e.mtime || 0}`).join(',')}`);
         folderStats.map = map;
         folderStats.sig = sig;
     }
@@ -173,7 +180,7 @@
     function folderInfo(dir) {
         if (folderStats.dirty) computeFolderStats();
         const s = folderStats.map?.get(dir);
-        return s ? { images: s.images, videos: s.videos, dirs: s.dirs, samples: s.samples.map((x) => x.e) } : null;
+        return s ? { images: s.images, videos: s.videos, dirs: s.dirs, allDirs: s.allDirs, bytes: s.bytes, empty: !s.images && !s.videos && !s.dirs, samples: s.samples.map((x) => x.e) } : null;
     }
 
     const refreshFolderStats = App.util.debounce(() => {
@@ -185,22 +192,25 @@
         App.bus.emit('gallery:folders');
     }, 250);
 
+    // Owner: a folder card must say whether it's empty, what's inside (photos / videos / folders) and how big it is
     function folderCountText(dir) {
         const s = folderInfo(dir);
-        if (!s) return '폴더';
+        if (!s) return App.index?.ready ? '폴더' : '세는 중…';
+        if (s.empty) return '빈 폴더';
         const parts = [];
         if (s.images) parts.push(`사진 ${formatCount(s.images)}`);
         if (s.videos) parts.push(`영상 ${formatCount(s.videos)}`);
-        if (parts.length) return parts.join(' · ');
-        return s.dirs ? `폴더 ${formatCount(s.dirs)}개` : '비어 있어요';
+        if (s.dirs) parts.push(`폴더 ${formatCount(s.dirs)}`);
+        if (s.bytes) parts.push(formatBytes(s.bytes));
+        return parts.join(' · ');
     }
 
     function folderTip(dir) {
         const s = folderInfo(dir);
         if (!s) return null;
-        const parts = [`사진 ${formatCount(s.images)}장`, `영상 ${formatCount(s.videos)}개`];
-        if (s.dirs) parts.push(`폴더 ${formatCount(s.dirs)}개`);
-        return `하위 폴더까지 ${parts.join(' · ')}`;
+        if (s.empty) return '비어 있는 폴더예요';
+        const parts = [`사진 ${formatCount(s.images)}장`, `영상 ${formatCount(s.videos)}개`, `폴더 ${formatCount(s.allDirs)}개`];
+        return `하위 폴더까지 ${parts.join(' · ')} · 전체 ${formatBytes(s.bytes)}`;
     }
 
     // ---------- Layout ----------
@@ -543,8 +553,9 @@
         const info = folderInfo(entry.path);
         const samples = info ? info.samples : [];
         if (!samples.length) {
-            const empty = info && !info.images && !info.videos && !info.dirs;
+            const empty = info && info.empty;
             media.append(h('div', { class: `card-folder${empty ? ' is-empty' : ''}`, html: ui.icon('folder', { size: 40 }) }));
+            if (empty) media.append(h('span', { class: 'card-empty-badge', text: '빈 폴더' }));
             return;
         }
         const n = Math.min(4, samples.length);
@@ -685,7 +696,7 @@
         let sizeText;
         if (isDir) {
             const s = folderInfo(entry.path);
-            sizeText = s && s.images + s.videos ? `${formatCount(s.images + s.videos)}개` : '—';
+            sizeText = !s ? '—' : s.empty ? '빈 폴더' : s.bytes ? formatBytes(s.bytes) : `${formatCount(s.images + s.videos)}개`;
         } else sizeText = formatBytes(entry.size);
 
         const rating = h('div', { class: 'lc lc-rating' });
@@ -1129,6 +1140,23 @@
         return App.settings.get('gallery.scrub', true) !== false;
     }
 
+    // Owner: every card shows a still thumbnail; ONLY the card under the mouse plays (muted, looping).
+    // Holding Shift while moving over it scrubs by mouse position instead.
+    function hoverPlays() {
+        return App.settings.get('gallery.hoverPlay', true) !== false;
+    }
+
+    function startHoverPlay() {
+        const v = scrubVideo;
+        if (!v || v.dataset.path !== scrub.path || scrub.scrubbing) return;
+        if (!isFinite(v.duration)) {
+            if (!v.dataset.probing) probeDuration(v);
+            return;
+        }
+        v.loop = true;
+        if (v.paused) v.play().catch(() => {});
+    }
+
     function onHoverMove(e) {
         if (mode !== 'grid' || e.buttons || lasso || dragActive || !scrubEnabled()) return;
         const media = e.target.closest ? e.target.closest('.card.is-video > .card-media') : null;
@@ -1139,6 +1167,15 @@
         const card = media.parentElement;
         if (scrub.card !== card) beginScrub(card);
         if (scrub.card !== card) return;
+        if (hoverPlays() && !e.shiftKey) {
+            if (scrub.scrubbing) {
+                scrub.scrubbing = false;
+                startHoverPlay();
+            }
+            return;
+        }
+        scrub.scrubbing = true;
+        if (scrubVideo && !scrubVideo.paused) scrubVideo.pause();
         const r = media.getBoundingClientRect();
         scrub.f = clamp((e.clientX - r.left) / Math.max(1, r.width), 0, 1);
         paintScrub();
@@ -1183,7 +1220,16 @@
         const media = scrub.card?.querySelector('.card-media');
         if (!media) return;
         media.insertBefore(v, media.querySelector('.card-check'));
-        if (v.readyState >= 1) seekScrub(true);
+        if (v.readyState >= 1) {
+            if (hoverPlays() && !scrub.scrubbing) {
+                try {
+                    if (isFinite(v.duration)) v.currentTime = 0;
+                } catch (e) {
+                    /* not seekable yet */
+                }
+                startHoverPlay();
+            } else seekScrub(true);
+        }
     }
 
     function ensureScrubVideo() {
@@ -1198,7 +1244,20 @@
         v.setAttribute('aria-hidden', 'true');
         v.addEventListener('loadedmetadata', () => {
             if (!isFinite(v.duration)) return probeDuration(v);
-            if (v.dataset.path === scrub.path) seekScrub(true);
+            if (v.dataset.path !== scrub.path) return;
+            if (hoverPlays() && !scrub.scrubbing) startHoverPlay();
+            else seekScrub(true);
+        });
+        // Playing preview: show the frame and move the thin progress line along
+        v.addEventListener('playing', () => {
+            if (v.dataset.path === scrub.path && scrub.card) v.classList.add('ready');
+        });
+        v.addEventListener('timeupdate', () => {
+            if (scrub.scrubbing || v.paused || v.dataset.path !== scrub.path || !scrub.card) return;
+            const d = scrubDuration();
+            if (!d) return;
+            scrub.f = clamp(v.currentTime / d, 0, 1);
+            paintScrub();
         });
         v.addEventListener('durationchange', () => {
             if (!isFinite(v.duration) || v.duration <= 0) return;
@@ -1213,7 +1272,12 @@
             scrub.seeking = false;
             if (v.dataset.probing) {
                 delete v.dataset.probing;
-                if (v.dataset.path === scrub.path) seekScrub(true);
+                if (v.dataset.path === scrub.path) {
+                    if (hoverPlays() && !scrub.scrubbing) {
+                        v.currentTime = 0;
+                        startHoverPlay();
+                    } else seekScrub(true);
+                }
                 return;
             }
             if (v.dataset.path === scrub.path && scrub.card) v.classList.add('ready');
@@ -1324,6 +1388,7 @@
         scrub.path = null;
         scrub.seeking = false;
         scrub.pending = null;
+        scrub.scrubbing = false;
     }
 
     function releaseScrubSource() {
@@ -2159,7 +2224,7 @@
         title: '새 폴더',
         group: '파일',
         icon: 'folder-plus',
-        keys: ['Mod+Shift+N'],
+        keys: ['Mod+Alt+N'],
         when: inFolder,
         run: async () => {
             const dir = App.state.cwd;
@@ -2197,7 +2262,7 @@
         title: '썸네일 꽉 채우기 / 원본 비율 바꾸기',
         group: '보기',
         icon: 'g-fit-contain',
-        keys: ['Mod+Shift+F'],
+        keys: ['Mod+Alt+F'],
         when: () => App.fs.ready && mode === 'grid',
         run: () => gallery.setFit(fit === 'contain' ? 'cover' : 'contain'),
     });

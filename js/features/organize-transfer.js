@@ -103,7 +103,7 @@
 
                 ctx.main.append(h('div', { class: 'org-picker-top' }, searchBox), nfBar, h('div', { class: 'org-picker-body' }, list.el, loading, noMatch));
 
-                const newBtn = btn({ label: '새 폴더', icon: 'folder-plus', kind: 'ghost', tip: '선택한 폴더 안에 새 폴더 만들기', keys: 'Mod+Shift+N', onClick: () => startInline() });
+                const newBtn = btn({ label: '새 폴더', icon: 'folder-plus', kind: 'ghost', tip: '선택한 폴더 안에 새 폴더 만들기', keys: 'Mod+Alt+N', onClick: () => startInline() });
                 const destInfo = h('div', { class: 'org-foot-info truncate' });
                 const okBtn = btn({ label: opts.okLabel || '선택', kind: 'primary', onClick: () => confirm() });
                 const cancelBtn = btn({ label: '취소', kind: 'ghost', onClick: () => ctx.close(null) });
@@ -290,7 +290,7 @@
                         move(k === 'PageDown' ? 10 : -10);
                         return true;
                     }
-                    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (k === 'N' || k === 'n')) {
+                    if ((e.ctrlKey || e.metaKey) && (e.altKey || e.shiftKey) && (e.code === 'KeyN' || k === 'N' || k === 'n')) {
                         startInline();
                         return true;
                     }

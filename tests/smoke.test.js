@@ -111,7 +111,7 @@ module.exports = [
         async run({ openApp, assert, card }) {
             const { page } = await openApp({ seed: SEED });
             await page.evaluate(() => App.catalog.update('a-photo.png', { memo: 'moved memo' }));
-            await page.keyboard.press('Control+Shift+N');
+            await page.keyboard.press('Control+Alt+N');
             await page.waitForSelector('.dialog .input');
             await page.fill('.dialog .input', 'picked');
             await page.keyboard.press('Enter');

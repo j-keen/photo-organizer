@@ -96,7 +96,7 @@ function initScript() {
         return c.convertToBlob({ type: opts.mime || 'image/png' });
     }
 
-    async function makeVideo(opts = {}) {
+    async function recordVideo(opts) {
         const canvas = document.createElement('canvas');
         canvas.width = opts.w || 320;
         canvas.height = opts.h || 240;
@@ -109,22 +109,32 @@ function initScript() {
         rec.start(100);
         const start = performance.now();
         const ms = (opts.seconds || 1) * 1000;
-        await new Promise((resolve) => {
-            const tick = () => {
-                const t = performance.now() - start;
-                g.fillStyle = `hsl(${(t / 10) % 360},70%,45%)`;
-                g.fillRect(0, 0, canvas.width, canvas.height);
-                g.fillStyle = '#fff';
-                g.font = '40px sans-serif';
-                g.fillText((t / 1000).toFixed(1), 20, 120);
-                if (t < ms) requestAnimationFrame(tick);
-                else resolve();
-            };
-            tick();
-        });
+        // Timers instead of requestAnimationFrame: rAF stalls in background/busy tabs and yields empty clips
+        for (;;) {
+            const t = performance.now() - start;
+            g.fillStyle = `hsl(${(t / 10) % 360},70%,45%)`;
+            g.fillRect(0, 0, canvas.width, canvas.height);
+            g.fillStyle = '#fff';
+            g.font = '40px sans-serif';
+            g.fillText((t / 1000).toFixed(1), 20, 120);
+            if (t >= ms) break;
+            await new Promise((r) => setTimeout(r, 33));
+        }
+        rec.requestData();
         rec.stop();
         await stopped;
+        stream.getTracks().forEach((tr) => tr.stop());
         return new Blob(chunks, { type: 'video/webm' });
+    }
+
+    async function makeVideo(opts = {}) {
+        // Under heavy machine load MediaRecorder occasionally produces an (almost) empty file — retry
+        let blob = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+            blob = await recordVideo(opts);
+            if (blob.size >= 1000) break;
+        }
+        return blob;
     }
 
     async function writePath(root, rel, data) {

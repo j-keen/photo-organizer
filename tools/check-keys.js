@@ -21,6 +21,8 @@ const { openApp } = require('../tests/lib/harness');
         const ALLOWED = [
             ['layout.closeOverlay', 'select.clear'], // Esc closes an overlay panel first, otherwise clears the selection
             ['file.rename', 'organize.rename'], // F2: one item → inline rename, several → batch rename
+            ['clipboard.cancel', 'select.clear'], // Esc: clears the selection first, then cancels a pending cut
+            ['layout.closeOverlay', 'clipboard.cancel'],
         ];
         const allowed = (a, b) => ALLOWED.some(([x, y]) => (a.id === x && b.id === y) || (a.id === y && b.id === x));
         for (const [combo, list] of byCombo) {

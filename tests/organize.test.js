@@ -256,7 +256,7 @@ module.exports = [
             await select(page, ['a.png', 'b.png']);
             await page.keyboard.press('Control+Shift+M');
             await page.waitForSelector('.org-picker .org-picker-row');
-            await page.keyboard.press('Control+Shift+N');
+            await page.keyboard.press('Control+Alt+N');
             await page.waitForSelector('.org-nf:not([hidden]) input');
             await page.fill('.org-nf input', 'picked');
             await page.keyboard.press('Enter');
@@ -277,7 +277,7 @@ module.exports = [
             await select(page, ['trip/x.png'].length ? ['trip'] : []);
             await page.keyboard.press('Control+Shift+M');
             await page.waitForSelector('.org-picker .org-picker-row');
-            await page.keyboard.press('Control+Shift+N');
+            await page.keyboard.press('Control+Alt+N');
             await page.waitForSelector('.org-nf:not([hidden]) input');
             await page.fill('.org-nf input', 'later');
             await page.keyboard.press('Enter');

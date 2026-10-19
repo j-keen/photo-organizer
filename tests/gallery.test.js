@@ -220,9 +220,34 @@ module.exports = [
         },
     },
     {
-        name: 'hovering a video card scrubs a single lightweight preview with a progress line',
+        name: "owner rule: hovering a video card plays ONLY that card (muted, looping) and leaving stops it",
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: SEED });
+            const clip = await ensurePlayableClip(page, 'c-clip.webm');
+            assert.notEqual(clip, 'failed', 'could not get a playable test clip');
+            await page.waitForFunction(() => (App.view.get('c-clip.webm')?.size || 0) > 1000);
+            await page.waitForSelector('.card[data-path="c-clip.webm"] .card-media');
+            const box = await page.locator('.card[data-path="c-clip.webm"] .card-media').boundingBox();
+            const playing = () => page.evaluate(() => {
+                const v = document.querySelector('#gallery video.card-scrub-video');
+                return !!v && !v.paused && v.muted && v.loop && v.currentTime > 0.05;
+            });
+            for (let k = 0; k < 60 && !(await playing()); k++) {
+                await page.mouse.move(box.x + box.width * 0.5 + (k % 2), box.y + box.height / 2);
+                await page.waitForTimeout(150);
+            }
+            assert.ok(await playing(), 'the hovered clip plays by itself (muted, looping)');
+            assert.equal(await page.locator('#gallery video').count(), 1, 'only the hovered card has a <video>');
+            await page.mouse.move(5, 5);
+            await page.waitForFunction(() => !document.querySelector('#gallery video'));
+        },
+    },
+    {
+        name: 'Shift-hovering a video card scrubs a single lightweight preview with a progress line',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: SEED });
+            // Scrub mode (what Shift does while hovering); the setting turns hover-play off for this check
+            await page.evaluate(() => App.settings.set('gallery.hoverPlay', false));
             const clip = await ensurePlayableClip(page, 'c-clip.webm');
             assert.notEqual(clip, 'failed', 'could not get a playable test clip');
             await page.waitForFunction(() => (App.view.get('c-clip.webm')?.size || 0) > 1000); // listing caught up
@@ -483,7 +508,7 @@ module.exports = [
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: SEED });
             assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.card-img')).objectFit), 'cover');
-            await page.keyboard.press('Control+Shift+F');
+            await page.keyboard.press('Control+Alt+F');
             assert.equal(await page.evaluate(() => App.gallery.fit), 'contain');
             assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.card-img')).objectFit), 'contain');
             assert.equal(await page.evaluate(() => App.settings.get('gallery.fit')), 'contain');
