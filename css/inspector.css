@@ -171,6 +171,26 @@
     transition: opacity var(--dur-slow) var(--ease);
 }
 
+/* View-only rotation / flip from the viewer. Quarter turns swap the fit box (container units = the preview box). */
+.insp-preview.xf {
+    container-type: size;
+}
+
+.insp-preview.xf .insp-img,
+.insp-preview.xf .insp-video {
+    transform: var(--insp-xf);
+}
+
+.insp-preview.xf-swap .insp-img,
+.insp-preview.xf-swap .insp-video {
+    inset: auto;
+    left: 50%;
+    top: 50%;
+    width: 100cqh;
+    height: 100cqw;
+    transform: translate(-50%, -50%) var(--insp-xf);
+}
+
 .insp-preview.ready .insp-img {
     opacity: 1;
 }

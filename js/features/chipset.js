@@ -917,13 +917,15 @@
             hudEl = h('div', { id: 'chip-hud', class: 'chip-hud', role: 'status', 'aria-live': 'polite' });
             document.body.append(hudEl);
         }
+        clearTimeout(hudTimer);
         hudEl.className = `chip-hud ${kind}`;
         hudEl.innerHTML = '';
         hudEl.append(h('span', { class: 'chip-hud-text', text }));
         if (sub) hudEl.append(h('span', { class: 'chip-hud-sub', text: sub }));
+        // A dialog is up (e.g. it opened right after the action): it already has the user's attention
+        if (document.querySelector('.dialog-backdrop')) return;
         void hudEl.offsetWidth;
         hudEl.classList.add('show');
-        clearTimeout(hudTimer);
         hudTimer = setTimeout(() => hudEl.classList.remove('show'), kind === 'info' ? 2200 : 1300);
     }
 

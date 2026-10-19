@@ -506,6 +506,40 @@
         return false;
     }
 
+    /**
+     * The panel's options as of now. The inspector re-renders on a short debounce, so a click right after picking
+     * another file must act on that file, not on the one the panel was last drawn for.
+     */
+    function liveOpts(panel) {
+        if (panel.dataset.panel === 'inspector' && App.inspector?.flushPending?.()) {
+            const fresh = document.querySelector('.chip-panel[data-panel="inspector"]');
+            if (fresh?._opts) return fresh._opts;
+        }
+        return panel._opts;
+    }
+
+    // A re-render (undo, a hotkey, a selection change…) between mousedown and mouseup swaps the chip element and the
+    // browser drops the click. If press and release land on the same chip of the same panel, click the new element.
+    let pressed = null;
+    let chipClicks = 0;
+    document.addEventListener('mousedown', (e) => {
+        const el = e.button === 0 ? e.target.closest?.('.chip-panel .chip[data-chip]') : null;
+        pressed = el ? { el, id: el.dataset.chip, panel: el.closest('.chip-panel').dataset.panel } : null;
+    }, true);
+    document.addEventListener('mouseup', (e) => {
+        const p = pressed;
+        pressed = null;
+        if (!p || e.button !== 0 || p.el.isConnected) return;
+        const now = e.target.closest?.('.chip-panel .chip[data-chip]');
+        if (!now || now.dataset.chip !== p.id || now.closest('.chip-panel').dataset.panel !== p.panel) return;
+        const seq = chipClicks;
+        setTimeout(() => {
+            if (chipClicks !== seq) return; // the browser delivered the click after all
+            const el = now.isConnected ? now : document.querySelector(`.chip-panel[data-panel="${CSS.escape(p.panel)}"] .chip[data-chip="${CSS.escape(p.id)}"]`);
+            el?.click();
+        });
+    }, true);
+
     function onClick(e) {
         const panel = panelOf(e.target);
         const C = cs();
@@ -538,7 +572,8 @@
         }
         const chip = e.target.closest('.chip[data-chip]');
         if (chip) {
-            const files = opts.files || [];
+            chipClicks++;
+            const files = liveOpts(panel).files || [];
             const id = chip.dataset.chip;
             if (!files.length) {
                 C.hud(opts.entries?.length ? '폴더에는 칩을 붙일 수 없어요' : '칩을 붙일 파일을 먼저 선택해 주세요', { kind: 'info', sub: C.hudLabel(id) });

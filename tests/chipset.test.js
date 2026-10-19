@@ -30,15 +30,20 @@ async function setupChips(page) {
     });
 }
 
-// Count App.undo entries pushed from now on
+// Count App.undo entries pushed from now on (pushes the core merges into the previous entry — coalesceKey — don't count)
 async function countUndo(page) {
     await page.evaluate(() => {
         window.__undoCount = 0;
         if (App.undo.__counted) return;
         const push = App.undo.push;
+        const seen = new WeakSet();
         App.undo.push = function (e) {
-            window.__undoCount++;
-            return push.call(this, e);
+            const entry = push.call(this, e) || e;
+            if (!seen.has(entry)) {
+                seen.add(entry);
+                window.__undoCount++;
+            }
+            return entry;
         };
         App.undo.__counted = true;
     });

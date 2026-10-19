@@ -79,19 +79,8 @@
 
     App.commands.register({ id: 'chips.drawer.viewer', title: '칩 서랍 열고 닫기 (보기 화면)', group: '칩', icon: 'tag', keys: 'Alt+C', scope: 'viewer', when: () => !!App.viewer?.isOpen, run: () => toggle() });
 
-    // Ctrl+Z / Ctrl+Shift+Z must also work while viewing full-screen (chips, stars, labels set there).
-    // Core is making edit.undo/edit.redo 'global'; until then (feature-detected) add viewer-scope twins.
-    function ensureViewerUndo() {
-        for (const [id, twin, title, icon] of [['edit.undo', 'chips.undo.viewer', '실행 취소 (보기 화면)', 'undo'], ['edit.redo', 'chips.redo.viewer', '다시 실행 (보기 화면)', 'redo']]) {
-            const cmd = App.commands.get(id);
-            if (!cmd || cmd.scope === 'global' || cmd.scope === 'viewer' || App.commands.get(twin)) continue;
-            App.commands.register({ id: twin, title, group: '편집', icon, keys: cmd.keys, scope: 'viewer', when: () => App.commands.isEnabled(id), run: () => App.commands.run(id) });
-        }
-    }
-
     App.register('chips-viewer', {
         init() {
-            App.bus.on('app:ready', ensureViewerUndo);
             if (!App.viewer) return;
             App.viewer.toolbarItems.push((entry) => {
                 const n = entry && entry.kind === 'file' && App.chipset?.ready ? App.chipset.chipsOf(entry.path).length : 0;

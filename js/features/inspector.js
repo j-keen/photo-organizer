@@ -186,6 +186,12 @@
             refresh('all');
         },
         refresh,
+        /** Run a pending (debounced) refresh right now. Returns true if one ran. */
+        flushPending() {
+            if (!pending.size) return false;
+            flush.flush();
+            return true;
+        },
         LABELS,
         labelName,
     };
@@ -269,9 +275,44 @@
         box.append(h('div', { class: 'insp-noprev', html: `${ui.icon(entry.type === 'video' ? 'film' : 'image', { size: 30 })}<span>${App.util.escapeHtml((entry.ext || '').toUpperCase())} 미리보기를 만들 수 없어요</span>` }));
     }
 
+    /**
+     * View-only rotation / flip set in the viewer (feature-detected): App.viewer.transformOf(path) gives a CSS
+     * transform string or { rot, flipH, flipV }; older viewers only have rotationOf(path) -> degrees.
+     * Returns { css, quarter } — quarter = turned 90/270°, so the fit box swaps width and height.
+     */
+    function previewTransform(p) {
+        const V = App.viewer;
+        let t = null;
+        try {
+            t = V?.transformOf ? V.transformOf(p) : V?.rotationOf ? { rot: V.rotationOf(p) } : null;
+        } catch {
+            t = null;
+        }
+        if (!t) return { css: '', quarter: false };
+        if (typeof t === 'string') {
+            const m = /rotate\(\s*(-?[\d.]+)deg\s*\)/.exec(t);
+            return { css: t.trim() === 'none' ? '' : t.trim(), quarter: !!m && Math.round(Number(m[1]) / 90) % 2 !== 0 };
+        }
+        const rot = ((Math.round(Number(t.rot) || 0) % 360) + 360) % 360;
+        const parts = [];
+        if (rot) parts.push(`rotate(${rot}deg)`);
+        if (t.flipH || t.flipV) parts.push(`scale(${t.flipH ? -1 : 1}, ${t.flipV ? -1 : 1})`);
+        return { css: parts.join(' '), quarter: rot % 180 !== 0 };
+    }
+
+    function applyPreviewTransform(box, p) {
+        if (!box) return;
+        const { css, quarter } = previewTransform(p);
+        if (css) box.style.setProperty('--insp-xf', css);
+        else box.style.removeProperty('--insp-xf');
+        box.classList.toggle('xf', !!css);
+        box.classList.toggle('xf-swap', !!css && quarter);
+    }
+
     function renderSinglePreview(body, entry) {
         const box = h('div', { class: 'insp-preview', 'data-tip': '두 번 클릭하면 크게 봐요' }, h('div', { class: 'insp-ph' }, h('span', { class: 'spinner' })));
         body.append(box);
+        applyPreviewTransform(box, entry.path);
         box.addEventListener('dblclick', () => App.nav.open(entry));
         const token = previewToken;
         const fullRes = () => App.fs.url(entry.path).then(({ url, release }) => {
@@ -318,7 +359,11 @@
             const key = primary
                 ? `1|${primary.path}|${primary.mtime || 0}|${primary.size || 0}`
                 : `n|${entries.length}|${entries.slice(0, 6).map((e) => e.path).join('|')}`;
-            if (body.dataset.key === key) return;
+            if (body.dataset.key === key) {
+                // Same file: only its view rotation / flip may have changed (catalog meta)
+                if (primary && primary.kind === 'file') applyPreviewTransform(body.querySelector('.insp-preview'), primary.path);
+                return;
+            }
             body.dataset.key = key;
             releasePreview();
             body.innerHTML = '';
@@ -514,40 +559,20 @@
 
     const saveMemoSoon = debounce(() => memoFlush(), 600);
 
+    // Undo: ONE entry per typing burst, not per keystroke or autosave. The catalog records the entry itself and
+    // merges saves that share a coalesceKey ('memo:' + path) within a few seconds. Leaving the memo (blur, another
+    // file) ends the burst, so the next edit of the same file gets its own entry.
+    let burstSeq = 0;
+
+    function endBurst() {
+        burstSeq++;
+    }
+
     function writeMemo(p, v) {
         App.catalog.update(p, (e) => {
             if (v && v.trim()) e.memo = v;
             else delete e.memo;
-        }, { undoable: false });
-    }
-
-    // Undo: ONE entry per editing burst, not per keystroke or autosave. The first save of a burst pushes an entry;
-    // later saves of the same burst only move its "after" value while it is still the newest entry.
-    // A burst ends when the memo loses focus, another file is shown, or typing pauses for BURST_MS.
-    const BURST_MS = 4000;
-    const burst = { entry: null, path: null, at: 0, open: false };
-
-    function endBurst() {
-        burst.open = false;
-    }
-
-    function recordMemoUndo(p, before, after) {
-        const now = Date.now();
-        const top = typeof App.undo.peek === 'function' ? App.undo.peek() : null;
-        if (burst.open && burst.entry && burst.path === p && top === burst.entry && now - burst.at < BURST_MS) {
-            burst.entry.after = after;
-            burst.at = now;
-            return;
-        }
-        const entry = {
-            label: `메모 고치기 · ${P.base(p)}`,
-            before,
-            after,
-            undo: async () => writeMemo(p, entry.before),
-            redo: async () => writeMemo(p, entry.after),
-        };
-        App.undo.push(entry);
-        Object.assign(burst, { entry, path: p, at: now, open: true });
+        }, { label: `메모 고치기 · ${P.base(p)}`, coalesceKey: `memo:${p}#${burstSeq}` });
     }
 
     function memoFlush() {
@@ -562,7 +587,6 @@
             return;
         }
         writeMemo(p, v);
-        recordMemoUndo(p, before, v);
         memoState('saving');
         Promise.resolve(App.catalog.flush()).then(() => {
             if (memo.path === p && !memo.dirty) memoState('saved');

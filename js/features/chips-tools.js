@@ -331,15 +331,13 @@
             kids.set(par, (kids.get(par) || 0) + 1);
         }
         const parents = [...kids.keys()].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : compareNames(a, b)));
-        // Default parent: the folder you're in when it has several subfolders; otherwise (e.g. at the workspace root,
-        // whose subfolders are usually broad buckets) the folder below with the most subfolders — e.g. 배우/ with
-        // 김수현/, 박보영/, …; the root only as a last resort.
+        // Default parent: the folder with the most subfolders (e.g. 배우/ with 김수현/, 박보영/, …) — searched in the
+        // folder you're in and below first, then the whole library. The workspace root (whose subfolders are usually
+        // broad buckets) and single-subfolder folders only as a last resort.
         const cwd = App.state.cwd || '';
         const richest = (list) => list.slice().sort((a, b) => kids.get(b) - kids.get(a) || a.length - b.length)[0];
         const several = parents.filter((p) => p !== '' && kids.get(p) >= 2);
-        let parent = cwd && (kids.get(cwd) || 0) >= 2
-            ? cwd
-            : richest(several.filter((p) => P.isInside(p, cwd))) ?? richest(several) ?? (kids.has(cwd) ? cwd : parents[0] ?? '');
+        const parent = richest(several.filter((p) => P.isInside(p, cwd))) ?? richest(several) ?? (kids.has(cwd) ? cwd : parents[0] ?? '');
 
         const o = { folders: parents.length > 0, parent, catId: '__new__', names: true, scope: 'all' };
         const catFor = (par) => {
