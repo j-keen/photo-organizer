@@ -1,5 +1,6 @@
-/* Top bar, breadcrumb, search, view bar */
+/* Top bar, breadcrumb, search (+ suggestions), view bar, card folder badges */
 
+/* ---------- Breadcrumb ---------- */
 .crumbs {
     display: flex;
     align-items: center;
@@ -28,11 +29,30 @@
     white-space: nowrap;
     cursor: pointer;
     flex-shrink: 0;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.crumb > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .crumb:hover {
     background: var(--bg-3);
     color: var(--text);
+}
+
+.crumb:focus-visible,
+.crumb-sep:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+.crumb.root .ico {
+    color: var(--text-3);
 }
 
 .crumb.current {
@@ -42,16 +62,62 @@
 
 span.crumb.current {
     cursor: default;
+    max-width: 420px;
+}
+
+span.crumb.current:hover {
+    background: transparent;
+}
+
+.crumb-more {
+    padding: 0 7px;
+    letter-spacing: 0.08em;
+    font-weight: 700;
 }
 
 .crumb-sep {
-    color: var(--text-4);
     display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: var(--r-xs);
+    background: transparent;
+    color: var(--text-4);
     flex-shrink: 0;
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
+.crumb-sep:hover {
+    background: var(--bg-3);
+    color: var(--text);
+}
+
+.crumb-sep.static {
+    cursor: default;
+}
+
+.crumb-sep.static:hover {
+    background: transparent;
+    color: var(--text-4);
+}
+
+.crumb-sep.trail {
+    width: 22px;
+    margin-left: 1px;
+}
+
+/* ---------- Search ---------- */
 .topbar-search {
-    width: clamp(160px, 22vw, 300px);
+    width: clamp(180px, 22vw, 300px);
+    transition: width var(--dur-slow) var(--ease);
+}
+
+.topbar-search.focused {
+    width: clamp(240px, 28vw, 380px);
 }
 
 .topbar-search .input {
@@ -59,8 +125,160 @@ span.crumb.current {
     background: var(--bg-2);
 }
 
-.topbar-search input[type="search"]::-webkit-search-cancel-button {
-    filter: grayscale(1) opacity(0.6);
+.topbar-search.has-text .input {
+    padding-right: 72px;
+}
+
+.topbar-search input[type="search"]::-webkit-search-cancel-button,
+.topbar-search input[type="search"]::-webkit-search-decoration {
+    -webkit-appearance: none;
+    appearance: none;
+    display: none;
+}
+
+.search-count {
+    position: absolute;
+    right: 30px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    max-width: 64px;
+    color: var(--text-4);
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    z-index: 1;
+}
+
+.search-count .spinner {
+    width: 11px;
+    height: 11px;
+    border-width: 1.5px;
+}
+
+.search-clear {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: var(--r-full);
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    z-index: 1;
+}
+
+.search-clear .ico {
+    position: static;
+    transform: none;
+    color: inherit;
+}
+
+.search-clear:hover {
+    background: var(--bg-4);
+    color: var(--text);
+}
+
+/* Suggestions dropdown */
+.search-suggest {
+    max-width: none;
+    max-height: min(70vh, 520px);
+    padding: 5px;
+}
+
+.sg-scope {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px 8px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid var(--line-2);
+}
+
+.sg-scope-label {
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+}
+
+.sg-scope .seg {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.sg-scope .seg button {
+    max-width: 180px;
+}
+
+.sg-scope .seg button span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sg-scope .kbd {
+    margin-left: auto;
+}
+
+.sg-opt {
+    position: relative;
+}
+
+.sg-ico {
+    display: inline-flex;
+    color: var(--text-3);
+}
+
+.sg-opt.sg-chip .sg-ico {
+    color: var(--accent);
+}
+
+.sg-text {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+}
+
+.sg-sub {
+    color: var(--text-4);
+    font-size: var(--fs-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sg-opt.sg-all .menu-label {
+    color: var(--text-2);
+}
+
+.sg-forget {
+    display: none;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: var(--r-full);
+    background: transparent;
+    color: var(--text-4);
+    cursor: pointer;
+}
+
+.sg-opt:hover .sg-forget,
+.sg-opt.active .sg-forget {
+    display: grid;
+}
+
+.sg-forget:hover {
+    background: var(--bg-4);
+    color: var(--text);
 }
 
 .btn:disabled .ico {
@@ -71,12 +289,70 @@ span.crumb.current {
     transform: rotate(180deg);
 }
 
-/* View bar */
+/* ---------- View bar ---------- */
+#viewbar {
+    container-type: inline-size;
+    container-name: viewbar;
+}
+
+#viewbar > * {
+    flex-shrink: 0;
+}
+
+#viewbar > .grow {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+#viewbar > .vb-filters {
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+#viewbar .seg button {
+    white-space: nowrap;
+}
+
 .vb-title {
     display: flex;
     align-items: baseline;
     gap: 10px;
     min-width: 0;
+}
+
+#viewbar > .vb-title {
+    flex: 0 1 auto;
+    min-width: 48px;
+    overflow: hidden;
+}
+
+@container viewbar (max-width: 860px) {
+    .nav-rec-toggle > span:not(.spinner) {
+        display: none;
+    }
+
+    .nav-rec-toggle {
+        width: 26px;
+        padding: 0;
+    }
+
+    .vb-zoom {
+        display: none !important;
+    }
+}
+
+@container viewbar (max-width: 660px) {
+    .vb-count {
+        display: none;
+    }
+
+    .vb-sort > span {
+        display: none;
+    }
+
+    #viewbar .seg button .ico {
+        display: none;
+    }
 }
 
 .vb-name {
@@ -118,6 +394,21 @@ span.crumb.current {
     color: var(--on-accent);
 }
 
+.seg button:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+.vb-scope button {
+    max-width: 140px;
+}
+
+.nav-rec-toggle .spinner {
+    width: 12px;
+    height: 12px;
+    border-width: 1.5px;
+}
+
 .vb-zoom {
     display: inline-flex;
     align-items: center;
@@ -128,6 +419,45 @@ span.crumb.current {
 .zoom-slider {
     width: 96px;
     accent-color: var(--accent);
+}
+
+/* Card badge: which folder a file lives in (recursive / search / chip views) */
+.nav-subdir {
+    position: absolute;
+    left: 7px;
+    bottom: 7px;
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    max-width: calc(100% - 70px);
+    padding: 0 7px 0 6px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-full);
+    background: var(--bg-glass);
+    backdrop-filter: blur(8px);
+    color: var(--text);
+    font-size: 10.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    opacity: 0.92;
+    transition: opacity var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.nav-subdir span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.nav-subdir .ico {
+    color: var(--accent);
+}
+
+.nav-subdir:hover {
+    opacity: 1;
+    border-color: var(--accent-line);
 }
 
 /* Status bar extras */
