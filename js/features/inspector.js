@@ -66,7 +66,7 @@
     function mount(s) {
         if (s.el) return;
         s.body = h('div', { class: 'insp-body' });
-        s.el = h('section', { class: `insp-section insp-sec-${s.id}${s.dock ? ` docked-${s.dock}` : ''}`, dataset: { section: s.id } });
+        s.el = h('section', { class: `insp-section insp-sec-${s.id} insp-${s.id}${s.dock ? ` docked-${s.dock}` : ''}`, dataset: { section: s.id } });
         if (s.title) {
             const head = h(s.collapsible ? 'button' : 'div', {
                 class: `panel-section-head insp-head${s.collapsible ? ' collapsible' : ''}`,

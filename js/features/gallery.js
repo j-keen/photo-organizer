@@ -418,7 +418,8 @@
         const out = [];
         for (const id of ids) {
             try {
-                const n = cs.nameOf(id);
+                // '분류/칩' is clearer than the bare chip name
+                const n = (typeof cs.labelOf === 'function' && cs.labelOf(id, '/')) || cs.nameOf(id);
                 if (n) out.push(n);
             } catch (e) {
                 /* unknown chip */

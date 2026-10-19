@@ -483,6 +483,8 @@ module.exports = [
             // Favorites: add (Ctrl+D), pin several by dropping, reorder by dragging, remove from the menu
             await page.evaluate(() => App.nav.go('trip'));
             await page.waitForFunction(() => App.state.cwd === 'trip');
+            // Ctrl+D pins the selected folder card if there is one — clear it so the current folder is pinned
+            await page.evaluate(() => App.select.clear());
             await check('favorite add', () => key('Control+d'), () => favs('trip'), () => favs(''));
             await check('favorite pin by drop', () => synthDrop(page, { to: '.fav-row[data-path="trip"]', paths: ['family', 'empty'], edge: 'bottom' }), () => favs('trip,family,empty'), () => favs('trip'));
             await check('favorite reorder', () => synthDrop(page, { from: '.fav-row[data-path="empty"]', to: '.fav-row[data-path="trip"]', fav: 'empty', edge: 'top' }), () => favs('empty,trip,family'), () => favs('trip,family,empty'));

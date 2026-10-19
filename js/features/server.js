@@ -62,7 +62,11 @@
     let stoppedByUser = false; // '서버 끄기' was used: no warning toast, but reconnect when it comes back
     let recoveryDelay = 3000;
 
-    const backend = () => (App.fs.backend?.kind === 'server' ? App.fs.backend : null);
+    // Only a real ServerBackend counts (tests and other modules may plug in look-alike backends)
+    const backend = () => {
+        const b = App.fs.backend;
+        return b?.kind === 'server' && typeof b.canThumb === 'function' && typeof b.probe === 'function' ? b : null;
+    };
     const failure = (code, message) => Object.assign(new Error(message), { code });
     const reportError = (err) => {
         if (err?.code !== 'ECANCELED') ui.toast(err?.message || '작업을 마치지 못했어요', { type: 'error' });

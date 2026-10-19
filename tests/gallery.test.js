@@ -87,10 +87,16 @@ function ensurePlayableClip(page, name) {
     }, name);
 }
 
+/** Two chips named 인물/지민 and 장소/제주 — real ones when the chips module is loaded, a stub otherwise. Returns their ids. */
 function stubChipNames(page) {
     return page.evaluate(() => {
+        const C = App.chipset;
+        if (C && typeof C.addCategory === 'function' && typeof C.addChip === 'function') {
+            return [C.addChip(C.addCategory({ name: '인물' }).id, '지민').id, C.addChip(C.addCategory({ name: '장소' }).id, '제주').id];
+        }
         App.chipset = App.chipset || {};
         if (typeof App.chipset.nameOf !== 'function') App.chipset.nameOf = (id) => ({ c1: '인물/지민', c2: '장소/제주' })[id] || null;
+        return ['c1', 'c2'];
     });
 }
 
@@ -177,16 +183,18 @@ module.exports = [
             const { page } = await openApp({ seed });
             await page.waitForFunction(() => App.index.ready);
             await page.waitForSelector('.card[data-path="trip"] .card-mosaic.n4');
-            assert.equal(await page.textContent('.card[data-path="trip"] .card-sub'), '사진 5 · 영상 1');
+            // Owner: counts of photos / videos / subfolders plus the total size; empty folders say so
+            assert.match(await page.textContent('.card[data-path="trip"] .card-sub'), /^사진 5 · 영상 1 · [\d.]+ (B|KB|MB)$/);
             await page.waitForFunction(() => document.querySelectorAll('.card[data-path="trip"] .mosaic-cell.has-thumb').length === 4, null, { timeout: 15000 });
-            assert.equal(await page.textContent('.card[data-path="nested"] .card-sub'), '사진 1', 'counts include subfolders');
+            assert.match(await page.textContent('.card[data-path="nested"] .card-sub'), /^사진 1 · 폴더 1 · /, 'counts include subfolders');
             assert.ok(await page.isVisible('.card[data-path="nested"] .card-mosaic.n1'), 'nested media fill the mosaic');
-            assert.equal(await page.textContent('.card[data-path="empty"] .card-sub'), '비어 있어요');
+            assert.equal(await page.textContent('.card[data-path="empty"] .card-sub'), '빈 폴더');
             assert.ok(await page.isVisible('.card[data-path="empty"] .card-folder.is-empty'));
-            assert.match(await (await card(page, 'trip')).locator('.card-sub').getAttribute('data-tip'), /하위 폴더까지 사진 5장 · 영상 1개/);
+            assert.ok(await page.isVisible('.card[data-path="empty"] .card-empty-badge'));
+            assert.match(await (await card(page, 'trip')).locator('.card-sub').getAttribute('data-tip'), /하위 폴더까지 사진 5장 · 영상 1개 · 폴더 0개 · 전체 /);
             // Counts follow file operations
             await page.evaluate(() => App.fs.move(['loose.png'], 'empty'));
-            await page.waitForFunction(() => document.querySelector('.card[data-path="empty"] .card-sub')?.textContent === '사진 1', null, { timeout: 8000 });
+            await page.waitForFunction(() => /^사진 1 · /.test(document.querySelector('.card[data-path="empty"] .card-sub')?.textContent || ''), null, { timeout: 8000 });
             assert.ok(await page.isVisible('.card[data-path="empty"] .card-mosaic.n1'));
         },
     },
@@ -194,11 +202,11 @@ module.exports = [
         name: 'cards show rating, color label, chips (names in tooltip), memo, markers and duration',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: SEED });
-            await stubChipNames(page);
-            await page.evaluate(() => {
-                App.catalog.update('a-photo.png', { rating: 4, label: 'blue', chips: ['c1', 'c2'], memo: '바다에서 찍은 사진' });
+            const chipIds = await stubChipNames(page);
+            await page.evaluate((ids) => {
+                App.catalog.update('a-photo.png', { rating: 4, label: 'blue', chips: ids, memo: '바다에서 찍은 사진' });
                 App.catalog.update('c-clip.webm', { markers: [{ id: 'm1', t: 0.2 }, { id: 'm2', t: 0.7 }] });
-            });
+            }, chipIds);
             const a = '.card[data-path="a-photo.png"]';
             await page.waitForSelector(`${a} .card-stars`);
             assert.equal(await page.locator(`${a} .card-stars .ico`).count(), 4);
@@ -463,7 +471,8 @@ module.exports = [
             await page.waitForSelector('.menu');
             const labels = await page.$$eval('.menu .menu-label', (els) => els.map((e) => e.textContent));
             for (const want of ['보기', '훑어보기', '복사', '잘라내기', '다른 폴더로 이동…', '이름 바꾸기', '휴지통으로 이동']) assert.ok(labels.includes(want), `menu has ${want} (${labels.join(', ')})`);
-            assert.ok(!labels.includes('다른 폴더에 복사…'), 'unregistered organize.copyTo is hidden');
+            const copyRegistered = await page.evaluate(() => !!App.commands.get('organize.copyTo'));
+            assert.equal(labels.includes('다른 폴더에 복사…'), copyRegistered, 'organize.copyTo shows exactly when it is registered');
             await page.click('.menu .menu-item:has-text("다른 폴더로 이동…")');
             assert.deepEqual(await page.evaluate(() => window.__movedTo), ['a-photo.png']);
             // Empty space
@@ -487,9 +496,15 @@ module.exports = [
             assert.match(await page.textContent('.gab-count'), /2개 선택/);
             assert.match(await page.textContent('.gab-size'), /KB/);
             assert.ok((await page.evaluate(() => document.getElementById('gallery').offsetHeight)) > h0, 'extra scroll room under the last row');
-            assert.ok(await page.isHidden('.gab-btn[data-command="chips.picker"]'));
+            // Buttons exist only for registered commands (chips.picker is real once the chips module is loaded)
+            const pickerRegistered = await page.evaluate(() => !!App.commands.get('chips.picker'));
+            assert.equal(await page.isVisible('.gab-btn[data-command="chips.picker"]'), pickerRegistered);
             assert.ok(await page.isVisible('.gab-btn[data-command="file.trash"]'));
-            await page.evaluate(() => App.commands.register({ id: 'chips.picker', title: '칩 붙이기', keys: ['Mod+Shift+C'], run: () => (window.__chips = App.select.count) }));
+            await page.evaluate(() => {
+                App.commands.register({ id: 'chips.picker', title: '칩 붙이기', keys: ['Mod+Shift+C'], run: () => (window.__chips = App.select.count) });
+                App.select.set(App.select.list()); // the bar re-renders on selection changes
+            });
+            await page.waitForFunction(() => document.querySelector('.gab-btn[data-command="chips.picker"]')?.dataset.tipKeys === 'Mod+Shift+C');
             await page.waitForSelector('.gab-btn[data-command="chips.picker"]:not([hidden])');
             assert.equal(await page.getAttribute('.gab-btn[data-command="chips.picker"]', 'data-tip-keys'), 'Mod+Shift+C');
             await page.click('.gab-btn[data-command="chips.picker"]');

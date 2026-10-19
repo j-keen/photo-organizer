@@ -218,6 +218,12 @@
 
         showUnsupported(reason) {
             const e = this.entry;
+            // With the local server running, just play it through the server stream (no extra click).
+            // If the stream itself fails we come back here with source 'stream' and show the card instead.
+            if (serverStreamReady() && this.source !== 'stream' && App.settings.get('viewer.autoServerStream', true) !== false) {
+                this.useServerStream();
+                return;
+            }
             this.failed = true;
             this.clearCard();
             this.video.hidden = true;

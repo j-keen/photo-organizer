@@ -611,6 +611,8 @@ module.exports = [
             assert.equal(await page.locator('.vw-card button:has-text("서버로 재생")').count(), 0);
             assert.ok(await page.isHidden('.vw-ctl'), 'no player controls for a file that cannot play');
             await page.evaluate(() => {
+                // The card with "서버로 재생" is the fallback when auto-streaming is off (default is to stream right away)
+                App.settings.set('viewer.autoServerStream', false);
                 App.server = { available: true };
                 App.fs.backend.kind = 'server';
             });
