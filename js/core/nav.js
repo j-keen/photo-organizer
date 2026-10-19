@@ -202,6 +202,8 @@
     const nav = {
         back: [],
         fwd: [],
+        /** async (path, entries, source) => ({ entries, source })? — may replace a folder listing before it's shown */
+        loadHooks: [],
 
         get cwd() {
             return App.state.cwd;
@@ -245,7 +247,23 @@
             if (token !== loadToken) return; // superseded by a newer navigation
             const prevSelection = keepSelection ? select.list() : [];
             const title = p === '' ? App.state.workspace?.name || '' : P.base(p);
-            view.setEntries(entries, { type: 'folder', path: p, title, hiddenCount: entries.hiddenCount });
+            const source = { type: 'folder', path: p, title, hiddenCount: entries.hiddenCount };
+            // Hooks may replace the listing before it's shown (e.g. "include subfolders" view)
+            for (const hook of nav.loadHooks) {
+                try {
+                    const r = await hook(p, entries, source);
+                    if (r && r.entries) {
+                        const sidecars = entries.sidecars;
+                        entries = r.entries;
+                        if (!entries.sidecars) entries.sidecars = sidecars;
+                        Object.assign(source, r.source || {});
+                    }
+                } catch (e) {
+                    console.error('[nav] load hook failed', e);
+                }
+            }
+            if (token !== loadToken) return;
+            view.setEntries(entries, source);
             if (keepSelection && prevSelection.length) select.set(prevSelection.filter((x) => view.index.has(x)), { focus: select.focus });
             if (focus && view.index.has(focus)) select.set([focus], { focus });
             App.bus.emit('folder:loaded', { path: p, entries });
@@ -267,6 +285,24 @@
             if (!nav.fwd.length) return;
             nav.back.push(App.state.cwd);
             return nav.go(nav.fwd.pop(), { push: false });
+        },
+
+        /** Jump several steps through history: negative = back, positive = forward */
+        jump(delta) {
+            if (!delta) return;
+            const steps = Math.min(Math.abs(delta), delta < 0 ? nav.back.length : nav.fwd.length);
+            if (!steps) return;
+            let target = App.state.cwd;
+            for (let i = 0; i < steps; i++) {
+                if (delta < 0) {
+                    nav.fwd.push(target);
+                    target = nav.back.pop();
+                } else {
+                    nav.back.push(target);
+                    target = nav.fwd.pop();
+                }
+            }
+            return nav.go(target, { push: false });
         },
 
         goUp() {
