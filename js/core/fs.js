@@ -75,7 +75,16 @@
         async list(dirPath, { stat = true } = {}) {
             const d = await this.dir(dirPath);
             const out = [];
-            for await (const [name, h] of d.entries()) out.push({ name, kind: h.kind === 'directory' ? 'dir' : 'file', _h: h });
+            try {
+                for await (const [name, h] of d.entries()) out.push({ name, kind: h.kind === 'directory' ? 'dir' : 'file', _h: h });
+            } catch (e) {
+                // A cached handle of a folder that was deleted outside the app
+                if (e.name === 'NotFoundError') {
+                    this.invalidate(dirPath);
+                    throw fsError('ENOENT', `찾을 수 없어요: ${dirPath}`);
+                }
+                throw e;
+            }
             if (stat) {
                 await pool(out.filter((r) => r.kind === 'file'), 32, async (r) => {
                     const f = await r._h.getFile();
@@ -246,6 +255,11 @@
          */
         async list(dirPath, opts = {}) {
             const raws = await this.backend.list(dirPath, { stat: opts.stat !== false });
+            return this.fromRaws(dirPath, raws, opts);
+        },
+
+        /** The filtering half of list(): raw backend rows ({ name, kind, size?, mtime? }) → entries. opts: { all } */
+        fromRaws(dirPath, raws, opts = {}) {
             const names = new Set(raws.map((r) => r.name));
             let hidden = 0;
             const entries = [];
@@ -276,11 +290,39 @@
         },
 
         getFile(p) {
-            return this.backend.getFile(p);
+            return this._watchMissing(p, this.backend.getFile(p));
         },
 
         url(p) {
-            return this.backend.url(p);
+            return this._watchMissing(p, this.backend.url(p));
+        },
+
+        // ----- Items that vanished behind the app (deleted in Explorer while a cached listing still shows them) -----
+        _watchMissing(p, promise) {
+            return Promise.resolve(promise).catch((e) => {
+                if (e && e.code === 'ENOENT') this._missing([p]);
+                throw e;
+            });
+        },
+
+        /**
+         * Report paths that turned out to be gone. Emits 'fs:missing' { paths, dirs, silent } — the listing cache
+         * re-checks those folders right away and drops what is really gone (nothing is dropped on a guess:
+         * an unplugged drive fails the re-check and keeps everything). silent: the caller shows its own message.
+         */
+        _missing(paths, { silent = false } = {}) {
+            const list = [...new Set(paths)].filter((p) => p && !this.isDataPath(p));
+            if (!list.length) return;
+            App.bus.emit('fs:missing', { paths: list, dirs: [...new Set(list.map((p) => P.parent(p)))], silent });
+        },
+
+        // ----- One writer per workspace (js/core/core-lock.js); a read-only tab never writes -----
+        _guardWrite(p = null, { quiet = false } = {}) {
+            const lock = App.lock;
+            if (!lock || typeof lock.canWrite !== 'function' || lock.canWrite()) return;
+            if (p && lock.isLockPath?.(p)) return;
+            if (!quiet) lock.nudge?.(); // background saves (cached metadata...) fail quietly
+            throw fsError('EREADONLY', '다른 창에서 이 작업 폴더를 쓰고 있어서 여기서는 바꿀 수 없어요');
         },
 
         async readText(p) {
@@ -308,7 +350,25 @@
 
         // Raw writes for app data (no events/undo). Serialized per path.
         writeRaw(p, data) {
-            return withLock(p, () => this.backend.write(p, data));
+            // Read-only window: app data (catalog, chips...) is never written here. Background saves such as cached
+            // media info are skipped quietly instead of failing again and again; the writer window keeps the truth
+            // and taking over re-reads everything from disk. (User edits are flagged by core-lock's nudge.)
+            // Checked again when the queued write actually runs: ownership may have moved meanwhile.
+            const skip = () => {
+                if (this.canWriteData(p)) return false;
+                if (!this._readonlySkipLogged) console.info('[fs] read-only window: app data is not saved here');
+                this._readonlySkipLogged = true;
+                return true;
+            };
+            if (skip()) return Promise.resolve();
+            return withLock(p, () => (skip() ? undefined : this.backend.write(p, data)));
+        },
+
+        /** false while another window owns the workspace (see js/core/core-lock.js) */
+        canWriteData(p = null) {
+            const lock = App.lock;
+            if (!lock || typeof lock.canWrite !== 'function' || lock.canWrite()) return true;
+            return !!(p && lock.isLockPath?.(p));
         },
 
         writeJSON(p, obj) {
@@ -347,6 +407,7 @@
 
         /** Create a folder. Returns its path. */
         async mkdir(parentPath, name, { undoable = true } = {}) {
+            this._guardWrite();
             const err = this.validateName(name);
             if (err) throw fsError('EINVAL', err);
             const p = P.join(parentPath, name);
@@ -373,6 +434,7 @@
          * Undoable by default (undo moves the new file to the app trash, redo brings it back).
          */
         async createFile(dirPath, name, data, { undoable = true, label } = {}) {
+            this._guardWrite();
             const finalName = await this.uniqueName(dirPath, name);
             const p = P.join(dirPath, finalName);
             await this.backend.write(p, data);
@@ -400,6 +462,7 @@
          * The copy shows up in the trash panel and can be restored next to the file. Returns the trash item id.
          */
         async trashCopy(p, { name, data, reason = 'copy' } = {}) {
+            this._guardWrite();
             const batchDir = P.join(TRASH_DIR, 'c' + Date.now().toString(36));
             const finalName = name || P.base(p);
             const target = P.join(batchDir, finalName);
@@ -420,6 +483,7 @@
          * (restorable from the trash panel) and Ctrl+Z puts it back.
          */
         async overwrite(p, data, { undoable = true, label } = {}) {
+            this._guardWrite();
             const name = P.base(p);
             let backup = null;
             if (undoable) {
@@ -451,6 +515,7 @@
 
         /** Rename a file or folder. Returns the new path. */
         async rename(p, newName, { undoable = true } = {}) {
+            this._guardWrite();
             const oldName = P.base(p);
             if (newName === oldName) return p;
             const err = this.validateName(newName);
@@ -506,8 +571,17 @@
 
         _reportFailures(failed, verb) {
             if (!failed.length) return;
-            const first = failed[0];
-            const more = failed.length > 1 ? ` 외 ${failed.length - 1}개` : '';
+            // Items that were already gone (deleted outside the app) are skipped, not errors
+            const gone = failed.filter((f) => f.error && f.error.code === 'ENOENT');
+            const errors = failed.filter((f) => !(f.error && f.error.code === 'ENOENT'));
+            if (gone.length) {
+                this._missing(gone.map((f) => f.path), { silent: true });
+                const what = gone.length === 1 ? `"${P.base(gone[0].path)}"은(는)` : `${gone.length}개는`;
+                App.ui?.toast(`${what} 이미 없어져서 건너뛰었어요 · 목록을 새로 고쳤어요`, { type: 'warning', id: 'fs-missing' });
+            }
+            if (!errors.length) return;
+            const first = errors[0];
+            const more = errors.length > 1 ? ` 외 ${errors.length - 1}개` : '';
             App.ui?.toast(`"${P.base(first.path)}"${more}을(를) ${verb}지 못했어요: ${first.error.message || first.error}`, { type: 'error' });
         },
 
@@ -518,6 +592,7 @@
          * opts: { undoable = true, label, onConflict }
          */
         async move(paths, destDir, { undoable = true, label, onConflict } = {}) {
+            this._guardWrite();
             const results = [];
             const failed = [];
             const replacedIds = [];
@@ -527,7 +602,7 @@
             const job = paths.length > 20 ? App.jobs?.start({ title: '이동하는 중', total: paths.length }) : null;
             try {
                 for (const src of paths) {
-                    if (job?.cancelled) break;
+                    if (job?.cancelled || !this.canWriteData()) break; // another window took over: stop here
                     if (P.parent(src) === destDir) continue;
                     if (P.isInside(destDir, src)) {
                         App.ui?.toast(`"${P.base(src)}"을(를) 자기 안으로 옮길 수 없어요`, { type: 'warning' });
@@ -547,7 +622,7 @@
                         App.catalog?.relocate(src, to);
                         results.push({ from: src, to });
                     } catch (e) {
-                        console.error('[fs] move failed', src, e);
+                        (e.code === 'ENOENT' ? console.warn : console.error)('[fs] move failed', src, e);
                         failed.push({ path: src, error: e });
                     }
                     job?.update(results.length + failed.length);
@@ -596,6 +671,7 @@
 
         /** Copy paths into destDir (catalog metadata is copied too). Returns [{ from, to }] (+ `.failed`). opts: { undoable, onConflict } */
         async copy(paths, destDir, { undoable = true, onConflict } = {}) {
+            this._guardWrite();
             const results = [];
             const failed = [];
             const replacedIds = [];
@@ -605,7 +681,7 @@
             const job = paths.length > 5 ? App.jobs?.start({ title: '복사하는 중', total: paths.length }) : null;
             try {
                 for (const src of paths) {
-                    if (job?.cancelled) break;
+                    if (job?.cancelled || !this.canWriteData()) break; // another window took over: stop here
                     if (P.isInside(destDir, src)) continue;
                     try {
                         const decision = decisions.get(src) || 'keep';
@@ -620,7 +696,7 @@
                         App.catalog?.copy(src, to);
                         results.push({ from: src, to });
                     } catch (e) {
-                        console.error('[fs] copy failed', src, e);
+                        (e.code === 'ENOENT' ? console.warn : console.error)('[fs] copy failed', src, e);
                         failed.push({ path: src, error: e });
                     }
                     job?.update(results.length + failed.length);
@@ -659,6 +735,7 @@
          * Throws (EINVAL / EEXIST) before touching anything if a name is invalid or would collide.
          */
         async renameMany(pairs, { undoable = true, label } = {}) {
+            this._guardWrite();
             const items = pairs.filter((x) => P.base(x.path) !== x.name);
             if (!items.length) return [];
             const sources = new Set(items.map((x) => x.path.toLowerCase()));
@@ -725,6 +802,7 @@
 
         /** Delete for real (no trash). Internal use: emptying the trash. */
         async removePermanently(paths) {
+            this._guardWrite();
             for (const p of paths) {
                 await this.backend.remove(p);
                 App.catalog?.remove(p);
@@ -742,13 +820,15 @@
             return withLock(TRASH_MANIFEST + '#update', async () => {
                 const m = await this.readTrashManifest();
                 const out = await fn(m);
-                await this.writeJSON(TRASH_MANIFEST, m);
+                // Always written (even if ownership moved mid-batch): it is the only record of files already in the trash
+                await withLock(TRASH_MANIFEST, () => this.backend.write(TRASH_MANIFEST, JSON.stringify(m, null, 1)));
                 return out;
             });
         },
 
         /** Move paths to the app trash (restorable). Returns trash item ids. opts: { undoable, silent, label } */
         async trash(paths, { undoable = true, silent = false, label: customLabel } = {}) {
+            this._guardWrite();
             if (!paths.length) return [];
             const batch = 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
             const batchDir = P.join(TRASH_DIR, batch);
@@ -757,7 +837,7 @@
             const job = paths.length > 20 ? App.jobs?.start({ title: '휴지통으로 옮기는 중', total: paths.length }) : null;
             try {
                 for (const src of paths) {
-                    if (job?.cancelled) break;
+                    if (job?.cancelled || !this.canWriteData()) break; // another window took over: stop here
                     try {
                         const st = await this.backend.stat(src);
                         const name = await this.uniqueName(batchDir, P.base(src), { isDir: st.kind === 'dir' });
@@ -774,7 +854,7 @@
                             catalog: App.catalog ? App.catalog.take(src) : null,
                         });
                     } catch (e) {
-                        console.error('[fs] trash failed', src, e);
+                        (e.code === 'ENOENT' ? console.warn : console.error)('[fs] trash failed', src, e);
                         failed.push({ path: src, error: e });
                     }
                     job?.update(items.length + failed.length);
@@ -817,6 +897,7 @@
 
         /** Restore trash items to where they came from (or a unique name next to it). */
         async restore(ids) {
+            this._guardWrite();
             const restored = [];
             await this._updateTrashManifest(async (m) => {
                 for (const id of ids) {
@@ -845,6 +926,7 @@
 
         /** Permanently delete trash items (all when ids is omitted). */
         async purgeTrash(ids) {
+            this._guardWrite();
             await this._updateTrashManifest(async (m) => {
                 const targets = ids ? m.items.filter((i) => ids.includes(i.id)) : m.items;
                 for (const item of targets) {
