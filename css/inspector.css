@@ -1,0 +1,108 @@
+/* Inspector (right panel) */
+
+#inspector {
+    overflow-y: auto;
+}
+
+.insp-empty {
+    padding: 24px 18px;
+    color: var(--text-3);
+    text-align: center;
+    font-size: var(--fs-sm);
+}
+
+.insp-section {
+    border-bottom: 1px solid var(--line);
+}
+
+.insp-body {
+    padding: 12px 14px;
+}
+
+.insp-section .panel-section-head + .insp-body {
+    padding-top: 2px;
+}
+
+.insp-preview {
+    position: relative;
+    border-radius: var(--r-lg);
+    overflow: hidden;
+    background: var(--bg-2);
+    aspect-ratio: 4 / 3;
+    display: grid;
+    place-items: center;
+}
+
+.insp-img,
+.insp-video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+}
+
+.insp-noprev {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-4);
+    font-size: var(--fs-sm);
+}
+
+.insp-stack {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+}
+
+.insp-stack-cell {
+    aspect-ratio: 1;
+    border-radius: var(--r-sm);
+    background: var(--bg-2);
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    color: var(--text-4);
+}
+
+.insp-stack-cell img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.insp-title {
+    font-size: var(--fs-md);
+    font-weight: 700;
+    word-break: break-all;
+    margin-bottom: 10px;
+    user-select: text;
+}
+
+.insp-table {
+    display: grid;
+    grid-template-columns: 84px 1fr;
+    gap: 6px 10px;
+    font-size: var(--fs-sm);
+}
+
+.insp-k {
+    color: var(--text-3);
+}
+
+.insp-v {
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    user-select: text;
+}
+
+.insp-hint {
+    margin: 12px 0 0;
+    color: var(--text-4);
+    font-size: var(--fs-sm);
+}

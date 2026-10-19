@@ -1,0 +1,122 @@
+/* Design tokens — every color/size in the app comes from here. Dark is default; light via [data-theme="light"]. */
+:root {
+    color-scheme: dark;
+
+    --font: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
+    --font-mono: 'JetBrains Mono', 'D2Coding', Consolas, monospace;
+
+    --fs-xs: 11px;
+    --fs-sm: 12px;
+    --fs: 13px;
+    --fs-md: 14px;
+    --fs-lg: 16px;
+    --fs-xl: 20px;
+    --fs-2xl: 26px;
+
+    /* Surfaces: bg (app) < bg-1 (panels) < bg-2 (inputs, menus) < bg-3 (hover) < bg-4 (active) */
+    --bg: #0d0e10;
+    --bg-1: #141518;
+    --bg-2: #1b1c20;
+    --bg-3: #23252a;
+    --bg-4: #2c2f35;
+    --bg-overlay: rgba(6, 7, 9, 0.72);
+    --bg-glass: rgba(20, 21, 24, 0.82);
+
+    --line: #24262b;
+    --line-2: #31343b;
+    --line-3: #42464f;
+
+    --text: #ececef;
+    --text-2: #b4b7be;
+    --text-3: #81858e;
+    --text-4: #5c6069;
+
+    --accent: #ff6b2c;
+    --accent-2: #ff8a57;
+    --accent-soft: rgba(255, 107, 44, 0.14);
+    --accent-line: rgba(255, 107, 44, 0.5);
+    --on-accent: #1d0c03;
+
+    --sel-bg: rgba(255, 107, 44, 0.16);
+    --sel-line: #ff6b2c;
+    --focus-ring: 0 0 0 2px rgba(255, 107, 44, 0.55);
+
+    --danger: #f25555;
+    --danger-soft: rgba(242, 85, 85, 0.14);
+    --success: #34c88f;
+    --success-soft: rgba(52, 200, 143, 0.14);
+    --warning: #f5a524;
+    --warning-soft: rgba(245, 165, 36, 0.14);
+    --info: #5b8cff;
+    --info-soft: rgba(91, 140, 255, 0.14);
+
+    /* Color labels (Lightroom-style) */
+    --label-red: #ef4444;
+    --label-orange: #f97316;
+    --label-yellow: #eab308;
+    --label-green: #22c55e;
+    --label-blue: #3b82f6;
+    --label-purple: #a855f7;
+
+    --r-xs: 4px;
+    --r-sm: 6px;
+    --r: 8px;
+    --r-lg: 12px;
+    --r-xl: 16px;
+    --r-full: 999px;
+
+    --sh-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --sh-2: 0 8px 24px rgba(0, 0, 0, 0.45);
+    --sh-3: 0 24px 64px rgba(0, 0, 0, 0.6);
+
+    --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    --dur-fast: 90ms;
+    --dur: 150ms;
+    --dur-slow: 260ms;
+
+    --topbar-h: 48px;
+    --statusbar-h: 28px;
+    --sidebar-w: 248px;
+    --inspector-w: 320px;
+    --thumb-size: 180px;
+
+    --z-viewer: 500;
+    --z-menu: 1000;
+    --z-dialog: 2000;
+    --z-toast: 3000;
+    --z-tooltip: 4000;
+}
+
+:root[data-theme="light"] {
+    color-scheme: light;
+
+    --bg: #f3f4f6;
+    --bg-1: #ffffff;
+    --bg-2: #f7f7f9;
+    --bg-3: #eceef1;
+    --bg-4: #e2e5ea;
+    --bg-overlay: rgba(20, 22, 26, 0.45);
+    --bg-glass: rgba(255, 255, 255, 0.86);
+
+    --line: #e4e6ea;
+    --line-2: #d6d9df;
+    --line-3: #c3c7cf;
+
+    --text: #16171a;
+    --text-2: #43464d;
+    --text-3: #6d717a;
+    --text-4: #9a9ea6;
+
+    --accent: #f25c14;
+    --accent-2: #ff7a3d;
+    --accent-soft: rgba(242, 92, 20, 0.1);
+    --accent-line: rgba(242, 92, 20, 0.45);
+    --on-accent: #ffffff;
+
+    --sel-bg: rgba(242, 92, 20, 0.1);
+    --sel-line: #f25c14;
+
+    --sh-1: 0 1px 2px rgba(16, 24, 40, 0.08);
+    --sh-2: 0 8px 24px rgba(16, 24, 40, 0.12);
+    --sh-3: 0 24px 64px rgba(16, 24, 40, 0.18);
+}

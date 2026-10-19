@@ -1,0 +1,13 @@
+{
+  "name": "fluid-identity",
+  "version": "2.0.0-alpha",
+  "private": true,
+  "description": "Local photo & video organizer (File System Access API + optional local Python server)",
+  "scripts": {
+    "test": "node tests/run.js",
+    "serve": "node tests/serve.js"
+  },
+  "devDependencies": {
+    "playwright": "1.49.1"
+  }
+}

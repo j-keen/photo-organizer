@@ -1,0 +1,100 @@
+/* Welcome screen (no workspace open) */
+
+#welcome {
+    position: fixed;
+    inset: var(--topbar-h) 0 var(--statusbar-h);
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    padding: 32px;
+    background:
+        radial-gradient(800px 400px at 50% -10%, var(--accent-soft), transparent 70%),
+        var(--bg);
+}
+
+.welcome-card {
+    width: min(520px, 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    text-align: center;
+}
+
+.welcome-logo {
+    width: 64px;
+    height: 64px;
+    border-radius: 20px;
+    background: linear-gradient(135deg, var(--accent), #ffb347);
+    color: var(--on-accent);
+    display: grid;
+    place-items: center;
+    box-shadow: 0 12px 40px rgba(255, 107, 44, 0.35);
+}
+
+.welcome-card h1 {
+    margin: 4px 0 0;
+    font-size: var(--fs-2xl);
+    letter-spacing: -0.03em;
+}
+
+.welcome-sub {
+    margin: 0 0 8px;
+    color: var(--text-2);
+    font-size: var(--fs-md);
+}
+
+.welcome-hint {
+    color: var(--text-4);
+    font-size: var(--fs-sm);
+}
+
+.welcome-recents {
+    width: 100%;
+    margin-top: 18px;
+    text-align: left;
+    border-top: 1px solid var(--line);
+    padding-top: 16px;
+}
+
+.welcome-recents-title {
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--text-3);
+    margin-bottom: 6px;
+}
+
+.welcome-recent {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    height: 38px;
+    padding: 0 10px;
+    border-radius: var(--r);
+    border: none;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+}
+
+.welcome-recent:hover {
+    background: var(--bg-3);
+}
+
+.welcome-recent .ico {
+    color: var(--accent);
+}
+
+.welcome-warn {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: var(--r);
+    background: var(--warning-soft);
+    color: var(--warning);
+    font-size: var(--fs-sm);
+}

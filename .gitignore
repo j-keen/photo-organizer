@@ -9,3 +9,9 @@ Thumbs.db
 # Local files
 *.log
 ffmpeg/
+node_modules/
+server/.venv/
+__pycache__/
+*.pyc
+test-results/
+.claude/worktrees/
