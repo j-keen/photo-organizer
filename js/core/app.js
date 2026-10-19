@@ -251,6 +251,19 @@
             const tag = el.tagName;
             return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
         },
+
+        /**
+         * Shared fuzzy matcher (Hangul initials ㄱㅅㅎ→김수현, partial syllables, 한/영 typos when the palette's
+         * matcher is loaded). Returns { score, ranges } or null. Use this instead of writing another matcher.
+         */
+        matchKo(query, text) {
+            if (window.App?.palette?.match) return App.palette.match(query, text);
+            const q = String(query || '').normalize('NFC').toLowerCase().trim();
+            const t = String(text || '').normalize('NFC').toLowerCase();
+            if (!q) return { score: 0, ranges: [] };
+            const i = t.indexOf(q);
+            return i < 0 ? null : { score: 100 - i, ranges: [[i, i + q.length]] };
+        },
     };
 
     // ---------- Settings (per-browser preferences, localStorage) ----------
@@ -326,6 +339,12 @@
         if (isMac ? e.metaKey : e.ctrlKey) parts.push('Mod');
         if (e.altKey) parts.push('Alt');
         let key = e.key;
+        // Korean (and other) IMEs report jamo/syllables, 'Process' or 'Unidentified' instead of the Latin letter.
+        // Fall back to the physical key so single-letter shortcuts also work in 한글 mode.
+        if (key === 'Process' || key === 'Unidentified' || (key.length === 1 && /[^\x20-\x7e]/.test(key))) {
+            const m = /^(?:Key([A-Z])|Digit(\d))$/.exec(e.code || '');
+            if (m) key = m[1] || m[2];
+        }
         if (key === ' ') key = 'Space';
         if (key.length === 1) key = key.toUpperCase();
         // Shift is implied by printable symbols like "?" — only record it for named keys and letters
@@ -336,14 +355,21 @@
 
     function normalizeCombo(combo) {
         const parts = combo.split('+');
-        const key = parts.pop();
+        let key = parts.pop();
+        if (key === '' && combo.endsWith('+')) {
+            // literal plus key: '+' or 'Mod++'
+            parts.pop();
+            key = '+';
+        }
         const mods = ['Mod', 'Alt', 'Shift'].filter((m) => parts.includes(m) || (m === 'Mod' && parts.includes('Ctrl')));
         return [...mods, key.length === 1 ? key.toUpperCase() : key].join('+');
     }
 
     function displayCombo(combo) {
-        return normalizeCombo(combo)
-            .split('+')
+        const norm = normalizeCombo(combo);
+        const plus = norm === '+' || norm.endsWith('++');
+        const parts = plus ? [...norm.slice(0, -2).split('+').filter(Boolean), '+'] : norm.split('+');
+        return parts
             .map((p) => ({ Mod: isMac ? '⌘' : 'Ctrl', Alt: isMac ? '⌥' : 'Alt', Shift: isMac ? '⇧' : 'Shift', ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓', Space: 'Space', Escape: 'Esc', Delete: 'Del', Backspace: '⌫', Enter: 'Enter' })[p] || p)
             .join(isMac ? '' : '+');
     }

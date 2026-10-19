@@ -62,6 +62,7 @@ Scripts register commands at load time; DOM work happens in `init()`:
 `path.{join,parent,base,ext,stem,isInside,rebase,segments}`, `mediaType(name)` → `'image'|'video'|'other'`,
 `browserCanDecode(name)`, `compareNames` (Korean natural sort), `debounce`, `throttle`, `sleep`, `nextFrame`, `clamp`,
 `uid`, `escapeHtml`, `formatBytes`, `formatDuration(sec)`, `formatDate(ms, withTime)`, `formatCount`,
+`matchKo(query, text)` → `{score, ranges}|null` (shared Hangul-aware matcher: initials, partial syllables — use it, don't write another),
 `pool(items, limit, fn)`, `fingerprint(entry)`, `h(tag, attrs, ...children)` (DOM builder), `isTypingTarget(el)`.
 
 ### App.bus — events
@@ -101,6 +102,8 @@ Workspace-level data (shared with every browser/PC that opens the folder) goes t
 Key combos: `Mod` = Ctrl (⌘ on Mac), modifiers in order `Mod+Alt+Shift+Key`; named keys use `KeyboardEvent.key`
 (`ArrowLeft`, `Delete`, `F2`, `Space`, `Escape`). Printable symbols are matched without Shift (`?` not `Shift+/`).
 Commands don't fire while typing in inputs unless `allowInInput` (true or list of combos).
+Korean IME: when `e.key` is a jamo/'Process', the physical key (`e.code` KeyA–Z / Digit0–9) is used, so `J`, `Alt+R`... work in 한글 mode.
+A literal plus key is written `'+'` / `'Mod++'`.
 
 **Reserved command ids** (implement in the owning team, reference from anywhere):
 `folder.new`, `file.open`, `file.rename`, `file.trash`, `select.all`, `select.clear`, `nav.*`, `edit.undo`, `edit.redo`,
@@ -127,7 +130,7 @@ Tiny IndexedDB KV: `get/set/del/keys/clear` (store `fluid-identity/kv`), `App.id
 `icon(name, {size, class})` → SVG string (names: see `ICONS` in ui.js — add new ones there via integration request),
 `iconEl`, `toast(msg, {type: info|success|error|warning|loading, duration, action: {label, run}, id})` → `{update, close}`,
 `dialog({title, body, actions: [{label, value, kind, autofocus, onClick(close)}], width, init(box, close)})` → Promise,
-`confirm({title, message, okLabel, danger})`, `alert`, `prompt({title, value, validate, selectStem})`,
+`confirm({title, message, okLabel, danger})`, `alert`, `prompt({title, value, validate, selectStem})` — nested dialogs stack (Esc/Enter go to the top one; menus opened inside a dialog render above it),
 `menu(items, {x, y} | {anchor, align})`, item = `{label, icon, command | action, hint, checked, danger, disabled, submenu}` | `'-'` | `{header}`,
 `contextMenu(el, builder)`, `popover(anchor, contentEl, {align, above})` → `{close}`, `positionFloating`.
 CSS building blocks in `css/base.css`: `.btn` (+ `primary ghost danger icon sm lg active`), `.seg`, `.input`, `.textarea`,
@@ -142,8 +145,13 @@ Reads: `list(dir, {stat, all})` (hides dot-files, app data and non-media; `entri
 Writes (emit `fs:changed`, keep catalog in sync, undoable by default — pass `{undoable:false}` inside batches):
 `mkdir(parent, name)`, `createFile(dir, name, blob)` (unique name; undo trashes it), `overwrite(p, blob)` (previous
 version kept in the app trash; undo restores it), `rename(p, newName)`,
-`move(paths, destDir)` → `[{from,to}]`, `copy(paths, destDir)`, `trash(paths)` → ids, `restore(ids)`, `listTrash()`,
-`purgeTrash(ids?)`, `removePermanently(paths)`. Helpers: `uniqueName(dir, name, {isDir, reserved})`, `validateName(name)`,
+`move(paths, destDir, {onConflict})` → `[{from,to}]` (+ `.failed`, `.cancelled`), `copy(paths, destDir, {onConflict})`,
+`renameMany([{path, name}])` (batch rename: swaps/chains, ONE event + ONE undo), `trash(paths, {label})` → ids, `restore(ids)`,
+`trashCopy(p, {name, data, reason})` (keep a copy/original in the app trash), `listTrash()`,
+`purgeTrash(ids?)`, `removePermanently(paths)`.
+Batch ops never abort on one bad item: failures are collected in `result.failed` and shown in one toast.
+`onConflict(conflicts: [{src, name, dest, isDir}])` → `Map(src → 'keep'|'skip'|'replace')` or `null` to cancel
+('replace' trashes the existing file; undo restores it). Without it, clashes get numbered names. Helpers: `uniqueName(dir, name, {isDir, reserved})`, `validateName(name)`,
 `isHiddenName`, `isDataPath`, raw app-data writes `writeRaw/writeJSON` (no events).
 
 **Backend interface** (`App.fs.use(backend)`; `BrowserBackend` = File System Access API, `ServerBackend` = local server):
@@ -165,7 +173,8 @@ meta: { w, h, duration, taken, camera, rot, ... }, legacyTags: [], updatedAt }`.
 `list()`, `summary()`. The status bar shows progress; `thumbs` team owns the activity-center UI.
 
 ### App.nav / App.view / App.select
-- `App.nav.go(path, {focus})`, `goBack/goForward/goUp/goHome`, `reload()`, `open(entry)` (folder → navigate, file → `item:open`),
+- `App.nav.go(path, {focus})`, `goBack/goForward/goUp/goHome`, `jump(±n)`, `reload()`, `open(entry)` (folder → navigate, file → `item:open`),
+  `loadHooks.push(async (path, entries, source) => ({entries, source}))` to replace a folder listing before it shows,
   `canBack/canForward/canUp`, `back/fwd` arrays.
 - `App.view.entries` (source list), `visible` (filtered+sorted), `source` `{type: 'folder'|'search'|'smart', path, title, ...}`,
   `setEntries(entries, source)` (other modules can show any list, e.g. chip/smart results), `setFilter(id, {label, test, includeDirs})`,
@@ -175,7 +184,8 @@ meta: { w, h, duration, taken, camera, rot, ... }, legacyTags: [], updatedAt }`.
 
 ### App.index
 Whole-workspace flat list for search/smart views: `items`, `folders`, `get(p)`, `under(dir, {recursive})`,
-`search(text)`, `ready`, `whenReady()`, `scan()`. Kept up to date from `fs:changed`.
+`search(text)` (names, folders, memo, v1 tags and chip names via `App.chipset.labelOf`), `sidecarFolders`, `ready`,
+`whenReady()`, `scan()`. Kept up to date from `fs:changed`.
 
 ## 5. Feature extension points (js/features)
 
