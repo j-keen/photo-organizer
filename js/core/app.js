@@ -357,6 +357,12 @@
          */
         register(cmd) {
             if (!cmd.id || typeof cmd.run !== 'function') throw new Error('command needs id and run');
+            const existing = commandMap.get(cmd.id);
+            if (existing && existing.core && !cmd.core) {
+                // Core commands (undo/redo, ...) can't be replaced by feature modules
+                console.debug(`[commands] "${cmd.id}" is a core command; feature registration ignored`);
+                return existing;
+            }
             cmd.keys = (Array.isArray(cmd.keys) ? cmd.keys : cmd.keys ? [cmd.keys] : []).map(normalizeCombo);
             cmd.scope = cmd.scope || 'main';
             commandMap.set(cmd.id, cmd);
@@ -419,46 +425,83 @@
     });
 
     // ---------- Undo / redo ----------
+    // Every user-visible change pushes one entry; Ctrl+Z / Ctrl+Y work from any screen (core commands below).
     const undoStack = [];
     const redoStack = [];
-    const UNDO_LIMIT = 100;
+    const UNDO_LIMIT = 200;
+    const COALESCE_MS = 4000;
+    let undoBusy = Promise.resolve();
+
+    function runSerial(fn) {
+        // Undo/redo steps never interleave, even if the user mashes Ctrl+Z
+        const next = undoBusy.then(fn, fn);
+        undoBusy = next.catch(() => {});
+        return next;
+    }
 
     const undo = {
-        /** entry: { label, undo: async () => void, redo: async () => void } */
+        /**
+         * push({ label, undo: async () => void, redo: async () => void, coalesceKey? })
+         * Entries with the same coalesceKey pushed within a few seconds merge into one (e.g. typing a memo):
+         * the merged entry keeps the oldest undo() and the newest redo().
+         */
         push(entry) {
+            entry.time = Date.now();
+            const last = undoStack[undoStack.length - 1];
+            if (entry.coalesceKey && last && last.coalesceKey === entry.coalesceKey && entry.time - last.time < COALESCE_MS && !redoStack.length) {
+                last.redo = entry.redo;
+                last.time = entry.time;
+                last.label = entry.label || last.label;
+                bus.emit('undo:changed');
+                return last;
+            }
             undoStack.push(entry);
             if (undoStack.length > UNDO_LIMIT) undoStack.shift();
             redoStack.length = 0;
             bus.emit('undo:changed');
+            return entry;
         },
         canUndo: () => undoStack.length > 0,
         canRedo: () => redoStack.length > 0,
         peek: () => undoStack[undoStack.length - 1] || null,
-        async undo() {
-            const entry = undoStack.pop();
-            if (!entry) return;
-            try {
-                await entry.undo();
-                redoStack.push(entry);
-                App.ui?.toast?.(`실행 취소: ${entry.label}`, { type: 'info', duration: 2200 });
-            } catch (e) {
-                console.error('[undo] failed', e);
-                App.ui?.toast?.(`실행 취소 실패: ${e.message || e}`, { type: 'error' });
-            }
-            bus.emit('undo:changed');
+        peekRedo: () => redoStack[redoStack.length - 1] || null,
+        /** Newest first: [{ label, time }] (undo stack), and redo items via list({ redo: true }) */
+        list({ redo = false } = {}) {
+            return [...(redo ? redoStack : undoStack)].reverse().map((e) => ({ label: e.label, time: e.time }));
         },
-        async redo() {
-            const entry = redoStack.pop();
-            if (!entry) return;
-            try {
-                await entry.redo();
-                undoStack.push(entry);
-                App.ui?.toast?.(`다시 실행: ${entry.label}`, { type: 'info', duration: 2200 });
-            } catch (e) {
-                console.error('[redo] failed', e);
-                App.ui?.toast?.(`다시 실행 실패: ${e.message || e}`, { type: 'error' });
-            }
-            bus.emit('undo:changed');
+        undo({ quiet = false } = {}) {
+            return runSerial(async () => {
+                const entry = undoStack.pop();
+                if (!entry) return;
+                try {
+                    await entry.undo();
+                    redoStack.push(entry);
+                    if (!quiet) App.ui?.toast?.(`실행 취소: ${entry.label}`, { type: 'info', duration: 2200, id: 'undo-toast' });
+                } catch (e) {
+                    console.error('[undo] failed', e);
+                    App.ui?.toast?.(`실행 취소 실패: ${e.message || e}`, { type: 'error' });
+                }
+                bus.emit('undo:changed');
+            });
+        },
+        redo({ quiet = false } = {}) {
+            return runSerial(async () => {
+                const entry = redoStack.pop();
+                if (!entry) return;
+                try {
+                    await entry.redo();
+                    undoStack.push(entry);
+                    if (!quiet) App.ui?.toast?.(`다시 실행: ${entry.label}`, { type: 'info', duration: 2200, id: 'undo-toast' });
+                } catch (e) {
+                    console.error('[redo] failed', e);
+                    App.ui?.toast?.(`다시 실행 실패: ${e.message || e}`, { type: 'error' });
+                }
+                bus.emit('undo:changed');
+            });
+        },
+        /** Undo the n newest entries (n = index in list() + 1) */
+        async undoTo(n) {
+            for (let i = 0; i < n && undoStack.length; i++) await undo.undo({ quiet: i < n - 1 });
         },
         clear() {
             undoStack.length = 0;
@@ -466,6 +509,10 @@
             bus.emit('undo:changed');
         },
     };
+
+    // Global: fire in the gallery, viewer, quick look, panels... (text fields keep their native undo)
+    commands.register({ id: 'edit.undo', core: true, title: '실행 취소', group: '편집', icon: 'undo', keys: ['Mod+Z'], scope: 'global', when: () => undo.canUndo(), run: () => undo.undo() });
+    commands.register({ id: 'edit.redo', core: true, title: '다시 실행', group: '편집', icon: 'redo', keys: ['Mod+Shift+Z', 'Mod+Y'], scope: 'global', when: () => undo.canRedo(), run: () => undo.redo() });
 
     // ---------- Tiny IndexedDB key-value store ----------
     // App.idb.get/set/del/keys on a named object store. Used for directory handles, caches, recents.

@@ -109,9 +109,16 @@ Commands don't fire while typing in inputs unless `allowInInput` (true or list o
 `trash.open`, `dupes.open`, `palette.open` (Mod+K), `help.shortcuts` (?), `settings.open` (Mod+,),
 `chips.toggleHotkey1..9`, `viewer.*`, `video.*`, `server.connect`, `thumbs.pregenerate`.
 
-### App.undo
-`push({ label, undo: async fn, redo: async fn })`, `undo()`, `redo()`, `canUndo()`, `canRedo()`, `clear()`.
-For batch operations push **one** entry and call the fs functions with `{ undoable: false }` inside.
+### App.undo — owner requirement: Ctrl+Z instantly undoes ANY change from ANY screen
+`push({ label, undo: async fn, redo: async fn, coalesceKey? })`, `undo()`, `redo()`, `canUndo()`, `canRedo()`,
+`list({redo})` → `[{label, time}]` newest first, `undoTo(n)`, `peek()`, `clear()`.
+`edit.undo` (Mod+Z) / `edit.redo` (Mod+Shift+Z, Mod+Y) are **core, scope global** commands: they fire in the gallery,
+viewer, quick look and panels (text fields keep native undo). Steps run serially.
+- `App.fs` writes (`mkdir, rename, move, copy, trash, restore, createFile, overwrite`) push entries by default.
+- `App.catalog.update/updateMany` push entries by default (`{label, coalesceKey, undoable}`); same `coalesceKey`
+  within 4 s merges (use `'memo:' + path` for typing).
+- **One user action = one undo entry.** For batches call fs/catalog with `{ undoable: false }` and push one entry yourself.
+- Anything else users change (chipset structure, favorites, markers...) must push its own entry.
 
 ### App.idb
 Tiny IndexedDB KV: `get/set/del/keys/clear` (store `fluid-identity/kv`), `App.idb.store(dbName, storeName)` for own stores.
@@ -132,8 +139,9 @@ Entry shape (everything that lists files uses it):
 
 Reads: `list(dir, {stat, all})` (hides dot-files, app data and non-media; `entries.hiddenCount`, `entries.sidecars`),
 `stat(p)`, `exists(p)`, `getFile(p)` → File, `url(p)` → `{url, release()}`, `readText`, `readJSON(p, fallback)`.
-Writes (emit `fs:changed`, keep catalog in sync, undoable by default):
-`mkdir(parent, name)`, `createFile(dir, name, blob)` (unique name), `overwrite(p, blob)`, `rename(p, newName)`,
+Writes (emit `fs:changed`, keep catalog in sync, undoable by default — pass `{undoable:false}` inside batches):
+`mkdir(parent, name)`, `createFile(dir, name, blob)` (unique name; undo trashes it), `overwrite(p, blob)` (previous
+version kept in the app trash; undo restores it), `rename(p, newName)`,
 `move(paths, destDir)` → `[{from,to}]`, `copy(paths, destDir)`, `trash(paths)` → ids, `restore(ids)`, `listTrash()`,
 `purgeTrash(ids?)`, `removePermanently(paths)`. Helpers: `uniqueName(dir, name, {isDir, reserved})`, `validateName(name)`,
 `isHiddenName`, `isDataPath`, raw app-data writes `writeRaw/writeJSON` (no events).
