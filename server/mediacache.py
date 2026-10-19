@@ -3,6 +3,10 @@
 Tables
   hashes(path, kind, size, mtime, value)   kind: 'blake2b' | 'phash' | 'vhash' | 'prehash' ...
   meta(path, size, mtime, json)            media info (width, height, duration, ...) from thumbs/probe
+  fingerprints(path, engine, size, mtime, json)   dupes v2 fingerprints (qhash, fhash, duration, w, h, frames, phash)
+
+External roots (dupes v2) are never written to: their fingerprints go to for_external(app_data_dir), keyed by the
+normcase absolute path.
 
 Entries are keyed by workspace-relative path and only valid while size+mtime (ms) still match, so edits,
 renames and moves simply produce cache misses.
@@ -33,6 +37,10 @@ CREATE TABLE IF NOT EXISTS hashes (
 );
 CREATE TABLE IF NOT EXISTS meta (
     path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime INTEGER NOT NULL, json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS fingerprints (
+    path TEXT NOT NULL, engine TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, json TEXT NOT NULL,
+    PRIMARY KEY (path, engine)
 );
 """
 
@@ -142,6 +150,54 @@ class MediaCache:
             except sqlite3.Error as e:
                 log.debug('put_meta failed: %s', e)
 
+    # ----- duplicate fingerprints (dupes v2): one JSON document per file and engine -----
+    def get_fingerprints(self, engine: str, items: list[tuple[str, int, int]]) -> dict[str, dict]:
+        """Bulk lookup: {path: fingerprint dict} for items [(path, size, mtime)] whose size+mtime still match."""
+        out: dict[str, dict] = {}
+        if not items:
+            return out
+        with self._lock:
+            db = self._db()
+            if db is None:
+                return out
+            want = {p: (s, m) for p, s, m in items}
+            keys = list(want)
+            try:
+                for i in range(0, len(keys), 500):
+                    chunk = keys[i:i + 500]
+                    q = 'SELECT path, size, mtime, json FROM fingerprints WHERE engine=? AND path IN (%s)' % ','.join('?' * len(chunk))
+                    for path, size, mtime, text in db.execute(q, [engine, *chunk]):
+                        if want.get(path) == (size, mtime):
+                            try:
+                                value = json.loads(text)
+                            except ValueError:
+                                continue
+                            if isinstance(value, dict):
+                                out[path] = value
+            except sqlite3.Error:
+                pass
+        return out
+
+    def put_fingerprints(self, engine: str, rows: list[tuple[str, int, int, dict]]) -> None:
+        """Store [(path, size, mtime, fingerprint dict)] (replaces the previous document of that path)."""
+        if not rows:
+            return
+        with self._lock:
+            db = self._db()
+            if db is None:
+                return
+            try:
+                db.execute('BEGIN')
+                db.executemany('INSERT OR REPLACE INTO fingerprints(path, engine, size, mtime, json) VALUES (?,?,?,?,?)',
+                               [(p, engine, s, m, json.dumps(v, ensure_ascii=False, separators=(',', ':'))) for p, s, m, v in rows])
+                db.execute('COMMIT')
+            except sqlite3.Error as e:
+                try:
+                    db.execute('ROLLBACK')
+                except sqlite3.Error:
+                    pass
+                log.debug('put_fingerprints failed: %s', e)
+
     def close(self) -> None:
         with self._lock:
             if self._conn is not None:
@@ -164,6 +220,19 @@ def for_root(root: str) -> MediaCache:
 
 def for_workspace(ws) -> MediaCache:
     return for_root(ws.root)
+
+
+def for_external(data_dir) -> MediaCache:
+    """Fingerprints of files outside any workspace (external roots stay read-only): <app data>/fingerprints.sqlite,
+    keyed by the normcase absolute path."""
+    db_path = os.path.join(str(data_dir), 'fingerprints.sqlite')
+    key = 'external:' + os.path.normcase(db_path)
+    with _caches_lock:
+        cache = _caches.get(key)
+        if cache is None:
+            cache = MediaCache(db_path)
+            _caches[key] = cache
+        return cache
 
 
 def close_all() -> None:

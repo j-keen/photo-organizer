@@ -39,7 +39,7 @@ root.attributes('-topmost', True)
 root.lift()
 root.focus_force()
 try:
-    chosen = filedialog.askdirectory(parent=root, mustexist=True, title='작업 폴더 선택', initialdir=sys.argv[1])
+    chosen = filedialog.askdirectory(parent=root, mustexist=True, title=sys.argv[2] if len(sys.argv) > 2 else '작업 폴더 선택', initialdir=sys.argv[1])
     print(json.dumps(os.path.normpath(chosen) if chosen else '', ensure_ascii=False), flush=True)
 finally:
     root.destroy()
@@ -60,6 +60,11 @@ class RootBody(Body):
 
 @router.post('/api/workspace/pick')
 def pick(request: Request, body: PickBody = PickBody()):
+    return native_pick(request, body.initialDir, '작업 폴더 선택')
+
+
+def native_pick(request: Request, initial_dir: str = '', title: str = '작업 폴더 선택') -> dict:
+    """Show the native folder dialog on the desktop: {root} or {cancelled: True}. Shared with /api/dupes/roots/pick."""
     global _picker, _picker_cancelled
     if not _picker_lock.acquire(blocking=False):
         raise ApiError('EBUSY', '폴더 선택 창이 이미 열려 있어요')
@@ -68,14 +73,14 @@ def pick(request: Request, body: PickBody = PickBody()):
         result = request.app.state.settings.pick_result
         if result is not None:
             return {'root': os.path.normpath(result)} if result else {'cancelled': True}
-        initial = body.initialDir
+        initial = initial_dir if isinstance(initial_dir, str) and os.path.isdir(initial_dir) else ''
         if not initial:
             current = request.app.state.registry.current
             initial = current.root if current else os.path.expanduser('~')
         with _picker_guard:
             _picker_cancelled = False
             proc = subprocess.Popen(
-                [sys.executable, '-c', _PICK_SCRIPT, initial],
+                [sys.executable, '-c', _PICK_SCRIPT, initial, title],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 **ffmpeg.popen_kwargs(),
             )

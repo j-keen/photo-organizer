@@ -80,7 +80,7 @@
             } catch (cause) {
                 if (opts.signal?.aborted) throw cause;
                 api.setOnline(false);
-                throw apiError('EOFFLINE', '로컬 서버에 연결할 수 없어요. server\\start.bat이 켜져 있는지 확인해 주세요');
+                throw apiError('EOFFLINE', "로컬 서버가 꺼져 있어요. 바탕화면의 '사진영상정리기' 아이콘으로 켜 주세요");
             }
             api.setOnline(true);
             if (response.ok) {

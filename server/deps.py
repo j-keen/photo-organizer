@@ -15,6 +15,11 @@ def jobs(request: Request) -> JobManager:
     return request.app.state.jobs
 
 
+def external(request: Request):
+    """Allowed external roots for dupes v2 (server/external.py)."""
+    return request.app.state.external
+
+
 def workspace(request: Request, ws: str | None = Query(None, description='workspace token from /api/workspace/open')) -> Workspace:
     """The workspace a request targets: ?ws=<token> (or X-FI-Workspace header), else the current one."""
     token = ws or request.headers.get('x-fi-workspace') or None

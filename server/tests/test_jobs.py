@@ -47,7 +47,7 @@ class JobsTests(ServerTestCase):
         response = self.api.get('/api/jobs/' + first['id'])
         self.assertEqual(response.status, 200, response.text)
         job = response.json()
-        self.assertEqual(set(job), {'id', 'kind', 'state', 'progress', 'message', 'result', 'error', 'createdAt', 'finishedAt'})
+        self.assertEqual(set(job), {'id', 'kind', 'state', 'paused', 'progress', 'message', 'result', 'error', 'createdAt', 'finishedAt'})
         self.assertEqual(job['id'], first['id'])
         self.assertEqual(job['kind'], 'video.trim')
         self.assertEqual(job['progress'], 1)

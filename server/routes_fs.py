@@ -111,6 +111,8 @@ def exists(path: str = '', ws: Workspace = Depends(deps.workspace)):
 @router.api_route('/api/fs/file', methods=['GET', 'HEAD'])
 def get_file(request: Request, path: str, missingOk: bool = False, ws: Workspace = Depends(deps.workspace)):
     target = ws.resolve(path)
+    # <img>/<video> asking for a file that was just renamed/trashed: answer quietly instead of a console 404
+    missingOk = missingOk or request.headers.get('sec-fetch-dest') in ('image', 'video', 'audio')
     try:
         return http_utils.file_response(request, target, cache_control='no-cache', display=path)
     except ApiError as exc:
