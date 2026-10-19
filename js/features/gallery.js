@@ -18,7 +18,11 @@
  *   App.gallery.folderInfo(dir)  -> { images, videos, dirs, samples: Entry[] } | null   (recursive counts, needs App.index)
  *   App.gallery.transfer(paths, destDir, 'move'|'copy') -> results   move/copy with toast + undo (drop, paste)
  *   App.gallery.moveFocus(delta, {shiftKey, ctrlKey}) / itemRect(i) / forEachRendered(fn) / setBottomInset(px)
+ *   App.gallery.importFiles(files, dir, {verb})       media-only import with undo (external drop, system paste)
+ *   App.gallery.clipboard / App.gallery.quicklook      see gallery-clipboard.js / gallery-quicklook.js
  * Drag data type for internal drags: 'application/x-fi-paths' (JSON array of paths).
+ * Events: 'gallery:zoom' {size}, 'gallery:mode' {mode}, 'gallery:fit' {fit}, 'gallery:folders' (folder stats refreshed).
+ * Settings: gallery.size, gallery.mode, gallery.fit, gallery.scrub.
  */
 (() => {
     'use strict';
@@ -834,6 +838,27 @@
         toastActions,
         _itemHooks: itemHooks,
         _dragImage: (paths, primary) => makeDragImage(paths, primary || paths[0]),
+        _scrubState: () => {
+            const v = scrubVideo;
+            return {
+                path: scrub.path,
+                f: scrub.f,
+                seeking: scrub.seeking,
+                pending: scrub.pending,
+                video: v && {
+                    path: v.dataset.path,
+                    readyState: v.readyState,
+                    networkState: v.networkState,
+                    error: v.error ? v.error.code : null,
+                    srcIsCurrent: !!scrubSrc && v.src === scrubSrc.url,
+                    t: v.currentTime,
+                    duration: v.duration,
+                    probing: !!v.dataset.probing,
+                    ready: v.classList.contains('ready'),
+                    attached: v.isConnected,
+                },
+            };
+        },
     };
 
     function applyModeClasses() {
@@ -868,6 +893,7 @@
         const p = el.dataset.path;
         const star = e.target.closest('.lstar');
         if (star) {
+            star.blur(); // keep Space/Enter for the gallery commands
             const n = Number(star.dataset.n);
             const cur = App.catalog.get(p).rating || 0;
             setRating([p], cur === n ? 0 : n);
@@ -893,6 +919,7 @@
     function onHeadClick(e) {
         const cell = e.target.closest('[data-sort]');
         if (!cell) return;
+        cell.blur();
         const key = cell.dataset.sort;
         const cur = App.view.sort;
         const dir = cur.key === key ? (cur.dir === 'asc' ? 'desc' : 'asc') : ASC_FIRST.has(key) ? 'asc' : 'desc';
@@ -1093,7 +1120,7 @@
     }
 
     // ---------- Video hover scrub: only the hovered card gets a (shared) <video> ----------
-    const scrub = { card: null, path: null, f: 0, timer: 0, token: 0, seeking: false, pending: null, duration: 0 };
+    const scrub = { card: null, path: null, f: 0, timer: 0, token: 0, seeking: false, seekAt: 0, pending: null, duration: 0 };
     let scrubVideo = null;
     let scrubSrc = null; // { path, url, release } — kept for re-hovering the same clip
     let dragActive = false;
@@ -1170,14 +1197,7 @@
         v.disablePictureInPicture = true;
         v.setAttribute('aria-hidden', 'true');
         v.addEventListener('loadedmetadata', () => {
-            if (!isFinite(v.duration)) {
-                // Files without a duration header (e.g. MediaRecorder webm) report Infinity: seeking far past the end
-                // makes the browser scan the file and fire durationchange with the real length
-                v.dataset.probing = '1';
-                scrub.seeking = true;
-                v.currentTime = 1e101;
-                return;
-            }
+            if (!isFinite(v.duration)) return probeDuration(v);
             if (v.dataset.path === scrub.path) seekScrub(true);
         });
         v.addEventListener('durationchange', () => {
@@ -1214,23 +1234,46 @@
         return d && isFinite(d) ? d : 0;
     }
 
+    /**
+     * Files without a duration header (e.g. MediaRecorder webm) report Infinity: seeking far past the end makes the
+     * browser scan the file and fire durationchange with the real length.
+     */
+    function probeDuration(v) {
+        v.dataset.probing = String(performance.now());
+        scrub.seeking = true;
+        scrub.seekAt = performance.now();
+        try {
+            v.currentTime = 1e101;
+        } catch (e) {
+            delete v.dataset.probing;
+            scrub.seeking = false;
+        }
+    }
+
     function seekScrub(force = false) {
         const v = scrubVideo;
         if (!v || v.dataset.path !== scrub.path || v.readyState < 1) return;
         const d = scrubDuration();
-        if (!d) return;
+        if (!d) {
+            // No usable length yet: (re)start the probe if it never started or got lost with a detached element
+            const since = v.dataset.probing ? performance.now() - Number(v.dataset.probing) : Infinity;
+            if (!isFinite(v.duration) && since > 1500) probeDuration(v);
+            return;
+        }
         seekTo(clamp(scrub.f * d, 0, Math.max(0, d - 0.04)), force);
     }
 
     function seekTo(t, force = false) {
         const v = scrubVideo;
         if (!v) return;
-        if (scrub.seeking) {
+        // A seek interrupted by re-rendering may never report 'seeked': don't wait on it forever
+        if (scrub.seeking && performance.now() - scrub.seekAt < 800) {
             scrub.pending = t;
             return;
         }
-        if (!force && Math.abs(v.currentTime - t) < 0.03) return;
+        if (!force && !scrub.seeking && Math.abs(v.currentTime - t) < 0.03) return;
         scrub.seeking = true;
+        scrub.seekAt = performance.now();
         try {
             v.currentTime = t;
         } catch (e) {
@@ -2266,6 +2309,10 @@
                     const { top, bottom } = viewRange();
                     if (r.y < top || r.y + r.h > bottom) gallery.scrollTo(f, { center: true });
                 }
+            });
+            App.bus.on('fs:changed', (c) => {
+                // The cached preview URL points at a file snapshot: drop it when that file changes or moves
+                if (scrubSrc && ((c.paths || []).includes(scrubSrc.path) || (c.from || []).includes(scrubSrc.path))) releaseScrubSource();
             });
             App.bus.on('index:ready', refreshFolderStats);
             App.bus.on('index:changed', refreshFolderStats);

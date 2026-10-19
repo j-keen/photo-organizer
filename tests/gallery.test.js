@@ -35,6 +35,58 @@ async function lasso(page, from, to, { modifiers = [] } = {}) {
     for (const m of modifiers) await page.keyboard.up(m);
 }
 
+/**
+ * The harness records seed videos in real time; on an overloaded machine MediaRecorder can hand back an empty file.
+ * Make sure `name` is a playable clip, re-recording it (setTimeout-driven, with retries) when needed.
+ */
+function ensurePlayableClip(page, name) {
+    return page.evaluate(async (name) => {
+        const playable = async () => {
+            const { url, release } = await App.fs.url(name);
+            const ok = await new Promise((resolve) => {
+                const v = document.createElement('video');
+                v.muted = true;
+                v.onloadedmetadata = () => resolve(true);
+                v.onerror = () => resolve(false);
+                setTimeout(() => resolve(false), 5000);
+                v.src = url;
+            });
+            release();
+            return ok;
+        };
+        if ((App.view.get(name)?.size || 0) > 1000 && (await playable())) return 'seeded';
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 320;
+            canvas.height = 240;
+            const g = canvas.getContext('2d');
+            const rec = new MediaRecorder(canvas.captureStream(30), { mimeType: 'video/webm' });
+            const chunks = [];
+            rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+            const stopped = new Promise((r) => (rec.onstop = r));
+            rec.start(100);
+            const t0 = performance.now();
+            while (performance.now() - t0 < 1300) {
+                const t = performance.now() - t0;
+                g.fillStyle = `hsl(${(t / 4) % 360},70%,45%)`;
+                g.fillRect(0, 0, 320, 240);
+                g.fillStyle = '#fff';
+                g.font = '40px sans-serif';
+                g.fillText((t / 1000).toFixed(1), 20, 120);
+                await new Promise((r) => setTimeout(r, 30));
+            }
+            rec.requestData();
+            rec.stop();
+            await stopped;
+            const blob = new Blob(chunks, { type: 'video/webm' });
+            if (blob.size < 1000) continue;
+            await App.fs.overwrite(name, blob);
+            if (await playable()) return 'rerecorded';
+        }
+        return 'failed';
+    }, name);
+}
+
 function stubChipNames(page) {
     return page.evaluate(() => {
         App.chipset = App.chipset || {};
@@ -171,6 +223,10 @@ module.exports = [
         name: 'hovering a video card scrubs a single lightweight preview with a progress line',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: SEED });
+            const clip = await ensurePlayableClip(page, 'c-clip.webm');
+            assert.notEqual(clip, 'failed', 'could not get a playable test clip');
+            await page.waitForFunction(() => (App.view.get('c-clip.webm')?.size || 0) > 1000); // listing caught up
+            await page.waitForSelector('.card[data-path="c-clip.webm"] .card-media');
             const box = await page.locator('.card[data-path="c-clip.webm"] .card-media').boundingBox();
             await page.mouse.move(box.x + box.width * 0.15, box.y + box.height / 2);
             await page.mouse.move(box.x + box.width * 0.2, box.y + box.height / 2);
@@ -186,7 +242,20 @@ module.exports = [
                 await page.mouse.move(box.x + box.width * 0.85 + (k % 2), box.y + box.height / 2);
                 await page.waitForTimeout(150);
             }
-            assert.ok(await scrubbed(), 'the preview seeks to where the pointer is');
+            if (!(await scrubbed())) {
+                const diag = await page.evaluate(async () => {
+                    const probe = await new Promise(async (resolve) => {
+                        const { url, release } = await App.fs.url('c-clip.webm');
+                        const v = document.createElement('video');
+                        v.muted = true;
+                        v.onloadedmetadata = () => resolve({ ok: true, duration: v.duration }) || release();
+                        v.onerror = () => resolve({ ok: false, code: v.error && v.error.code }) || release();
+                        v.src = url;
+                    });
+                    return { scrub: App.gallery._scrubState(), card: document.querySelector('.card[data-path="c-clip.webm"]').className, size: App.view.get('c-clip.webm').size, freshVideo: probe };
+                });
+                assert.fail(`the preview seeks to where the pointer is: ${JSON.stringify(diag)}`);
+            }
             const scale = await page.evaluate(() => document.querySelector('.card-scrub > i').style.transform);
             assert.match(scale, /scaleX\(0\.8/);
             await page.mouse.move(5, 5);
@@ -427,6 +496,7 @@ module.exports = [
         name: 'drag & drop: fanned drag image, drop label, toast with undo and "폴더로 가기"',
         async run({ openApp, assert, card }) {
             const { page } = await openApp({ seed: SEED });
+            await page.waitForSelector('.card[data-path="trip"] .card-mosaic'); // folder stats settled
             await page.waitForSelector('.card[data-path="a-photo.png"].has-thumb');
             await page.waitForSelector('.card[data-path="d-photo.png"].has-thumb');
             await (await card(page, 'a-photo.png')).click();
