@@ -232,6 +232,30 @@ module.exports = [
                 h.assert.ok(fs.existsSync(path.join(root, ...item.trashPath.split('/'))));
                 await page.evaluate(() => App.undo.redo());
                 h.assert.ok(fs.existsSync(path.join(root, frame)));
+
+                // Raw style (used by the viewer's editor): POST returns the job, the caller waits with progress
+                const raw = await page.evaluate(async () => {
+                    const job = await App.server.video.trim({ path: 'clip.mp4', start: 0.5, end: 1.5, mode: 'fast' });
+                    const seen = [];
+                    const result = await App.server.waitJob(job.id, (p) => seen.push(p));
+                    return { state: job.state, result, seen: seen.every((p) => typeof p === 'number') };
+                });
+                h.assert.equal(raw.state, 'running');
+                h.assert.equal(raw.result.path, 'clip_cut02.mp4');
+                h.assert.ok(raw.seen);
+
+                // In-place rotation keeps the name and the catalog data; the original waits in the app trash (one undo step)
+                await page.evaluate(() => App.catalog.update('clip.mp4', { rating: 4 }, { undoable: false }));
+                const rotated = await page.evaluate(() => App.server.video.transform('clip.mp4', 'rotate90', { mode: 'metadata', inPlace: true }));
+                h.assert.equal(rotated, 'clip.mp4');
+                h.assert.equal(await page.evaluate(() => App.catalog.get('clip.mp4').rating), 4);
+                h.assert.ok((await page.evaluate(() => App.fs.listTrash())).some((i) => i.originalPath === 'clip.mp4'));
+                const probe = await page.evaluate(() => App.server.media.probe('clip.mp4'));
+                h.assert.equal(probe.rotation, 90);
+                await page.evaluate(() => App.undo.undo());
+                const back = await page.evaluate(() => App.server.request('GET', '/api/media/probe', null, { query: { path: 'clip.mp4' } }));
+                h.assert.equal(back.rotation, 0, 'undo brings the original back');
+                h.assert.ok(fs.existsSync(path.join(root, 'clip.mp4')));
             });
         },
     },

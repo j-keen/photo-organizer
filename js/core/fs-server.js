@@ -232,11 +232,12 @@
             return this.req('POST', '/api/fs/open', { body: { path } });
         }
 
-        /** Media info (codecs, fps, camera...). Resolves null when the file is gone. Cached per path+size+mtime. */
+        /** Media info (codecs, fps, camera...). Resolves null when the file is gone. Entries are cached per path+size+mtime. */
         probe(entryOrPath) {
             const entry = typeof entryOrPath === 'string' ? null : entryOrPath;
             const path = entry ? entry.path : entryOrPath;
-            const key = entry ? `${path}|${entry.size ?? 0}|${entry.mtime ?? 0}` : path;
+            if (!entry || entry.mtime == null) return this.req('GET', '/api/media/probe', { query: { path, soft: 1 } }); // no version: always fresh
+            const key = `${path}|${entry.size ?? 0}|${entry.mtime}`;
             if (!this._probes.has(key)) {
                 const promise = this.req('GET', '/api/media/probe', { query: { path, soft: 1 } });
                 this._probes.set(key, promise);

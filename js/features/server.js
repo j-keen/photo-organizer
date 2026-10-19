@@ -11,13 +11,15 @@
  *   App.server.mode / url / state / info / available / capabilities / backend (App.fs.backend when kind==='server')
  *   App.server.connect()
  *   App.server.request(method, path, body, opts)                 JSON call with the open workspace's token
- *   App.server.job(id) / waitJob(jobOrId, {title, onProgress, cancellable}) → result (mirrors progress into App.jobs)
+ *   App.server.job(id) / waitJob(jobOrId, {title, onProgress(p0to1, message, job), cancellable}) → result (mirrors into App.jobs)
+ *   App.server.cancelJob(id) / canUse(cap) / canStream() / streamUrl(path, start) / thumbUrl(entry, size)
  *   App.server.video.trim(path, start, end, {mode:'fast'|'accurate', notify})   → new path (undo moves it to the trash)
  *   App.server.video.concat([{path, start, end}], {output, notify})            → new path
  *   App.server.video.transform(path, 'rotate90'|'rotate180'|'rotate270'|'hflip'|'vflip', {mode:'metadata'|'reencode', inPlace, notify})
  *   App.server.video.frame(path, seconds, {format:'jpg'|'png', notify})        → new image path
- *   App.server.dupes.scan({dirs, mode:'exact'|'similar'|'both', threshold, videos}) → {groups, stats}
- *   App.server.thumbs.pregenerate({dirs, size}) → {made, cached, failed, total}
+ *     (raw style: video.trim({path, start, end, mode}) etc. just POST and return the job — caller waits/undoes/toasts)
+ *   App.server.dupes.scan({dirs, mode:'exact'|'similar'|'both', threshold, videos}, {onProgress, title}) → {groups, stats}
+ *   App.server.thumbs.pregenerate({dirs, size}, {onProgress, title}) → {made, cached, failed, total}
  *   App.server.media.probe(path) / streamUrl(path, start) / thumbUrl(entry, size)
  *   App.server.reveal(path) / openDefault(path) / copyPath(paths)
  *   App.server.canDisplay(entryOrName)    browser can decode it, or the connected server can render/stream it
@@ -196,8 +198,14 @@
 
     const job = (id) => request('GET', `/api/jobs/${encodeURIComponent(id)}`);
 
-    /** Poll a server job until it ends, mirroring progress into App.jobs (status bar). Rejects with code ECANCELED on cancel. */
-    async function waitJob(jobOrId, { title = '로컬 서버 작업', onProgress, cancellable = true } = {}) {
+    /**
+     * Poll a server job until it ends, mirroring progress into App.jobs (status bar). Resolves with job.result,
+     * rejects with code ECANCELED on cancel. opts: { title, onProgress(progress0to1, message, job), cancellable }
+     * (a function as the second argument is taken as onProgress).
+     */
+    async function waitJob(jobOrId, opts = {}) {
+        if (typeof opts === 'function') opts = { onProgress: opts };
+        const { title = '로컬 서버 작업', onProgress, cancellable = true } = opts;
         let current = typeof jobOrId === 'string' ? { id: jobOrId, state: 'running', progress: 0 } : jobOrId;
         if (!current?.id) throw failure('EINVAL', '작업을 찾을 수 없어요');
         const id = encodeURIComponent(current.id);
@@ -212,7 +220,7 @@
             for (;;) {
                 if (cancelled || current.state === 'cancelled') throw failure('ECANCELED', '작업을 취소했어요');
                 local.update(Math.round((current.progress || 0) * 100), { detail: current.message || '' });
-                onProgress?.(current);
+                onProgress?.(current.progress || 0, current.message || '', current);
                 if (current.state === 'done') {
                     local.finish();
                     return current.result;
@@ -232,9 +240,9 @@
         }
     }
 
-    async function runJob(path, body, title) {
+    async function runJob(path, body, title, opts = {}) {
         requireBackend();
-        return waitJob(await request('POST', path, body), { title });
+        return waitJob(await request('POST', path, body), { title, ...opts });
     }
 
     // ---------- Video tools ----------
@@ -278,7 +286,7 @@
         }
         if (saved) {
             const { meta: _ignored, ...userData } = saved;
-            App.catalog.update(replaced, userData);
+            App.catalog.update(replaced, userData, { undoable: false }); // part of this single undo step
         }
         let newIds = [];
         App.undo.push({
@@ -316,21 +324,32 @@
         return path;
     }
 
+    // Two calling styles:
+    //   managed  — video.trim('a.mp4', 1, 5, {mode}) waits, refreshes the gallery, pushes one undo step and toasts → new path
+    //   raw      — video.trim({path, start, end, mode, ...}) only POSTs and returns the job (or the frame result);
+    //              the caller polls with waitJob(job.id, onProgress) and owns undo/toasts (the viewer's editor does this)
+    const raw = (endpoint) => (payload) => request('POST', `/api/video/${endpoint}`, payload);
+    const isPayload = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
     const video = {
         trim: (path, start, end, { mode: cut = 'fast', notify } = {}) =>
-            videoTool('trim', { path, start, end, mode: cut }, { busy: '영상 자르는 중', label: '영상 자르기', done: '잘라낸 영상을 만들었어요', notify }),
+            isPayload(path) ? raw('trim')(path)
+                : videoTool('trim', { path, start, end, mode: cut }, { busy: '영상 자르는 중', label: '영상 자르기', done: '잘라낸 영상을 만들었어요', notify }),
         concat: (segments, { output, notify } = {}) =>
-            videoTool('concat', { segments, output }, { busy: '영상 합치는 중', label: '영상 합치기', done: '영상을 하나로 합쳤어요', notify }),
+            isPayload(segments) ? raw('concat')(segments)
+                : videoTool('concat', { segments, output }, { busy: '영상 합치는 중', label: '영상 합치기', done: '영상을 하나로 합쳤어요', notify }),
         transform: (path, op, { mode: how = 'metadata', inPlace = false, notify } = {}) =>
-            videoTool('transform', { path, op, mode: how }, {
-                busy: op.startsWith('rotate') ? '영상 회전하는 중' : '영상 뒤집는 중',
-                label: op.startsWith('rotate') ? '영상 회전' : '영상 뒤집기',
-                done: inPlace ? '영상을 바꿨어요' : '바꾼 영상을 새 파일로 만들었어요',
-                notify,
-                inPlaceOf: inPlace ? path : null,
-            }),
+            isPayload(path) ? raw('transform')(path)
+                : videoTool('transform', { path, op, mode: how }, {
+                    busy: op.startsWith('rotate') ? '영상 회전하는 중' : '영상 뒤집는 중',
+                    label: op.startsWith('rotate') ? '영상 회전' : '영상 뒤집기',
+                    done: inPlace ? '영상을 바꿨어요' : '바꾼 영상을 새 파일로 만들었어요',
+                    notify,
+                    inPlaceOf: inPlace ? path : null,
+                }),
         frame: (path, time, { format = 'jpg', notify } = {}) =>
-            videoTool('frame', { path, time, format }, { label: '장면 저장', done: '장면을 사진으로 저장했어요', notify, sync: true }),
+            isPayload(path) ? raw('frame')(path)
+                : videoTool('frame', { path, time, format }, { label: '장면 저장', done: '장면을 사진으로 저장했어요', notify, sync: true }),
     };
 
     // ---------- Paths & clipboard ----------
@@ -1085,13 +1104,19 @@
         request,
         job,
         waitJob,
+        cancelJob: (id) => request('POST', `/api/jobs/${encodeURIComponent(id)}/cancel`, {}),
+        /** True when the connected server can do `cap` ('ffmpeg', 'faiss', 'heif'...) for the open workspace. */
+        canUse: (cap) => state === 'connected' && !!backend() && (!cap || server.capabilities[cap] !== false),
+        canStream: () => state === 'connected' && !!backend() && server.capabilities.ffmpeg !== false,
+        streamUrl: (path, start) => requireBackend().streamUrl(path, { start }),
+        thumbUrl: (entry, size) => requireBackend().thumbUrl(entry, size),
         video,
         dupes: {
-            scan: ({ dirs, mode: how = 'both', threshold = 10, videos = true } = {}) =>
-                runJob('/api/dupes/scan', { dirs, mode: how, threshold, videos }, '중복 파일 찾는 중'),
+            scan: ({ dirs, mode: how = 'both', threshold = 10, videos = true } = {}, opts = {}) =>
+                runJob('/api/dupes/scan', { dirs, mode: how, threshold, videos }, '중복 파일 찾는 중', opts),
         },
         thumbs: {
-            pregenerate: ({ dirs, size = 360 } = {}) => runJob('/api/thumbs/pregenerate', { dirs, size }, '썸네일 만드는 중'),
+            pregenerate: ({ dirs, size = 360 } = {}, opts = {}) => runJob('/api/thumbs/pregenerate', { dirs, size }, '썸네일 만드는 중', opts),
         },
         media: {
             probe: (path) => requireBackend().probe(path),
