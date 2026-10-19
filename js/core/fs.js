@@ -365,19 +365,62 @@
             return p;
         },
 
-        /** Write a new file (e.g. a captured frame). Picks a unique name unless overwrite. Returns the path. */
-        async createFile(dirPath, name, data, { overwrite = false } = {}) {
-            const finalName = overwrite ? name : await this.uniqueName(dirPath, name);
+        /**
+         * Write a new file (e.g. a captured frame, an imported file). Picks a unique name. Returns the path.
+         * Undoable by default (undo moves the new file to the app trash, redo brings it back).
+         */
+        async createFile(dirPath, name, data, { undoable = true, label } = {}) {
+            const finalName = await this.uniqueName(dirPath, name);
             const p = P.join(dirPath, finalName);
             await this.backend.write(p, data);
-            this.emitChange({ type: overwrite ? 'modify' : 'create', paths: [p], dirs: [dirPath] });
+            this.emitChange({ type: 'create', paths: [p], dirs: [dirPath] });
+            if (undoable) {
+                let ids = null;
+                App.undo.push({
+                    label: label || `"${finalName}" 만들기`,
+                    undo: async () => {
+                        ids = await this.trash([p], { undoable: false, silent: true });
+                    },
+                    redo: async () => {
+                        if (ids) await this.restore(ids);
+                    },
+                });
+            }
             return p;
         },
 
-        /** Replace a file's contents in place (e.g. rotated image). */
-        async overwrite(p, data) {
+        /**
+         * Replace a file's contents in place (e.g. rotated image). The previous version is kept in the app trash
+         * (restorable from the trash panel) and Ctrl+Z puts it back.
+         */
+        async overwrite(p, data, { undoable = true, label } = {}) {
+            const name = P.base(p);
+            let backup = null;
+            if (undoable) {
+                const batchDir = P.join(TRASH_DIR, 'v' + Date.now().toString(36));
+                const st = await this.backend.stat(p);
+                await this.backend.copy(p, batchDir, name);
+                backup = { id: App.util.uid('t'), name, kind: 'file', size: st.size, originalPath: p, trashPath: P.join(batchDir, name), deletedAt: Date.now(), reason: 'overwrite' };
+                await this._updateTrashManifest((m) => {
+                    m.items.push(backup);
+                });
+                App.bus.emit('trash:changed');
+            }
             await this.backend.write(p, data);
             this.emitChange({ type: 'modify', paths: [p], dirs: [P.parent(p)] });
+            if (undoable) {
+                App.undo.push({
+                    label: label || `"${name}" 변경`,
+                    undo: async () => {
+                        await this.backend.write(p, await this.backend.getFile(backup.trashPath));
+                        this.emitChange({ type: 'modify', paths: [p], dirs: [P.parent(p)] });
+                    },
+                    redo: async () => {
+                        await this.backend.write(p, data);
+                        this.emitChange({ type: 'modify', paths: [p], dirs: [P.parent(p)] });
+                    },
+                });
+            }
         },
 
         /** Rename a file or folder. Returns the new path. */

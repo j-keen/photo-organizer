@@ -100,6 +100,32 @@
 
     const saveSoon = App.util.debounce(() => catalog.save(), 700);
 
+    // Undo support: path -> deep copy of the entry (null when absent)
+    function snapshot(paths) {
+        const snap = new Map();
+        for (const p of paths) snap.set(p, data.items[p] ? JSON.parse(JSON.stringify(data.items[p])) : null);
+        return snap;
+    }
+
+    function sameSnapshot(a, b) {
+        for (const [p, e] of a) {
+            const x = e ? { ...e, updatedAt: 0 } : null;
+            const y = b.get(p) ? { ...b.get(p), updatedAt: 0 } : null;
+            if (JSON.stringify(x) !== JSON.stringify(y)) return false;
+        }
+        return true;
+    }
+
+    function restoreSnapshot(snap) {
+        for (const [p, e] of snap) {
+            if (e) data.items[p] = JSON.parse(JSON.stringify(e));
+            else delete data.items[p];
+        }
+        dirty = true;
+        saveSoon();
+        App.bus.emit('catalog:changed', { paths: [...snap.keys()], undo: true });
+    }
+
     const catalog = {
         loaded: false,
 
@@ -146,14 +172,20 @@
             return { chips: e.chips || [], rating: e.rating || 0, label: e.label || null, memo: e.memo || '', markers: e.markers || [], meta: e.meta || {} };
         },
 
-        /** update(path, patchObject | (entry) => void). Emits catalog:changed. */
-        update(p, patch, { silent = false } = {}) {
-            catalog.updateMany([p], patch, { silent });
+        /**
+         * update(path, patchObject | (entry) => void, opts). Emits catalog:changed.
+         * opts: { label = '정보 변경', undoable = true, coalesceKey, silent }
+         * Undoable by default: Ctrl+Z restores the previous values. Pass a coalesceKey (e.g. 'memo:' + path) for
+         * rapid repeated edits so they collapse into one undo step; pass { undoable: false } if you push your own entry.
+         */
+        update(p, patch, opts) {
+            catalog.updateMany([p], patch, opts);
         },
 
-        updateMany(paths, patch, { silent = false } = {}) {
+        updateMany(paths, patch, { silent = false, undoable = true, label = '정보 변경', coalesceKey = null } = {}) {
+            const before = undoable ? snapshot(paths) : null;
             for (const p of paths) {
-                const entry = data.items[p] ? { ...data.items[p] } : {};
+                const entry = data.items[p] ? JSON.parse(JSON.stringify(data.items[p])) : {};
                 if (typeof patch === 'function') patch(entry, p);
                 else Object.assign(entry, patch);
                 entry.updatedAt = Date.now();
@@ -163,6 +195,12 @@
             dirty = true;
             saveSoon();
             if (!silent) App.bus.emit('catalog:changed', { paths });
+            if (undoable) {
+                const after = snapshot(paths);
+                if (!sameSnapshot(before, after)) {
+                    App.undo.push({ label, coalesceKey, undo: () => restoreSnapshot(before), redo: () => restoreSnapshot(after) });
+                }
+            }
         },
 
         /** Merge cached media info without marking as a user edit or emitting noisy events. */
@@ -285,7 +323,7 @@
                     if (memo && !e.memo) e.memo = memo;
                     if (tags.length) e.legacyTags = tags;
                     e.legacyImported = true;
-                }, { silent: true });
+                }, { silent: true, undoable: false });
                 imported.push(p);
             }
             if (imported.length) App.bus.emit('catalog:changed', { paths: imported, legacy: true });
