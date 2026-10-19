@@ -1019,6 +1019,8 @@
         run: async () => {
             const cur = viewer.current;
             if (!cur) return;
+            // Settings › 일반 › '삭제 전 확인' (off by default: deletes are soft and undoable)
+            if (App.settings.get('trash.confirm', false) && !(await ui.confirm({ title: '휴지통으로 옮기기', message: `"${cur.name}"을(를) 휴지통으로 옮길까요?`, okLabel: '휴지통으로', danger: true }))) return;
             visible?.inst?.deactivate?.();
             // fs:changed (trash) moves the viewer to the neighbour; App.fs.trash pushes its own undo entry
             await App.fs.trash([cur.path]);

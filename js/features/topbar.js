@@ -794,13 +794,18 @@
             { label: '작업 폴더 닫기', icon: 'x', command: 'workspace.close', disabled: !App.fs.ready },
             '-',
             { label: theme === 'light' ? '어두운 테마' : '밝은 테마', icon: theme === 'light' ? 'moon' : 'sun', command: 'view.toggleTheme' },
-            { label: '사이드바', icon: 'sidebar', command: 'view.toggleSidebar', checked: !document.querySelector('.app').classList.contains('no-sidebar') },
-            { label: '정보 패널', icon: 'panel-right', command: 'view.toggleInspector', checked: !document.querySelector('.app').classList.contains('no-inspector') },
+            { label: '사이드바', icon: 'sidebar', command: 'view.toggleSidebar', checked: App.layout?.isVisible ? App.layout.isVisible('sidebar') : !document.querySelector('.app').classList.contains('no-sidebar') },
+            { label: '정보 패널', icon: 'panel-right', command: 'view.toggleInspector', checked: App.layout?.isVisible ? App.layout.isVisible('inspector') : !document.querySelector('.app').classList.contains('no-inspector') },
             '-',
             { label: '이동 기록', icon: 'clock', command: 'nav.history', disabled: !App.fs.ready },
             { label: '실행 취소', icon: 'undo', command: 'edit.undo', disabled: !App.undo.canUndo() },
             { label: '다시 실행', icon: 'redo', command: 'edit.redo', disabled: !App.undo.canRedo() },
-        ], { anchor, align: 'end' });
+            App.commands.get('edit.history') ? { label: '실행 취소 기록', icon: 'history', command: 'edit.history' } : null,
+            '-',
+            App.commands.get('palette.open') ? { label: '명령 팔레트', icon: 'command', command: 'palette.open' } : null,
+            App.commands.get('help.shortcuts') ? { label: '단축키 보기', icon: 'keyboard', command: 'help.shortcuts' } : null,
+            App.commands.get('settings.open') ? { label: '설정', icon: 'settings', command: 'settings.open' } : null,
+        ].filter(Boolean), { anchor, align: 'end' });
     }
 
     App.commands.register({

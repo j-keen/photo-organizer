@@ -2207,6 +2207,8 @@
             if (!paths.length) return;
             const dirs = App.select.entries().filter((e) => e.kind === 'dir').length;
             if (dirs && !(await ui.confirm({ title: '폴더 삭제', message: `폴더 ${dirs}개를 포함해 ${paths.length}개 항목을 휴지통으로 옮길까요? 휴지통에서 되살릴 수 있어요.`, okLabel: '휴지통으로', danger: true }))) return;
+            // Settings › 일반 › '삭제 전 확인' (off by default: deletes are soft and undoable)
+            if (!dirs && App.settings.get('trash.confirm', false) && !(await ui.confirm({ title: '휴지통으로 옮기기', message: `${paths.length}개 항목을 휴지통으로 옮길까요?`, okLabel: '휴지통으로', danger: true }))) return;
             // Pick the neighbour that survives (the list only reloads after the trash finishes)
             const order = App.view.visible.map((e) => e.path);
             const gone = new Set(paths);
