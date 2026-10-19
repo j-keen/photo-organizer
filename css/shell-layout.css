@@ -1,0 +1,108 @@
+/* Responsive panels (folding + overlays), focus mode and the shell's status-bar items — shell team */
+
+/* (Explicit grid columns for the panes now live in base.css.) */
+
+/* Panels shown as overlays on narrow windows: the grid column stays collapsed, the panel floats */
+.app.no-sidebar.sidebar-overlay #sidebar,
+.app.no-inspector.inspector-overlay #inspector {
+    display: flex;
+    position: fixed;
+    top: var(--topbar-h);
+    bottom: var(--statusbar-h);
+    z-index: 70;
+    box-shadow: var(--sh-3);
+}
+
+.app.no-sidebar.sidebar-overlay #sidebar {
+    left: 0;
+    width: min(var(--sidebar-w), 86vw);
+    border-right: 1px solid var(--line-2);
+    animation: lay-in-left var(--dur-slow) var(--ease);
+}
+
+.app.no-inspector.inspector-overlay #inspector {
+    right: 0;
+    width: min(var(--inspector-w), 92vw);
+    border-left: 1px solid var(--line-2);
+    animation: lay-in-right var(--dur-slow) var(--ease);
+}
+
+@keyframes lay-in-left {
+    from {
+        opacity: 0;
+        transform: translateX(-18px);
+    }
+}
+
+@keyframes lay-in-right {
+    from {
+        opacity: 0;
+        transform: translateX(18px);
+    }
+}
+
+.lay-scrim {
+    position: fixed;
+    inset: var(--topbar-h) 0 var(--statusbar-h);
+    z-index: 65;
+    background: var(--bg-overlay);
+    animation: fade-in var(--dur) var(--ease);
+}
+
+/* ----- status-bar items (palette trigger, secondary backup) ----- */
+#statusbar .sb-shell {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 20px;
+    padding: 0 6px;
+    margin: 0 -6px;
+    border: none;
+    border-radius: var(--r-xs);
+    background: transparent;
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    cursor: pointer;
+}
+
+#statusbar .sb-shell:hover {
+    background: var(--bg-3);
+    color: var(--text-2);
+}
+
+#statusbar .sb-shell .kbd {
+    height: 16px;
+    min-width: 16px;
+    padding: 0 4px;
+    font-size: 9.5px;
+    border-bottom-width: 1px;
+}
+
+#statusbar .sb-shell .pal-keys {
+    gap: 2px;
+}
+
+#statusbar .sb-backup .ico {
+    color: var(--success);
+}
+
+#statusbar .sb-backup.warn .ico {
+    color: var(--warning);
+}
+
+#statusbar .sb-backup.running .ico {
+    color: var(--text-3);
+}
+
+#statusbar .sb-backup .sb-backup-text {
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+@media (max-width: 820px) {
+    #statusbar .sb-palette-label,
+    #statusbar .sb-backup .sb-backup-text {
+        display: none;
+    }
+}
