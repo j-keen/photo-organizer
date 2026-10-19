@@ -162,6 +162,12 @@ function initScript() {
         return true;
     };
 
+    // Re-attach to an OPFS workspace seeded before a page reload
+    window.__useExistingWorkspace = async (name = 'ws') => {
+        window.__fakeRoot = await (await navigator.storage.getDirectory()).getDirectoryHandle(name);
+        return true;
+    };
+
     window.showDirectoryPicker = async () => {
         if (!window.__fakeRoot) throw new DOMException('no seeded workspace', 'AbortError');
         return window.__fakeRoot;
