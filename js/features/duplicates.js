@@ -1323,7 +1323,8 @@
                             action: { label: '실행 취소', run: () => App.undo.undo() },
                         });
                     }
-                    if (res.failed && res.failed.length) ui.toast(`${formatCount(res.failed.length)}개는 휴지통으로 옮기지 못했어요 (${res.failed[0].error})`, { type: 'warning', duration: 6000 });
+                    const unreported = (res.failed || []).filter((f) => !f.reported);
+                    if (unreported.length) ui.toast(`${formatCount(unreported.length)}개는 휴지통으로 옮기지 못했어요 (${unreported[0].error})`, { type: 'warning', duration: 6000 });
                 }
 
                 // ---------------- keep in sync with the file system (undo/redo, other changes) ----------------

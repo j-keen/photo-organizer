@@ -372,6 +372,21 @@ module.exports = [
             assert.equal(await sizeOf(page, 'a.png'), newSize);
             assert.equal(await sizeOf(page, 'trip/a.png'), oldSize, 'the replaced file is back');
             assert.deepEqual(await trashList(page), []);
+
+            // The same sheet plugs into the core onConflict hook (drag & drop): replace + skip, one undo
+            await page.evaluate(() => { App.fs.move(['a.png', 'same.png'], 'trip', { onConflict: App.organize.conflictHook }); });
+            await page.waitForSelector('.org-conflict .org-option');
+            await page.keyboard.press('3');
+            await page.waitForFunction(() => /2개 중 2번째/.test(document.querySelector('.org-conflict .org-head-sub')?.textContent || ''));
+            await page.keyboard.press('2'); // 건너뛰기
+            await until(page, async () => !(await window.__opfs.exists('a.png')), null, { message: 'moved via hook' });
+            await waitIdle(page);
+            assert.equal(await sizeOf(page, 'trip/a.png'), newSize);
+            assert.deepEqual(await trashList(page), ['trip/a.png']);
+            assert.ok(await exists(page, 'same.png'), 'skipped');
+            await page.keyboard.press('Control+z');
+            await until(page, async () => (await window.__opfs.exists('a.png')) && (await App.fs.listTrash()).length === 0, null, { message: 'undo via hook' });
+            assert.equal(await sizeOf(page, 'trip/a.png'), oldSize);
         },
     },
     {

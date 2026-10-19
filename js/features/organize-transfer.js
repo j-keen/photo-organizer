@@ -495,6 +495,26 @@
         return { items, conflicts: conflicts.length };
     }
 
+    /**
+     * Adapter for the core hook: App.fs.move/copy(paths, dir, { onConflict: App.organize.conflictHook }).
+     * conflicts = [{ src, name, dest, isDir }] -> Map(src -> 'keep'|'skip'|'replace') or null (cancel).
+     * Gives drag & drop the same side-by-side conflict sheet as "move to…".
+     */
+    async function conflictHook(conflicts, { op = 'move' } = {}) {
+        if (!conflicts || !conflicts.length) return new Map();
+        const items = conflicts.map((c) => ({ from: c.src, toDir: P.parent(c.dest), name: c.name }));
+        const list = items.map((item, i) => ({ item, existing: conflicts[i].dest, existingKind: conflicts[i].isDir ? 'dir' : 'file' }));
+        const decisions = await conflictSheet(list, { op });
+        if (!decisions) return null;
+        const out = new Map();
+        for (const c of list) {
+            let action = decisions.get(c) || 'keep-both';
+            if (action === 'skip-if-same') action = (await kit.sameContent(c.item.from, c.existing)) ? 'skip' : 'keep-both';
+            out.set(c.item.from, action === 'skip' ? 'skip' : action === 'replace' ? 'replace' : 'keep');
+        }
+        return out;
+    }
+
     // =====================================================================
     // Transfer engine — every batch is ONE undo entry
     // =====================================================================
@@ -527,7 +547,10 @@
         }
         if (!live.length) return [];
         try {
-            return await App.fs[op](live, dir, { undoable: false });
+            const res = await App.fs[op](live, dir, { undoable: false });
+            // newer core collects per-item failures instead of throwing
+            for (const f of res.failed || []) record.failed.push({ path: f.path, error: f.error?.message || String(f.error), reported: true });
+            return [...res];
         } catch (e) {
             console.warn('[organize] batch transfer failed, retrying one by one', e);
             const out = [];
@@ -768,7 +791,10 @@
             adoptCreated(program.preCreated);
         }
         if (record.error) ui.toast(`일부 작업을 마치지 못했어요: ${record.error.message || record.error}`, { type: 'error' });
-        else if (record.failed.length) ui.toast(`${formatCount(record.failed.length)}개는 처리하지 못했어요 (${record.failed[0].error})`, { type: 'warning', duration: 6000 });
+        else if (record.failed.some((f) => !f.reported)) {
+            const own = record.failed.filter((f) => !f.reported);
+            ui.toast(`${formatCount(own.length)}개는 처리하지 못했어요 (${own[0].error})`, { type: 'warning', duration: 6000 });
+        }
         return record;
     }
 
@@ -1460,7 +1486,7 @@
         if (!top.length) return [];
         let res = await kit.trashPaths(top);
         if (!res.ids.length) {
-            ui.toast(`폴더를 휴지통으로 옮기지 못했어요: ${res.failed[0]?.error || ''}`, { type: 'error' });
+            if (!res.failed.some((f) => f.reported)) ui.toast(`폴더를 휴지통으로 옮기지 못했어요: ${res.failed[0]?.error || ''}`, { type: 'error' });
             return [];
         }
         let current = res.paths;
@@ -1571,6 +1597,7 @@
     Object.assign(App.organize, {
         pickFolder,
         resolveConflicts,
+        conflictHook,
         detectConflicts,
         runProgram,
         undoRecord,

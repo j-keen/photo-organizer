@@ -1051,8 +1051,15 @@
             }
             try {
                 const got = await App.fs.trash(part, { undoable: false, silent: true });
+                // fs.trash skips items it couldn't move (and reports them); ids follow the order of the rest
+                let moved = part;
+                if (got.length !== part.length) {
+                    moved = [];
+                    for (const p of part) if (!(await App.fs.exists(p))) moved.push(p);
+                    for (const p of part) if (!moved.includes(p)) failed.push({ path: p, error: '휴지통으로 옮기지 못했어요', reported: true });
+                }
                 ids.push(...got);
-                done.push(...part.slice(0, got.length));
+                done.push(...moved.slice(0, got.length));
             } catch (e) {
                 console.warn('[organize] trash failed for a chunk', e);
                 for (const p of part) failed.push({ path: p, error: e.message || String(e) });

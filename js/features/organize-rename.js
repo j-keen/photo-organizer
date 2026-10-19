@@ -230,10 +230,25 @@
      */
     async function applyRenames(pairs, { job, total } = {}) {
         if (typeof App.fs.renameMany === 'function') {
-            const res = await App.fs.renameMany(pairs, { undoable: false });
-            job?.update(pairs.length, { total: total || pairs.length });
-            return { done: res, failed: [] };
+            // Core batch rename: swaps/chains, ONE fs:changed event. It is all-or-nothing for validation errors
+            // (nothing renamed) — then the per-item path below collects the failures one by one.
+            try {
+                const res = await App.fs.renameMany(pairs.map((p) => ({ path: p.from, name: p.toName })), { undoable: false });
+                job?.update(pairs.length, { total: total || pairs.length });
+                return { done: res.map((r) => ({ from: r.from, to: r.to })), failed: [] };
+            } catch (e) {
+                console.warn('[organize] renameMany failed, renaming one by one', e);
+                const left = [];
+                for (const p of pairs) if (await App.fs.exists(p.from)) left.push(p);
+                const doneBefore = pairs.filter((p) => !left.includes(p)).map((p) => ({ from: p.from, to: P.join(P.parent(p.from), p.toName) }));
+                const rest = await applyRenamesOneByOne(left, { job, total });
+                return { done: [...doneBefore, ...rest.done], failed: rest.failed };
+            }
         }
+        return applyRenamesOneByOne(pairs, { job, total });
+    }
+
+    async function applyRenamesOneByOne(pairs, { job, total } = {}) {
         const done = [];
         const failed = [];
         let count = 0;
