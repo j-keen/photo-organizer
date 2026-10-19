@@ -424,37 +424,158 @@
     gap: 18px;
 }
 
-.srv-unlocks {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+.srv-setup .srv-lead {
     margin: 0;
+    font-size: var(--fs-md);
+    line-height: 1.55;
+    color: var(--text);
+}
+
+.srv-perks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: -6px 0 0;
     padding: 0;
     list-style: none;
 }
 
-.srv-unlocks li {
+.srv-perks li {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 10px 0 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-full);
+    background: var(--bg-2);
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+
+.srv-perk-icon {
+    display: inline-flex;
+    color: var(--accent-2);
+}
+
+.srv-steps .srv-muted {
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+}
+
+.srv-app-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin: 0 2px;
+    padding: 1px 8px 1px 3px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-full);
+    background: var(--bg-3);
+    color: var(--text);
+    font-weight: 600;
+    white-space: nowrap;
+    vertical-align: 1px;
+    line-height: 18px;
+}
+
+.srv-app-icon {
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    background: linear-gradient(180deg, #6366f1, #a855f7);
+    color: #fff;
+}
+
+.srv-pulse {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-4);
+    box-shadow: 0 0 0 0 var(--bg-4);
+    animation: srv-ring 1.8s var(--ease) infinite;
+}
+
+@keyframes srv-ring {
+    0% {
+        box-shadow: 0 0 0 0 color-mix(in srgb, var(--text-4) 55%, transparent);
+    }
+    70%,
+    100% {
+        box-shadow: 0 0 0 9px transparent;
+    }
+}
+
+.srv-live .btn.primary {
+    flex-shrink: 0;
+    gap: 6px;
+}
+
+/* ---------- Chooser hint after a file:// handoff ---------- */
+.srv-hint {
     display: flex;
     align-items: center;
     gap: 10px;
-    min-width: 0;
-    padding: 9px 12px 9px 9px;
-    border: 1px solid var(--line);
+    padding: 10px 12px;
+    border: 1px solid var(--accent-line);
     border-radius: var(--r-lg);
-    background: var(--bg-2);
-    font-size: var(--fs-sm);
-    line-height: 1.35;
-    color: var(--text);
+    background: var(--accent-soft);
 }
 
-.srv-unlock-icon {
+.srv-hint-icon {
     display: grid;
     place-items: center;
     width: 30px;
     height: 30px;
     border-radius: var(--r);
-    background: var(--accent-soft);
-    color: var(--accent-2);
+    background: var(--accent);
+    color: var(--on-accent);
+    flex-shrink: 0;
+}
+
+/* ---------- Old server process after an update ---------- */
+.srv-status[data-outdated] {
+    color: var(--warning);
+    font-weight: 600;
+}
+
+.srv-status[data-outdated] .srv-dot {
+    background: var(--warning);
+    box-shadow: 0 0 0 3px var(--warning-soft);
+    animation: srv-pulse 1.8s var(--ease) infinite;
+}
+
+.srv-update {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 0 14px 12px;
+    padding: 10px 10px 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+    border-radius: var(--r-lg);
+    background: var(--warning-soft);
+}
+
+.srv-update .srv-muted {
+    margin-top: 2px;
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+}
+
+.srv-update .btn {
+    margin-top: 8px;
+}
+
+.srv-update-icon {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--warning);
+    color: #1a1204;
     flex-shrink: 0;
 }
 
@@ -622,6 +743,7 @@
 
 @media (prefers-reduced-motion: reduce) {
     .srv-dot,
+    .srv-pulse,
     .srv-live-icon {
         animation: none !important;
     }

@@ -40,6 +40,9 @@ class Job:
         self.started: float | None = None
         self.finished: float | None = None
         self._cancel = threading.Event()
+        self._running = threading.Event()  # cleared while paused
+        self._running.set()
+        self._message_before_pause: str | None = None
         self._procs: set[subprocess.Popen] = set()
         self._lock = threading.Lock()
         self.cleanup: list[Callable[[], None]] = []  # run after the job ends (e.g. delete temp files)
@@ -49,14 +52,48 @@ class Job:
     def cancelled(self) -> bool:
         return self._cancel.is_set()
 
+    @property
+    def paused(self) -> bool:
+        return self.state == 'running' and not self._running.is_set()
+
     def set_progress(self, progress: float, message: str | None = None) -> None:
         self.progress = max(0.0, min(1.0, float(progress)))
         if message is not None:
-            self.message = message
+            if self._running.is_set():
+                self.message = message
+            else:
+                self._message_before_pause = message  # shown again on resume
 
     def check(self) -> None:
         if self._cancel.is_set():
             raise JobCancelled()
+        if not self._running.is_set():
+            # Paused: every thread of the job blocks at its next check point until resumed or cancelled
+            while not self._running.wait(0.2):
+                if self._cancel.is_set():
+                    raise JobCancelled()
+            if self._cancel.is_set():
+                raise JobCancelled()
+
+    def pause(self) -> bool:
+        """Pause at the next check point (running ffmpeg calls finish first). False when the job already ended."""
+        if self.state != 'running' or self._cancel.is_set():
+            return False
+        with self._lock:
+            if self._running.is_set():
+                self._message_before_pause = self.message
+                self._running.clear()
+                self.message = '일시정지했어요'
+        return True
+
+    def resume(self) -> bool:
+        with self._lock:
+            if self._running.is_set():
+                return False
+            if self.message == '일시정지했어요':
+                self.message = self._message_before_pause or '처리하는 중…'
+            self._running.set()
+        return True
 
     def add_proc(self, proc: subprocess.Popen) -> None:
         with self._lock:
@@ -72,6 +109,7 @@ class Job:
         if self.state != 'running':
             return False
         self._cancel.set()
+        self._running.set()  # wake a paused job so it can stop
         self.message = '취소하는 중…'
         with self._lock:
             procs = list(self._procs)
@@ -84,6 +122,7 @@ class Job:
             'id': self.id,
             'kind': self.kind,
             'state': self.state,
+            'paused': self.paused,
             'progress': round(self.progress, 4),
             'message': self.message,
             'result': self.result,

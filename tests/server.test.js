@@ -113,8 +113,14 @@ async function fixtures(py, root, kind) {
         '    subprocess.run([ffmpeg,"-hide_banner","-loglevel","error","-y"] + args, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **flags)',
         'if kind == "avi":',
         '    run(["-f","lavfi","-i","testsrc=duration=2:size=320x240:rate=25","-c:v","mpeg4",os.path.join(root,"c.avi")])',
-        'if kind == "mp4":',
+        'if kind in ("mp4", "dupes"):',
         '    run(["-f","lavfi","-i","testsrc=duration=3:size=320x240:rate=25","-f","lavfi","-i","sine=frequency=440:duration=3","-c:v","libx264","-pix_fmt","yuv420p","-c:a","aac","-shortest",os.path.join(root,"clip.mp4")])',
+        'if kind == "dupes":',
+        '    import shutil',
+        '    shutil.copy2(os.path.join(root, "clip.mp4"), os.path.join(root, "copy.mp4"))',
+        '    ext = os.path.join(os.path.dirname(root), "외부 영상")',
+        '    os.makedirs(ext, exist_ok=True)',
+        '    shutil.copy2(os.path.join(root, "clip.mp4"), os.path.join(ext, "clip (1).mp4"))',
     ].join('\n');
     await execute(py, ['-c', script, root, kind], { windowsHide: true, timeout: 20000, maxBuffer: 1024 * 1024 });
 }
@@ -142,7 +148,7 @@ async function withServer(h, kind, run, picker = false) {
     try {
         await fixtures(py, root, kind);
         const port = await freePort();
-        server = await startPy({ py, root: h.ROOT, port, dataDir: path.join(temp, 'data'), env: picker ? { FI_PICK_RESULT: root } : {} });
+        server = await startPy({ py, root: h.ROOT, port, dataDir: path.join(temp, 'data'), env: picker ? { FI_PICK_RESULT: typeof picker === 'function' ? picker({ temp, root }) : root } : {} });
         browser = await h.launchBrowser();
         const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
         const errors = collect(page);
@@ -299,7 +305,7 @@ module.exports = [
                 await page.waitForSelector('.srv-setup [data-state="waiting"]');
                 server = await startPy({ py, root: h.ROOT, port, dataDir: path.join(temp, 'data') });
                 await page.waitForSelector('.srv-setup [data-state="ready"]', { timeout: 10000 });
-                h.assert.ok(await page.getByRole('button', { name: '서버 주소로 열기', exact: true }).isVisible());
+                h.assert.ok(await page.getByRole('button', { name: '서버로 계속하기', exact: true }).isVisible());
                 await page.keyboard.press('Escape');
                 await page.waitForSelector('.srv-setup', { state: 'detached' });
                 h.assert.deepEqual(errors, []);
@@ -365,6 +371,192 @@ module.exports = [
                 if (server) await server.stop();
                 removeTemp(temp);
             }
+        },
+    },
+    {
+        name: 'server: dupes v2 client — external root, fingerprints, compare scan, frames, quarantine with Ctrl+Z',
+        async run(h) {
+            const extOf = ({ temp }) => path.join(temp, '외부 영상');
+            await withServer(h, 'dupes', async ({ page, root, temp }) => {
+                await open(page, root);
+                const ext = fs.realpathSync.native(extOf({ temp }));
+                h.assert.ok(await page.evaluate(() => App.server.supports('dupes-v2')));
+                // The native picker is simulated (FI_PICK_RESULT); the folder becomes an allowed read-only root
+                const picked = await page.evaluate(() => App.server.dupes.pickRoot());
+                h.assert.equal(path.normalize(picked.root).toLowerCase(), ext.toLowerCase());
+                h.assert.ok((await page.evaluate(() => App.server.dupes.roots())).some((r) => r.root === picked.root && r.source === 'picked'));
+
+                const first = await page.evaluate((r) => App.server.dupes.fingerprint({ dirs: [''], roots: [r] }), picked.root);
+                h.assert.equal(first.files, 6); // 3 photos + clip + copy in the workspace, 1 video outside
+                h.assert.equal(first.failed, 0);
+                const again = await page.evaluate((r) => App.server.dupes.fingerprint({ dirs: [''], roots: [r] }), picked.root);
+                h.assert.equal(again.computed, 0, 'second run reuses every fingerprint');
+
+                const result = await page.evaluate((r) => App.server.dupes.scanV2({ compare: { a: [''], b: [r] } }), picked.root);
+                h.assert.equal(result.stats.engine, 'server-v2');
+                h.assert.equal(result.groups.length, 1);
+                const group = result.groups[0];
+                h.assert.equal(group.kind, 'exact');
+                h.assert.ok(group.sure);
+                h.assert.deepEqual(group.members.map((m) => m.side).sort(), ['a', 'a', 'b']);
+                const outside = group.members.find((m) => m.side === 'b');
+                h.assert.ok(await page.evaluate((p) => App.server.dupes.isExternal(p), outside.path));
+                h.assert.ok(!fs.existsSync(path.join(ext, '.fluid-organizer')), 'external roots stay read-only');
+
+                // Review strip frames load as images (same-origin, session cookie)
+                const width = await page.evaluate(async (p) => {
+                    const img = new Image();
+                    img.src = App.server.dupes.frameUrl(p, 1, { w: 120 });
+                    await img.decode();
+                    return img.naturalWidth;
+                }, outside.path);
+                h.assert.equal(width, 120);
+
+                // Quarantine = one undo step: Ctrl+Z brings the file back, redo moves it again
+                const moved = await page.evaluate(({ p }) => App.server.dupes.quarantine([p], { keep: 'clip.mp4', reason: '테스트' }), { p: outside.path });
+                h.assert.equal(moved.moved.length, 1, JSON.stringify(moved));
+                h.assert.ok(fs.existsSync(path.join(ext, '_중복정리', '001_clip (1).mp4')));
+                h.assert.ok(!fs.existsSync(path.join(ext, 'clip (1).mp4')));
+                h.assert.equal((await page.evaluate(() => App.server.dupes.quarantined())).length, 1);
+                h.assert.ok(fs.readFileSync(path.join(ext, '_중복정리', '정리기록.json'), 'utf8').includes('"state": "moved"'));
+                await page.locator('#gallery').click({ position: { x: 5, y: 5 } }).catch(() => {});
+                await page.keyboard.press('Control+z');
+                await page.waitForFunction(() => App.undo.canRedo());
+                h.assert.ok(fs.existsSync(path.join(ext, 'clip (1).mp4')), 'undo restores the file');
+                h.assert.equal((await page.evaluate(() => App.server.dupes.quarantined())).length, 0);
+                await page.evaluate(() => App.undo.redo());
+                h.assert.ok(fs.existsSync(path.join(ext, '_중복정리', '002_clip (1).mp4')), 'redo quarantines again');
+                // Another file takes the original name meanwhile: undo restores as '(복원)', redo moves only that one
+                fs.writeFileSync(path.join(ext, 'clip (1).mp4'), 'someone else');
+                await page.evaluate(() => App.undo.undo());
+                h.assert.ok(fs.existsSync(path.join(ext, 'clip (1) (복원).mp4')), 'restore never overwrites');
+                h.assert.equal(fs.readFileSync(path.join(ext, 'clip (1).mp4'), 'utf8'), 'someone else');
+                await page.evaluate(() => App.undo.redo());
+                h.assert.ok(!fs.existsSync(path.join(ext, 'clip (1) (복원).mp4')));
+                h.assert.equal(fs.readFileSync(path.join(ext, 'clip (1).mp4'), 'utf8'), 'someone else', 'redo never touches the other file');
+                fs.unlinkSync(path.join(ext, 'clip (1).mp4'));
+
+                // Workspace files are refused (they go to the app trash instead)
+                const refused = await page.evaluate((p) => App.server.request('POST', '/api/dupes/quarantine', { paths: [p] }), path.join(root, 'copy.mp4'));
+                h.assert.equal(refused.failed[0].code, 'EINVAL');
+                h.assert.ok(fs.existsSync(path.join(root, 'copy.mp4')));
+
+                // Pausing the status-bar job pauses the server job
+                for (let i = 0; i < 4; i++) fs.copyFileSync(path.join(root, 'clip.mp4'), path.join(root, `fresh-${i}.mp4`));
+                fs.appendFileSync(path.join(root, 'fresh-1.mp4'), Buffer.alloc(16)); // a different size: needs its own fingerprint
+                const paused = await page.evaluate(async () => {
+                    const job = await App.server.dupes.start('/api/dupes/fingerprint', { dirs: [''], workers: 1 });
+                    const done = App.server.waitJob(job, { title: '지문 만들기', pausable: true });
+                    const local = App.jobs.list().find((j) => j.title === '지문 만들기');
+                    local.pause();
+                    let remote;
+                    for (let i = 0; i < 50; i++) {
+                        remote = await App.server.job(job.id);
+                        if (remote.paused || remote.state !== 'running') break;
+                        await App.util.sleep(50);
+                    }
+                    const snapshot = { paused: remote.paused, state: remote.state, pausable: local.pausable };
+                    local.resume();
+                    const result = await done;
+                    return { ...snapshot, files: result.files };
+                });
+                h.assert.ok(paused.pausable);
+                h.assert.ok(paused.paused, JSON.stringify(paused));
+                h.assert.equal(paused.state, 'running');
+                h.assert.equal(paused.files, 9);
+            }, extOf);
+        },
+    },
+    {
+        name: 'server: one-click handoff from the file:// page keeps the folder and the settings',
+        async run(h) {
+            await withServer(h, 'image', async ({ page, port, root }) => {
+                await open(page, root);
+                const ws = await page.evaluate(() => App.state.workspace);
+                const encode = (payload) => Buffer.from(JSON.stringify(payload)).toString('base64url');
+                const context = await page.context().browser().newContext({ viewport: { width: 1280, height: 800 } });
+                try {
+                    const fresh = await context.newPage();
+                    const errors = collect(fresh);
+                    const payload = { v: 1, at: Date.now(), settings: { theme: 'light', 'handoff.test': 42, 'server.hintAt': 7 }, workspace: { id: ws.id, name: ws.name }, cwd: 'trip' };
+                    await fresh.goto(`http://127.0.0.1:${port}/#fi-handoff=${encode(payload)}`);
+                    await fresh.waitForFunction((id) => App.state.workspace?.id === id && App.state.cwd === 'trip', ws.id, { timeout: 15000 });
+                    h.assert.equal(await fresh.evaluate(() => App.settings.get('handoff.test')), 42);
+                    h.assert.equal(await fresh.evaluate(() => App.settings.get('server.hintAt', null)), null, 'server.* settings are not carried');
+                    h.assert.equal(await fresh.evaluate(() => document.documentElement.dataset.theme), 'light');
+                    h.assert.equal(await fresh.evaluate(() => location.hash), '', 'the fragment is removed from the address bar');
+                    await fresh.waitForFunction(() => document.querySelector('#toasts')?.textContent.includes('서버로 이어서 열었어요'));
+
+                    // A folder the server doesn't know yet → the chooser asks for it once, by name
+                    const unknown = await context.newPage();
+                    const errors2 = collect(unknown);
+                    await unknown.goto(`http://127.0.0.1:${port}/#fi-handoff=${encode({ ...payload, at: Date.now(), workspace: { id: 'wsnope', name: '모르는 폴더' } })}`);
+                    await unknown.waitForSelector('.srv-chooser .srv-hint');
+                    h.assert.ok((await unknown.locator('.srv-hint').innerText()).includes('모르는 폴더'));
+                    // Stale handoffs are ignored
+                    const stale = await context.newPage();
+                    const errors3 = collect(stale);
+                    await stale.goto(`http://127.0.0.1:${port}/#fi-handoff=${encode({ ...payload, at: Date.now() - 60 * 60 * 1000, settings: { 'handoff.stale': 1 } })}`);
+                    await stale.waitForFunction(() => window.App?.server?.state === 'connected');
+                    h.assert.equal(await stale.evaluate(() => App.settings.get('handoff.stale', null)), null);
+                    h.assert.deepEqual([...errors, ...errors2, ...errors3], []);
+                } finally {
+                    await context.close();
+                }
+            });
+        },
+    },
+    {
+        name: 'server: the file:// page builds a handoff link with the open folder and settings',
+        async run(h) {
+            const app = await h.openApp({ seed: { 'a.png': { image: {} }, 'trip/b.png': { image: {} } } });
+            const { page } = app;
+            await page.evaluate(() => {
+                App.settings.set('handoff.carry', 'yes');
+                App.settings.set('server.hintAt', 123);
+            });
+            await page.evaluate(() => App.nav.go('trip'));
+            await page.waitForFunction(() => App.state.cwd === 'trip');
+            const data = await page.evaluate(() => {
+                const url = App.server.handoffUrl();
+                const value = url.split('#fi-handoff=')[1];
+                const bin = atob(value.replace(/-/g, '+').replace(/_/g, '/'));
+                return { url, payload: JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)))), ws: App.state.workspace };
+            });
+            h.assert.ok(data.url.startsWith('http://127.0.0.1:8765/#fi-handoff='));
+            h.assert.equal(data.payload.v, 1);
+            h.assert.deepEqual(data.payload.workspace, { id: data.ws.id, name: data.ws.name });
+            h.assert.equal(data.payload.cwd, 'trip');
+            h.assert.equal(data.payload.settings['handoff.carry'], 'yes');
+            h.assert.ok(!('server.hintAt' in data.payload.settings));
+        },
+    },
+    {
+        name: 'server: an older server process shows "다시 켜기" and reconnects after the restart',
+        async run(h) {
+            await withServer(h, 'image', async ({ page }) => {
+                // Pretend the running server is a round-1 process (no apiVersion)
+                await page.route('**/api/session', async (route) => {
+                    // route.fetch() leaves out the browser's Sec-Fetch-Site header, which /api/session requires
+                    const response = await route.fetch({ headers: { ...route.request().headers(), 'sec-fetch-site': 'same-origin' } });
+                    const json = await response.json();
+                    delete json.apiVersion;
+                    await route.fulfill({ response, json });
+                });
+                await page.reload();
+                await page.waitForSelector('.srv-status[data-state="connected"][data-outdated]');
+                h.assert.equal(await page.locator('.srv-status').innerText(), '서버 업데이트');
+                h.assert.ok(!(await page.evaluate(() => App.server.supports('dupes-v2'))));
+                await page.waitForFunction(() => document.querySelector('#toasts')?.textContent.includes('서버를 새 버전으로 다시 켜 주세요'));
+                await page.unroute('**/api/session');
+                await page.locator('.srv-status').click();
+                await page.waitForSelector('.srv-update');
+                await page.locator('.srv-update').getByRole('button', { name: '다시 켜기', exact: true }).click();
+                // The test server restarts "dry" (stays up): the app reconnects and the warning is gone
+                await page.waitForSelector('.srv-status[data-state="connected"]:not([data-outdated])', { timeout: 20000 });
+                await page.waitForFunction(() => document.querySelector('#toasts')?.textContent.includes('다시 연결했어요'));
+                h.assert.equal(await page.evaluate(() => App.server.apiVersion), 2);
+            });
         },
     },
 ];

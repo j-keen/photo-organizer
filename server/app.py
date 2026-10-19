@@ -11,9 +11,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import APP_ID, VERSION, config, errors, ffmpeg, mediacache
+from . import API_VERSION, APP_ID, VERSION, config, errors, ffmpeg, launcher, mediacache
 from .config import ENTRY_HTML, STATIC_DIRS, Settings
 from .errors import ApiError
+from .external import ExternalRoots
 from .http_utils import bytes_response, file_response
 from .jobs import JobManager
 from .paths import clean_rel, resolve
@@ -95,12 +96,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.registry = registry
     app.state.jobs = jobs
     app.state.data_dir = data_dir
+    app.state.external = ExternalRoots(data_dir, registry)
     errors.install(app)
 
     # ---------- health & session ----------
     @app.get('/api/health')
     def health():
-        return JSONResponse({'app': APP_ID, 'version': VERSION, 'port': settings.port}, headers={'Cache-Control': 'no-store'})
+        return JSONResponse({'app': APP_ID, 'version': VERSION, 'apiVersion': API_VERSION, 'port': settings.port},
+                            headers={'Cache-Control': 'no-store'})
 
     @app.get('/api/session')
     def get_session(request: Request):
@@ -112,6 +115,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             'ok': True,
             'app': APP_ID,
             'version': VERSION,
+            'apiVersion': API_VERSION,
             'platform': sys.platform,
             'port': settings.port,
             'appRoot': os.path.realpath(str(settings.app_root)),
@@ -138,10 +142,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         threading.Timer(0.25, later).start()
         return {'ok': True}
 
-    # ---------- feature routes ----------
-    from . import dupes, media, routes_fs, routes_jobs, routes_workspace, video
+    @app.post('/api/server/restart')
+    def restart():
+        """Start a fresh server (new code from disk, same port, same workspace) once this one has exited, then exit."""
+        if settings.dry_shell:
+            return {'ok': True, 'dry': True}
+        ws = registry.current
+        try:
+            launcher.spawn_server(port=settings.port, workspace=ws.root if ws else None, wait_port=True)
+        except OSError as exc:
+            raise ApiError('ESERVER', f'새 서버를 켜지 못했어요 ({exc.strerror or exc})')
+        return shutdown()
 
-    for mod in (routes_workspace, routes_fs, media, video, dupes, routes_jobs):
+    @app.post('/api/server/shortcut')
+    def shortcut():
+        """(Re)create the desktop + Start-menu shortcut '사진영상정리기'."""
+        try:
+            created = launcher.create_shortcuts(port=settings.port, dry=settings.dry_shell)
+        except launcher.LauncherError as exc:
+            raise ApiError('ESERVER', str(exc))
+        return {'created': created}
+
+    # ---------- feature routes ----------
+    from . import dupes, dupes2, media, quarantine, routes_fs, routes_jobs, routes_workspace, video
+
+    # dupes2 first: its POST /api/dupes/scan handles v2 bodies and hands v1 bodies to dupes.scan_route
+    for mod in (routes_workspace, routes_fs, media, video, dupes2, dupes, quarantine, routes_jobs):
         app.include_router(mod.router)
 
     # ---------- static app files (registered last) ----------

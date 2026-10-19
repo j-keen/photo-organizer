@@ -240,7 +240,10 @@ def thumb(request: Request, path: str, size: int = 360, v: str | None = None,
     try:
         data, info = make_thumbnail(ws, path, size)
     except ApiError as exc:
-        if soft == 1:
+        # soft=1, or an <img> asking for a file that was just moved/replaced (in-place rotate, trash): answer quietly —
+        # a 404 there only puts a red line in the console while the gallery is already refreshing
+        image_gone = exc.code == 'ENOENT' and request.headers.get('sec-fetch-dest') == 'image'
+        if soft == 1 or image_gone:
             return Response(status_code=204, headers={'X-FI-Error': exc.code, 'Cache-Control': 'no-store'})
         raise
     return bytes_response(request, data, 'image/webp', headers=_headers(info),

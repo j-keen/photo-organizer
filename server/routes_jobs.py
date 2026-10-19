@@ -24,3 +24,17 @@ def cancel_job(job_id: str, jobs: JobManager = Depends(deps.jobs)):
     job = jobs.get(job_id)
     job.cancel()
     return {'ok': True, 'state': job.state}
+
+
+@router.post('/api/jobs/{job_id}/pause')
+def pause_job(job_id: str, jobs: JobManager = Depends(deps.jobs)):
+    job = jobs.get(job_id)
+    job.pause()
+    return {'ok': True, 'state': job.state, 'paused': job.paused}
+
+
+@router.post('/api/jobs/{job_id}/resume')
+def resume_job(job_id: str, jobs: JobManager = Depends(deps.jobs)):
+    job = jobs.get(job_id)
+    job.resume()
+    return {'ok': True, 'state': job.state, 'paused': job.paused}

@@ -18,7 +18,13 @@
  *   App.server.video.transform(path, 'rotate90'|'rotate180'|'rotate270'|'hflip'|'vflip', {mode:'metadata'|'reencode', inPlace, notify})
  *   App.server.video.frame(path, seconds, {format:'jpg'|'png', notify})        → new image path
  *     (raw style: video.trim({path, start, end, mode}) etc. just POST and return the job — caller waits/undoes/toasts)
- *   App.server.dupes.scan({dirs, mode:'exact'|'similar'|'both', threshold, videos}, {onProgress, title}) → {groups, stats}
+ *   App.server.dupes.scan({dirs, mode:'exact'|'similar'|'both', threshold, videos}, {onProgress, title}) → {groups, stats}  (v1)
+ *   App.server.dupes (v2, docs/server-api.md "Duplicates v2"; check App.server.supports('dupes-v2')):
+ *     fingerprint({dirs, roots, kinds, workers}, jobOpts) / scanV2({dirs, roots, compare, kinds, rules, exclude}, jobOpts)
+ *     start(endpoint, body) → raw job · frameUrl(path, t, {w, v}) · quarantine(paths, {keep, reason, undoable}) (one undo step)
+ *     restore(ids) · quarantined() · roots() · pickRoot({initialDir}) · forgetRoot(root) · isExternal(path)
+ *   App.server.waitJob(job, {pausable, background, kind}) — pausing the status-bar job pauses the server job
+ *   App.server.API_VERSION / apiVersion / outdated / supports(feature) / restart() / handoffUrl()
  *   App.server.thumbs.pregenerate({dirs, size}, {onProgress, title}) → {made, cached, failed, total}
  *   App.server.media.probe(path) / streamUrl(path, start) / thumbUrl(entry, size)
  *   App.server.reveal(path) / openDefault(path) / copyPath(paths)
@@ -34,6 +40,10 @@
     const ui = App.ui;
     const api = App.ServerBackend.api;
     const DAY = 24 * 60 * 60 * 1000;
+    // The server endpoints this app needs (docs/server-api.md "apiVersion"). An older server process → "다시 켜기".
+    const API_VERSION = 2;
+    const HANDOFF_KEY = 'fi-handoff';
+    const HANDOFF_MAX_AGE = 10 * 60 * 1000;
 
     // ---------- Mode / state ----------
     const meta = document.querySelector('meta[name="fi-server"]');
@@ -45,6 +55,52 @@
     })();
     const serverUrl = mode === 'served' ? location.origin + '/' : `http://127.0.0.1:${port}/`;
     const probesNetwork = mode === 'file' || (mode === 'web' && !!portOverride);
+
+    // ---------- file:// → server handoff (docs/server-api.md) ----------
+    // The page opened from disk and the server address are different origins with separate storage. The one-click switch
+    // carries the settings and the open folder once, in the URL fragment (never sent to the server).
+    const b64url = {
+        encode(text) {
+            const bytes = new TextEncoder().encode(text);
+            let bin = '';
+            for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+            return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        },
+        decode(value) {
+            const bin = atob(value.replace(/-/g, '+').replace(/_/g, '/'));
+            return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+        },
+    };
+
+    function handoffUrl() {
+        const settings = {};
+        for (const [key, value] of Object.entries(App.settings.all?.() || {})) if (!key.startsWith('server.')) settings[key] = value;
+        const ws = App.state.workspace;
+        const payload = { v: 1, at: Date.now(), settings, workspace: ws ? { id: ws.id, name: ws.name } : null, cwd: ws ? App.state.cwd || '' : '' };
+        return `${serverUrl}#${HANDOFF_KEY}=${b64url.encode(JSON.stringify(payload))}`;
+    }
+
+    // Read once, as early as possible (before other modules init), so they start with the carried settings.
+    const handoff = (() => {
+        if (mode !== 'served') return null;
+        const match = location.hash.match(new RegExp(`[#&]${HANDOFF_KEY}=([A-Za-z0-9_-]+)`));
+        if (!match) return null;
+        try {
+            history.replaceState(history.state, '', location.pathname + location.search);
+        } catch (e) {
+            /* keep going: the fragment is harmless */
+        }
+        try {
+            const data = JSON.parse(b64url.decode(match[1]));
+            if (!data || data.v !== 1 || !(Math.abs(Date.now() - Number(data.at)) < HANDOFF_MAX_AGE)) return null;
+            if (data.settings && typeof data.settings === 'object') {
+                for (const [key, value] of Object.entries(data.settings)) if (!key.startsWith('server.')) App.settings.set(key, value);
+            }
+            return data;
+        } catch (e) {
+            return null;
+        }
+    })();
 
     let state = 'idle';
     let info = null; // /api/session (served) or /api/health (file/web)
@@ -101,9 +157,24 @@
         }
     }
 
+    /** Switch this page to the server address in one click, keeping the open folder and the settings (file/web mode). */
     async function openServerUrl() {
         await App.catalog?.flush?.();
-        location.href = serverUrl;
+        location.href = mode === 'served' ? serverUrl : handoffUrl();
+    }
+
+    const apiVersionOf = (data) => (Number.isInteger(data?.apiVersion) ? data.apiVersion : 1); // round-1 servers had none
+    const outdated = () => !!info && (state === 'connected' || state === 'detected') && apiVersionOf(info) < API_VERSION;
+    let outdatedToast = null;
+
+    function noticeOutdated() {
+        if (!outdated() || outdatedToast || mode !== 'served') return;
+        outdatedToast = ui.toast('서버를 새 버전으로 다시 켜 주세요', {
+            id: 'srv-outdated',
+            type: 'warning',
+            duration: 0,
+            action: { label: '다시 켜기', run: () => App.commands.run('server.restart') },
+        });
     }
 
     function connect() {
@@ -114,6 +185,8 @@
                 try {
                     info = await api.ensureSession(true);
                     setState('connected');
+                    renderStatus();
+                    noticeOutdated();
                     return info;
                 } catch (err) {
                     goOffline();
@@ -147,7 +220,7 @@
         if (mode !== 'served' || disposed || state === 'offline') return;
         setState('offline');
         if (stoppedByUser) return scheduleRecovery();
-        offlineToast = ui.toast('로컬 서버와 연결이 끊겼어요. server\\start.bat이 켜져 있는지 확인해 주세요', {
+        offlineToast = ui.toast("로컬 서버와 연결이 끊겼어요. 바탕화면의 '사진영상정리기' 아이콘으로 다시 켤 수 있어요", {
             id: 'srv-offline',
             type: 'warning',
             duration: 0,
@@ -176,11 +249,13 @@
                 await App.nav?.reload?.();
             }
             setState('connected');
+            renderStatus();
             recoveryDelay = 3000;
             stoppedByUser = false;
             offlineToast?.close();
             offlineToast = null;
             ui.toast('로컬 서버에 다시 연결했어요', { type: 'success' });
+            noticeOutdated();
         } catch (e) {
             /* still down — try again shortly */
         } finally {
@@ -209,11 +284,21 @@
      */
     async function waitJob(jobOrId, opts = {}) {
         if (typeof opts === 'function') opts = { onProgress: opts };
-        const { title = '로컬 서버 작업', onProgress, cancellable = true } = opts;
+        const { title = '로컬 서버 작업', onProgress, cancellable = true, pausable = false, background = false, kind = null } = opts;
         let current = typeof jobOrId === 'string' ? { id: jobOrId, state: 'running', progress: 0 } : jobOrId;
         if (!current?.id) throw failure('EINVAL', '작업을 찾을 수 없어요');
         const id = encodeURIComponent(current.id);
-        const local = App.jobs.start({ title, total: 100, cancellable });
+        // Pausing the status-bar job pauses the server job (it stops at its next check point)
+        const local = App.jobs.start({
+            title,
+            total: 100,
+            cancellable,
+            background,
+            kind,
+            pausable,
+            onPause: () => request('POST', `/api/jobs/${id}/pause`, {}).catch(reportError),
+            onResume: () => request('POST', `/api/jobs/${id}/resume`, {}).catch(reportError),
+        });
         let cancelled = false;
         local.onCancel(() => {
             cancelled = true;
@@ -236,7 +321,7 @@
                 current = await job(current.id);
             }
         } catch (err) {
-            if (local.state === 'running') {
+            if (local.state === 'running' || local.state === 'paused') {
                 if (err.code === 'ECANCELED') local.finish();
                 else local.fail(err);
             }
@@ -356,6 +441,81 @@
                 : videoTool('frame', { path, time, format }, { label: '장면 저장', done: '장면을 사진으로 저장했어요', notify, sync: true }),
     };
 
+    // ---------- Duplicates v2 (docs/server-api.md "Duplicates v2"; the dupes team builds the UI) ----------
+    // Refs: workspace files are workspace-relative paths, files in external roots (D:\VideoDownloader…) absolute paths.
+    const isExternal = (p) => typeof p === 'string' && /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(p);
+    const compact = (obj) => Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
+
+    async function quarantine(paths, { keep, reason, undoable = true } = {}) {
+        const all = Array.isArray(paths) ? paths : [paths];
+        const list = all.filter(isExternal);
+        // Workspace files go to the app trash (App.fs.trash) — report them instead of dropping them silently
+        const refused = all.filter((p) => !isExternal(p)).map((p) => ({ path: p, code: 'EINVAL', message: '작업 폴더 안 파일은 앱 휴지통으로 보내 주세요' }));
+        if (!list.length) return { moved: [], failed: refused };
+        const result = await request('POST', '/api/dupes/quarantine', compact({ paths: list, keep, reason }));
+        result.failed = [...(result.failed || []), ...refused];
+        if (undoable && result.moved?.length) {
+            let ids = result.moved.map((m) => m.id);
+            // Redo moves exactly the files undo brought back — restore may have used 'name (복원).ext' because
+            // another file took the original name meanwhile; that other file must never be touched.
+            let current = result.moved.map((m) => m.path);
+            App.undo.push({
+                label: `중복 파일 ${App.util.formatCount(current.length)}개 정리`,
+                undo: async () => {
+                    const r = await restore(ids);
+                    current = (r.restored || []).map((x) => x.path);
+                    ids = [];
+                    if (r.failed?.length) throw failure(r.failed[0].code, r.failed[0].message);
+                },
+                redo: async () => {
+                    if (!current.length) return;
+                    const r = await request('POST', '/api/dupes/quarantine', compact({ paths: current, keep, reason }));
+                    ids = (r.moved || []).map((m) => m.id);
+                    current = (r.moved || []).map((m) => m.path);
+                    if (r.failed?.length) throw failure(r.failed[0].code, r.failed[0].message);
+                },
+            });
+        }
+        return result;
+    }
+
+    const restore = (ids) => request('POST', '/api/dupes/restore', { ids: Array.isArray(ids) ? ids : [ids] });
+
+    function frameUrl(path, t = 0, { w = 160, v } = {}) {
+        const active = backend();
+        if (!active || typeof path !== 'string') return null;
+        const seconds = Number.isFinite(Number(t)) ? Math.max(0, Math.round(Number(t) * 1000) / 1000) : 0;
+        return api.url('/api/dupes/frame', { path, t: seconds, w: Math.round(w), v: v ?? null, ws: active.token });
+    }
+
+    const dupes = {
+        /** v1 (round 1): whole-workspace scan → {groups: [{kind, items}], stats}. */
+        scan: ({ dirs, mode: how = 'both', threshold = 10, videos = true } = {}, opts = {}) =>
+            runJob('/api/dupes/scan', { dirs, mode: how, threshold, videos }, '중복 파일 찾는 중', opts),
+        /** Pre-make fingerprints (incremental) → {files, computed, cached, failed, errors, elapsed}. Pausable. */
+        fingerprint: ({ dirs, roots, kinds, workers } = {}, opts = {}) =>
+            runJob('/api/dupes/fingerprint', compact({ dirs, roots, kinds, workers }), '중복 검사 준비 (지문 만들기)', { pausable: true, kind: 'dupes', ...opts }),
+        /** Scan v2 → {groups, stats}. */
+        scanV2: ({ dirs, roots, compare, kinds, rules, exclude } = {}, opts = {}) =>
+            runJob('/api/dupes/scan', compact({ v: 2, dirs, roots, compare, kinds, rules, exclude }), '중복 찾는 중', { pausable: true, kind: 'dupes', ...opts }),
+        /** Raw job for callers that poll themselves: start('/api/dupes/fingerprint' | '/api/dupes/scan', body). */
+        start: (endpoint, body) => {
+            requireBackend();
+            return request('POST', endpoint, endpoint === '/api/dupes/scan' ? { v: 2, ...body } : body);
+        },
+        frameUrl,
+        quarantine,
+        restore,
+        quarantined: async () => (await request('GET', '/api/dupes/quarantine'))?.items || [],
+        roots: async () => (await request('GET', '/api/dupes/roots'))?.roots || [],
+        pickRoot: async ({ initialDir } = {}) => {
+            const r = await request('POST', '/api/dupes/roots/pick', compact({ initialDir }));
+            return r?.root ? r : null;
+        },
+        forgetRoot: (root) => request('POST', '/api/dupes/roots/forget', { root }),
+        isExternal,
+    };
+
     // ---------- Paths & clipboard ----------
     function absolutePath(root, rel) {
         const windows = /^[A-Za-z]:[\\/]|^\\\\/.test(root);
@@ -441,6 +601,42 @@
 
     const recents = () => request('GET', '/api/workspace/recent');
 
+    /**
+     * file:// → server: open the folder the page had open, matched by its workspace id (.fluid-organizer/workspace.json)
+     * among the server's recent folders (fallback: the only one with the same name). Unknown → ask once with the chooser.
+     */
+    async function continueHandoff(data) {
+        const want = data?.workspace;
+        if (!want || typeof want.name !== 'string') return false;
+        let items = [];
+        try {
+            items = (await recents()) || [];
+        } catch (e) {
+            /* fall through to the chooser */
+        }
+        const live = items.filter((r) => r && r.exists !== false && typeof r.root === 'string');
+        let match = want.id ? live.find((r) => r.id === want.id) : null;
+        if (!match) {
+            const named = live.filter((r) => r.name === want.name);
+            if (named.length === 1) match = named[0];
+        }
+        if (!match) {
+            pickWorkspace({ hint: want.name });
+            return true;
+        }
+        const active = await openRoot(match.root);
+        if (!active) return false;
+        if (data.cwd && typeof data.cwd === 'string') {
+            try {
+                if (await App.fs.exists(data.cwd)) await App.nav.go(data.cwd);
+            } catch (e) {
+                /* the folder moved meanwhile: stay at the root */
+            }
+        }
+        ui.toast(`‘${active.name}’ 폴더를 서버로 이어서 열었어요`, { type: 'success', duration: 3200 });
+        return true;
+    }
+
     function relativeTime(ms) {
         const minutes = Math.floor((Date.now() - ms) / 60000);
         if (!Number.isFinite(minutes)) return '';
@@ -453,9 +649,10 @@
         return App.util.formatDate(ms);
     }
 
-    function pickWorkspace() {
+    function pickWorkspace(opts) {
         if (mode !== 'served') return showSetup();
         if (chooserOpen) return chooserOpen;
+        const hint = opts && typeof opts === 'object' && typeof opts.hint === 'string' ? opts.hint : '';
         let alive = true;
         let busy = false;
         let picking = false;
@@ -577,7 +774,13 @@
         input.addEventListener('input', () => showError(''));
 
         const body = h('div', { class: 'srv-chooser' },
-            h('p', { class: 'srv-lead', text: '로컬 서버로 열면 HEIC·AVI 미리보기, 영상 편집, 중복 찾기를 모두 쓸 수 있어요.' }),
+            hint
+                ? h('div', { class: 'srv-hint', role: 'status' },
+                    h('span', { class: 'srv-hint-icon', html: ui.icon('folder-open', { size: 15 }) }),
+                    h('div', { class: 'grow' },
+                        h('div', { class: 'srv-strong', text: `‘${hint}’ 폴더를 한 번만 골라 주세요` }),
+                        h('div', { class: 'srv-muted', text: '서버가 이 폴더를 아직 몰라요. 한 번 고르면 다음부터는 바로 열려요.' })))
+                : h('p', { class: 'srv-lead', text: '로컬 서버로 열면 HEIC·AVI 미리보기, 영상 편집, 중복 찾기를 모두 쓸 수 있어요.' }),
             pickArea,
             h('div', { class: 'srv-path' }, h('label', { class: 'srv-section-title', text: '경로로 열기' }), h('div', { class: 'srv-path-row' }, input, openBtn), error),
             recentSection,
@@ -899,10 +1102,14 @@
         none: { label: '서버 꺼짐', tip: '로컬 서버를 켜면 HEIC·AVI 미리보기, 영상 편집, 중복 찾기를 쓸 수 있어요' },
     };
 
+    const OUTDATED = { label: '서버 업데이트', tip: '서버를 새 버전으로 다시 켜 주세요 · 눌러서 다시 켜기' };
+
     function renderStatus() {
         if (!statusEl) return;
-        const s = STATUS[state];
+        const old = mode === 'served' && outdated();
+        const s = old ? OUTDATED : STATUS[state];
         statusEl.dataset.state = state;
+        statusEl.toggleAttribute('data-outdated', old);
         statusEl.hidden = state === 'idle';
         statusEl.dataset.tip = s.tip;
         statusEl.setAttribute('aria-label', s.label);
@@ -941,6 +1148,7 @@
         }
         const active = backend();
         const offline = state === 'offline';
+        outdatedToast?.close(); // the popover says the same thing (and the toast would cover its buttons)
         const el = h('div', { class: 'srv-pop' },
             h('div', { class: 'srv-pop-head' },
                 h('span', { class: 'srv-pop-logo', html: ui.icon('server', { size: 16 }) }),
@@ -948,6 +1156,14 @@
                     h('div', { class: 'srv-strong', text: '로컬 서버' }),
                     h('div', { class: `srv-pop-state ${offline ? 'bad' : 'good'}`, text: offline ? '연결이 끊겼어요' : `${location.host}에서 실행 중이에요` })),
                 info?.version ? h('span', { class: 'badge', text: `v${info.version}` }) : null),
+            mode === 'served' && outdated()
+                ? h('div', { class: 'srv-update', role: 'status' },
+                    h('span', { class: 'srv-update-icon', html: ui.icon('refresh', { size: 14 }) }),
+                    h('div', { class: 'grow' },
+                        h('div', { class: 'srv-strong', text: '서버를 새 버전으로 다시 켜 주세요' }),
+                        h('div', { class: 'srv-muted', text: '앱은 새 버전인데 서버는 예전 버전이에요. 다시 켜면 새 기능을 모두 쓸 수 있어요.' }),
+                        h('button', { class: 'btn sm primary', type: 'button', text: '다시 켜기', onclick: () => App.commands.run('server.restart') })))
+                : null,
             capabilityList(),
             active
                 ? h('div', { class: 'srv-pop-ws' },
@@ -984,18 +1200,46 @@
         await request('POST', '/api/server/shutdown', {});
         stoppedByUser = true;
         setState('offline');
-        offlineToast = ui.toast('로컬 서버를 껐어요. 다시 쓰려면 server\\start.bat을 실행해 주세요', { id: 'srv-offline', type: 'info', duration: 0 });
+        offlineToast = ui.toast("로컬 서버를 껐어요. 다시 쓰려면 바탕화면의 '사진영상정리기' 아이콘을 눌러 주세요", { id: 'srv-offline', type: 'info', duration: 0 });
+        scheduleRecovery();
+    }
+
+    /**
+     * '다시 켜기': the server starts a fresh copy of itself (new code from disk, same address, same folder) and exits;
+     * the app reconnects by itself. A round-1 server can't restart itself — it is switched off and the owner starts it
+     * again with the desktop icon (the app reconnects as soon as it is back).
+     */
+    async function restartServer() {
+        if (mode !== 'served') throw failure('ENOTSUP', '서버 주소로 앱을 열면 쓸 수 있어요');
+        statusPop?.close();
+        await App.catalog?.flush?.();
+        let manual = false;
+        try {
+            await request('POST', '/api/server/restart', {});
+        } catch (err) {
+            if (err.status !== 404 && err.status !== 405) throw err;
+            manual = true; // round-1 server: no restart endpoint
+            await request('POST', '/api/server/shutdown', {});
+        }
+        outdatedToast?.close();
+        outdatedToast = null;
+        stoppedByUser = true; // no "connection lost" warning: this was on purpose
+        setState('offline');
+        recoveryDelay = 800;
+        offlineToast?.close();
+        offlineToast = manual
+            ? ui.toast("서버를 껐어요. 바탕화면의 '사진영상정리기' 아이콘을 누르면 새 버전으로 켜져요", { id: 'srv-offline', type: 'info', duration: 0 })
+            : ui.toast('서버를 새 버전으로 다시 켜고 있어요…', { id: 'srv-offline', type: 'loading', duration: 0 });
         scheduleRecovery();
     }
 
     // ---------- Setup sheet ----------
-    const UNLOCKS = [
-        ['image', 'HEIC·TIFF 사진 미리보기'],
-        ['film', 'AVI·WMV·MTS도 바로 재생'],
-        ['scissors', '무손실 자르기·합치기·회전'],
-        ['layers', '비슷한 사진·영상 찾기 (FAISS)'],
-        ['folder-open', '탐색기에서 보기·기본 앱으로 열기'],
-        ['zap', '디스크에 저장되는 빠른 썸네일'],
+    // Owner feedback: "로컬 서버 기다리라는 게 뭐야?" — one sentence on what it is, two steps, and a single button once it is on.
+    const PERKS = [
+        ['image', 'HEIC·AVI 보기'],
+        ['scissors', '영상 자르기·합치기'],
+        ['layers', '빠른 중복 찾기'],
+        ['folder-open', '탐색기 열기'],
     ];
 
     function showSetup() {
@@ -1010,22 +1254,31 @@
         function renderWaiting() {
             live.dataset.state = 'waiting';
             live.replaceChildren(
-                h('span', { class: 'srv-live-icon' }, h('span', { class: 'spinner' })),
+                h('span', { class: 'srv-live-icon' }, h('span', { class: 'srv-pulse', 'aria-hidden': 'true' })),
                 h('div', { class: 'grow' },
-                    h('div', { class: 'srv-strong', text: '서버를 기다리는 중…' }),
-                    h('div', { class: 'srv-muted', text: `127.0.0.1:${port}에서 켜지는지 2초마다 확인하고 있어요` })));
+                    h('div', { class: 'srv-strong', text: '아직 꺼져 있어요' }),
+                    h('div', { class: 'srv-muted', text: '켜지면 여기서 바로 이어서 열 수 있어요' })));
         }
 
         function renderReady(alreadyServed) {
             live.dataset.state = 'ready';
+            const ws = App.state.workspace;
             const children = [
                 h('span', { class: 'srv-live-icon', html: ui.icon('check', { size: 16 }) }),
                 h('div', { class: 'grow' },
-                    h('div', { class: 'srv-strong', text: alreadyServed ? '이미 로컬 서버로 실행 중이에요' : '서버가 켜졌어요!' }),
-                    h('div', { class: 'srv-muted', text: alreadyServed ? '아래 기능을 모두 쓸 수 있어요.' : '서버 주소로 다시 열면 모든 기능을 쓸 수 있어요.' }),
+                    h('div', { class: 'srv-strong', text: alreadyServed ? '이미 로컬 서버로 실행 중이에요' : '서버가 켜졌어요' }),
+                    h('div', { class: 'srv-muted', text: alreadyServed ? '아래 기능을 모두 쓸 수 있어요.' : ws ? `‘${ws.name}’ 폴더와 설정을 그대로 가져가요.` : '설정을 그대로 가져가요.' }),
                     alreadyServed ? capabilityList({ compact: true }) : null),
             ];
-            if (!alreadyServed) children.push(h('button', { class: 'btn primary', type: 'button', html: `${ui.icon('external', { size: 14 })}<span>서버 주소로 열기</span>`, onclick: () => openServerUrl() }));
+            if (!alreadyServed) {
+                children.push(h('button', {
+                    class: 'btn primary',
+                    type: 'button',
+                    'data-tip': '서버 주소(127.0.0.1)로 이 창을 바꿔요',
+                    html: `<span>서버로 계속하기</span>${ui.icon('arrow-right', { size: 14 })}`,
+                    onclick: () => openServerUrl(),
+                }));
+            }
             live.replaceChildren(...children);
             live.querySelector('.btn.primary')?.focus();
         }
@@ -1048,28 +1301,34 @@
         }
 
         const pathText = startBatPath();
+        const shortcutName = h('span', { class: 'srv-app-name' }, h('span', { class: 'srv-app-icon', 'aria-hidden': 'true', html: ui.icon('image', { size: 12 }) }), '사진영상정리기');
         const body = h('div', { class: 'srv-setup' },
-            h('p', { class: 'srv-lead', text: '서버를 켜면 이 PC 안에서만 도는 도우미가 무거운 작업을 맡아요. 사진과 영상은 어디에도 올라가지 않아요.' }),
-            h('ul', { class: 'srv-unlocks' }, UNLOCKS.map(([icon, text]) => h('li', null, h('span', { class: 'srv-unlock-icon', html: ui.icon(icon, { size: 16 }) }), h('span', { text })))),
+            h('p', { class: 'srv-lead', text: '로컬 서버는 이 PC에서만 도는 도우미예요. 사진·영상은 어디에도 올라가지 않아요.' }),
+            h('ul', { class: 'srv-perks', 'aria-label': '서버를 켜면 쓸 수 있는 기능' },
+                PERKS.map(([icon, text]) => h('li', null, h('span', { class: 'srv-perk-icon', html: ui.icon(icon, { size: 13 }) }), h('span', { text })))),
             h('ol', { class: 'srv-steps' },
                 h('li', null,
                     h('span', { class: 'srv-step-no', text: '1' }),
                     h('div', { class: 'grow' },
-                        h('div', null, h('code', { class: 'srv-code', text: 'server\\start.bat' }), '을 더블클릭해서 실행해요'),
+                        h('div', null, h('code', { class: 'srv-code', text: 'server\\start.bat' }), '을 한 번 실행해요'),
+                        h('div', { class: 'srv-muted', text: '처음에만 1~2분 준비해요. 끝나면 바탕화면에 아이콘이 생겨요.' }),
                         pathText
                             ? h('div', { class: 'srv-step-path' },
                                 h('span', { class: 'srv-path-text', text: shortPath(pathText, 58), title: pathText }),
                                 h('button', { class: 'btn ghost sm', type: 'button', html: `${ui.icon('copy', { size: 13 })}<span>경로 복사</span>`, onclick: () => copyText(pathText).catch(reportError) }))
                             : h('div', { class: 'srv-muted', text: '앱 폴더(사진영상정리기.html이 있는 곳) 안의 server 폴더에 있어요.' }))),
-                h('li', null, h('span', { class: 'srv-step-no', text: '2' }), h('div', { class: 'grow', text: '처음 한 번은 준비하느라 1~2분 걸려요. 검은 창은 켜 둔 채로 두세요.' })),
-                h('li', null, h('span', { class: 'srv-step-no', text: '3' }), h('div', { class: 'grow', text: '서버가 켜지면 이 창이 저절로 바뀌어요.' }))),
+                h('li', null,
+                    h('span', { class: 'srv-step-no', text: '2' }),
+                    h('div', { class: 'grow' },
+                        h('div', null, '다음부터는 바탕화면의 ', shortcutName, ' 아이콘만 누르면 돼요'),
+                        h('div', { class: 'srv-muted', text: '서버와 앱이 함께 켜지고, 마지막에 보던 폴더가 바로 열려요.' })))),
             live,
             h('div', { class: 'srv-setup-foot' }, h('button', { class: 'btn ghost', type: 'button', text: '닫기', onclick: () => close?.() })));
 
         renderWaiting();
         setupOpen = ui.dialog({
             title: '로컬 서버 켜기',
-            width: 560,
+            width: 540,
             actions: [],
             body,
             init(box, closeFn) {
@@ -1116,10 +1375,22 @@
         streamUrl: (path, start) => requireBackend().streamUrl(path, { start }),
         thumbUrl: (entry, size) => requireBackend().thumbUrl(entry, size),
         video,
-        dupes: {
-            scan: ({ dirs, mode: how = 'both', threshold = 10, videos = true } = {}, opts = {}) =>
-                runJob('/api/dupes/scan', { dirs, mode: how, threshold, videos }, '중복 파일 찾는 중', opts),
+        dupes,
+        API_VERSION,
+        /** apiVersion of the connected/detected server (1 for round-1 servers), or 0 when there is none. */
+        get apiVersion() {
+            return info ? apiVersionOf(info) : 0;
         },
+        get outdated() {
+            return outdated();
+        },
+        /** Feature check for other teams: 'dupes-v2', 'job-pause', 'restart'. */
+        supports(feature) {
+            const v = state === 'connected' && !!backend() && info ? apiVersionOf(info) : 0;
+            return ({ 'dupes-v2': 2, 'job-pause': 2, restart: 2 })[feature] <= v;
+        },
+        handoffUrl,
+        restart: () => restartServer(),
         thumbs: {
             pregenerate: ({ dirs, size = 360 } = {}, opts = {}) => runJob('/api/thumbs/pregenerate', { dirs, size }, '썸네일 만드는 중', opts),
         },
@@ -1231,6 +1502,27 @@
         when: () => mode === 'served' && state === 'connected',
         run: run(shutdownServer),
     });
+    App.commands.register({
+        id: 'server.restart',
+        title: '로컬 서버 다시 켜기 (새 버전)',
+        group: '서버',
+        icon: 'refresh',
+        when: () => mode === 'served' && state === 'connected',
+        run: run(restartServer),
+    });
+    App.commands.register({
+        id: 'server.shortcut',
+        title: '바탕화면 아이콘 만들기',
+        group: '서버',
+        icon: 'download',
+        when: () => mode === 'served' && state === 'connected' && apiVersionOf(info) >= 2 && info?.platform === 'win32',
+        run: run(async () => {
+            const r = await request('POST', '/api/server/shortcut', {});
+            ui.toast(r?.created?.length ? "바탕화면과 시작 메뉴에 '사진영상정리기' 아이콘을 만들었어요" : '아이콘을 만들 수 없는 환경이에요', {
+                type: r?.created?.length ? 'success' : 'info',
+            });
+        }),
+    });
 
     // ---------- Init ----------
     App.register('server', {
@@ -1270,7 +1562,9 @@
             }
             try {
                 const session = await connect();
-                // Reload / new tab: continue in the workspace this server already has open
+                // Arrived from the file:// page with one click: open the same folder there
+                if (handoff && (await continueHandoff(handoff))) return;
+                // Reload / new tab / desktop icon: continue in the workspace this server already has open
                 if (session?.workspace?.root && !App.state.workspace && App.settings.get('server.resume', true)) await openRoot(session.workspace.root);
             } catch (e) {
                 /* offline: the status item and toast explain how to recover */

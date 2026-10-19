@@ -37,7 +37,9 @@ copy /b /y "requirements.txt" ".venv\requirements.stamp" >nul
 
 :run_server
 cd ..
-"%VENV_PY%" -m server --open %*
+rem --install-shortcut: after the first successful start, put '사진영상정리기' on the desktop (and in the Start menu).
+rem From then on that icon starts the server without this window and opens the app on the last workspace.
+"%VENV_PY%" -m server --open --install-shortcut %*
 set "FI_EXIT=%ERRORLEVEL%"
 if "%FI_EXIT%"=="0" exit /b 0
 echo.

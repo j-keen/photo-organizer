@@ -61,6 +61,16 @@ class Workspace:
         return {'id': self.id, 'name': self.name, 'root': self.root, 'token': self.token}
 
 
+def _read_ws_id(root: str) -> str | None:
+    """The id in <root>/.fluid-organizer/workspace.json (the same id the browser app sees), or None."""
+    try:
+        with open(resolve(os.path.realpath(root), f'{DATA_DIR_NAME}/workspace.json'), 'r', encoding='utf-8') as f:
+            meta = json.load(f)
+        return meta.get('id') if isinstance(meta, dict) and isinstance(meta.get('id'), str) else None
+    except (OSError, ValueError, ApiError):
+        return None
+
+
 def display_name(real_root: str) -> str:
     name = os.path.basename(real_root.rstrip('\\/'))
     return name or real_root.rstrip('\\/') or real_root
@@ -167,8 +177,16 @@ class WorkspaceRegistry:
     def recent(self) -> list[dict]:
         out = []
         for x in self._load_recent():
-            out.append({'root': x['root'], 'name': x.get('name') or display_name(x['root']), 'openedAt': x.get('openedAt') or 0, 'exists': os.path.isdir(x['root'])})
+            exists = os.path.isdir(x['root'])
+            out.append({'root': x['root'], 'name': x.get('name') or display_name(x['root']), 'openedAt': x.get('openedAt') or 0,
+                        'exists': exists, 'id': _read_ws_id(x['root']) if exists else None})
         return out
+
+    def recent_roots(self) -> list[str]:
+        """Roots of the recent list and of the open workspaces (allowed as read-only dupes roots)."""
+        with self._lock:
+            roots = [ws.root for ws in self._open.values()]
+        return roots + [x['root'] for x in self._load_recent()]
 
     def forget(self, root: str) -> None:
         if not isinstance(root, str):
