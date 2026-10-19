@@ -1,1 +1,389 @@
-/* Video tools */
+/* Video editor panel (viewer dock): In/Out, segment bin, export, rotate/flip, server notice. */
+
+.ve-sec {
+    padding: 14px 16px 16px;
+    border-bottom: 1px solid var(--line);
+}
+
+.ve-sec:last-child {
+    border-bottom: none;
+}
+
+.ve-sec-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 26px;
+    margin-bottom: 10px;
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+    font-weight: 650;
+}
+
+.ve-sec-title .badge {
+    font-variant-numeric: tabular-nums;
+}
+
+/* In / Out points */
+.ve-points {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.ve-point {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 10px 10px 10px 12px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-lg);
+    background: var(--bg-2);
+    transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.ve-point.is-set {
+    border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+    background: var(--warning-soft);
+}
+
+.ve-point-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    font-weight: 650;
+}
+
+.ve-point.is-set .ve-point-label .ico {
+    color: var(--warning);
+}
+
+.ve-point-time {
+    align-self: flex-start;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text);
+    font-size: var(--fs-lg);
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+}
+
+.ve-point-time:hover:not(:disabled) {
+    color: var(--accent-2);
+}
+
+.ve-point-time:disabled {
+    color: var(--text-4);
+    cursor: default;
+}
+
+.ve-point-set {
+    align-self: flex-start;
+    gap: 6px;
+}
+
+#viewer .btn .kbd {
+    height: 16px;
+    min-width: 16px;
+    padding: 0 4px;
+    font-size: 9.5px;
+    border-bottom-width: 1px;
+}
+
+#viewer .btn.primary .kbd {
+    border-color: color-mix(in srgb, var(--on-accent) 25%, transparent);
+    background: color-mix(in srgb, var(--on-accent) 12%, transparent);
+    color: var(--on-accent);
+}
+
+.ve-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.ve-len {
+    font-size: var(--fs-sm);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Segment bin */
+.ve-empty {
+    padding: 14px 14px;
+    border: 1px dashed var(--line-2);
+    border-radius: var(--r-lg);
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+    line-height: 1.7;
+}
+
+.ve-empty .kbd {
+    height: 18px;
+    margin: 0 1px;
+    vertical-align: 1px;
+}
+
+.ve-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.ve-seg {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 4px 5px 2px;
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    background: var(--bg-2);
+    cursor: pointer;
+    outline: none;
+    transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.ve-seg:hover {
+    background: var(--bg-3);
+}
+
+.ve-seg:focus-visible {
+    box-shadow: var(--focus-ring);
+}
+
+.ve-seg.is-selected {
+    border-color: color-mix(in srgb, var(--success) 60%, transparent);
+    background: var(--success-soft);
+}
+
+.ve-list.is-sorting .ve-seg:not(.is-dragging) {
+    transition: transform 0.16s var(--ease);
+}
+
+.ve-seg.is-dragging {
+    z-index: 2;
+    background: var(--bg-3);
+    box-shadow: var(--sh-2);
+    cursor: grabbing;
+}
+
+.ve-grip {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 30px;
+    flex-shrink: 0;
+    color: var(--text-4);
+    cursor: grab;
+    touch-action: none;
+}
+
+.ve-grip:hover {
+    color: var(--text-2);
+}
+
+.ve-idx {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--bg-4);
+    color: var(--text-2);
+    font-size: 10.5px;
+    font-weight: 700;
+}
+
+.ve-seg.is-selected .ve-idx {
+    background: var(--success);
+    color: var(--bg-1);
+}
+
+.ve-seg-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.ve-seg-range {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.ve-seg-src {
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+}
+
+.ve-seg.is-other .ve-seg-src {
+    color: var(--info);
+}
+
+.ve-seg-len {
+    flex-shrink: 0;
+    margin-right: 2px;
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Export */
+.ve-mode {
+    display: flex;
+    width: 100%;
+}
+
+.ve-mode button {
+    flex: 1;
+    justify-content: center;
+}
+
+.ve-mode button:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.ve-help {
+    margin: 8px 2px 0;
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    line-height: 1.6;
+}
+
+.ve-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.ve-actions .btn {
+    height: 34px;
+}
+
+.ve-busy {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: var(--r);
+    background: var(--bg-2);
+    font-size: var(--fs-sm);
+}
+
+.ve-progress {
+    flex-basis: 100%;
+}
+
+/* Rotate / flip */
+.ve-ops {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 6px;
+}
+
+.ve-op {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    padding: 9px 4px 8px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r);
+    background: var(--bg-2);
+    color: var(--text-2);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.ve-op:hover {
+    background: var(--bg-3);
+    color: var(--text);
+}
+
+.ve-op.on {
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+    color: var(--accent-2);
+}
+
+.ve-op .ico {
+    width: 17px;
+    height: 17px;
+}
+
+.ve-sec .ve-row .seg {
+    flex: 0 1 auto;
+}
+
+/* Server notice */
+.ve-server {
+    display: flex;
+    gap: 10px;
+    margin: 0 0 12px;
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+    border-radius: var(--r-lg);
+    background: var(--warning-soft);
+}
+
+.ve-server-icon {
+    flex-shrink: 0;
+    margin-top: 1px;
+    color: var(--warning);
+}
+
+.ve-server-body {
+    min-width: 0;
+}
+
+.ve-server-title {
+    margin-bottom: 3px;
+    color: var(--text);
+    font-weight: 650;
+}
+
+.ve-server-text {
+    margin-bottom: 8px;
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+    line-height: 1.6;
+}
+
+.ve-server-text b {
+    color: var(--text);
+    font-weight: 600;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+}
+
+.ve-server-body .btn:only-of-type {
+    margin-top: 2px;
+}
+
+/* "보기 방향 적용" row: the viewer's rotation/flip baked into a new file */
+.ve-view-orient {
+    align-items: flex-start;
+    margin-top: 6px;
+    margin-bottom: 4px;
+}
+
+.ve-view-orient .ve-help {
+    flex: 1;
+    margin: 2px 2px 0;
+}
+
+.ve-view-orient .btn {
+    flex-shrink: 0;
+}

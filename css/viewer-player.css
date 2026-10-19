@@ -1,0 +1,711 @@
+/* Viewer — custom video player: video box, state overlay, control bar, seek bar, markers, marker popover/panel. */
+
+.vw-video-slot {
+    cursor: pointer;
+}
+
+.vw-video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: transparent;
+    outline: none;
+}
+
+/* Sized by the shared view transform (fit / zoom / rotation / flip) */
+.vw-video.vw-xf {
+    inset: auto;
+    left: 50%;
+    top: 50%;
+    object-fit: fill;
+}
+
+/* Center state: spinner / play / replay */
+.vw-vstate {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    display: grid;
+    place-items: center;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+}
+
+.vw-vstate:empty,
+.vw-vstate[data-state="none"] {
+    display: none;
+}
+
+.vw-vstate[data-state="paused"],
+.vw-vstate[data-state="ended"] {
+    width: 72px;
+    height: 72px;
+    border: 1px solid var(--line-2);
+    border-radius: 50%;
+    background: var(--bg-glass);
+    box-shadow: var(--sh-3);
+    backdrop-filter: blur(16px) saturate(1.4);
+    color: var(--text);
+    animation: vw-pop var(--dur-slow) var(--ease);
+}
+
+.vw-vstate[data-state="paused"] .ico {
+    margin-left: 4px;
+}
+
+.vw-vstate[data-state="loading"] .spinner {
+    width: 36px;
+    height: 36px;
+    border-width: 3px;
+}
+
+@keyframes vw-pop {
+    from {
+        opacity: 0;
+        transform: translate(-50%, -50%) scale(0.85);
+    }
+}
+
+/* ---------- Control bar ---------- */
+.vw-ctl {
+    position: absolute;
+    left: 50%;
+    bottom: 16px;
+    z-index: 3;
+    width: min(1060px, calc(100% - 32px));
+    padding: 4px 10px 6px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-xl);
+    background: var(--bg-glass);
+    box-shadow: var(--sh-3);
+    backdrop-filter: blur(22px) saturate(1.5);
+    transform: translateX(-50%);
+    transition: opacity 0.35s var(--ease);
+    cursor: default;
+}
+
+/* nothing to control when the format can't be played */
+.vw-ctl.is-failed {
+    display: none;
+}
+
+.vw-ctl-row {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 36px;
+}
+
+.vw-ctl-group {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+}
+
+.vw-ctl .vw-sep {
+    height: 16px;
+    margin: 0 5px;
+}
+
+.vw-ctl .btn.sm {
+    height: 30px;
+}
+
+.vw-ctl .btn.sm.icon {
+    width: 30px;
+}
+
+.vw-ctl .btn.sm.icon .ico {
+    width: 17px;
+    height: 17px;
+}
+
+.vw-play.btn.sm.icon {
+    width: 36px;
+    color: var(--text) !important;
+}
+
+.vw-play .ico {
+    width: 19px !important;
+    height: 19px !important;
+}
+
+.vw-step-btn {
+    gap: 3px;
+    padding: 0 6px 0 5px;
+    font-size: 11px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.vw-step-btn .ico {
+    width: 16px;
+    height: 16px;
+}
+
+.vw-time {
+    display: inline-flex;
+    align-items: baseline;
+    height: 28px;
+    padding: 0 9px;
+    margin-left: 4px;
+    border: none;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+    font-variant-numeric: tabular-nums;
+    line-height: 28px;
+    cursor: pointer;
+}
+
+.vw-time:hover {
+    background: var(--bg-3);
+}
+
+.vw-time-cur {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.vw-time-sep {
+    margin: 0 5px;
+    color: var(--text-4);
+}
+
+.vw-rate {
+    min-width: 46px;
+    justify-content: center;
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.vw-stepset {
+    gap: 5px;
+    font-size: var(--fs-sm);
+    font-variant-numeric: tabular-nums;
+}
+
+.vw-ab {
+    position: relative;
+}
+
+.vw-ab.btn.sm.icon:has(.vw-ab-label:not(:empty)) {
+    width: auto;
+    padding: 0 7px;
+    gap: 4px;
+}
+
+.vw-ab-label {
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+}
+
+.vw-ab-label:empty {
+    display: none;
+}
+
+.vw-list.btn.sm.icon:has(.vw-count:not(:empty)) {
+    width: auto;
+    padding: 0 7px;
+    gap: 4px;
+}
+
+.vw-count {
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: var(--r-full);
+    background: var(--bg-4);
+    color: var(--text-2);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+}
+
+.vw-count:empty {
+    display: none;
+}
+
+.vw-btn.active .vw-count {
+    background: var(--accent);
+    color: var(--on-accent);
+}
+
+/* Volume */
+.vw-vol {
+    display: flex;
+    align-items: center;
+}
+
+.vw-vol-track {
+    position: relative;
+    width: 0;
+    height: 30px;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+    touch-action: none;
+    transition: width var(--dur-slow) var(--ease), opacity var(--dur-slow) var(--ease), margin var(--dur-slow) var(--ease);
+}
+
+.vw-vol:hover .vw-vol-track,
+.vw-vol.is-dragging .vw-vol-track {
+    width: 84px;
+    margin: 0 8px 0 4px;
+    opacity: 1;
+}
+
+.vw-vol-rail {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 4px;
+    margin-top: -2px;
+    overflow: hidden;
+    border-radius: 2px;
+    background: var(--bg-4);
+}
+
+.vw-vol-fill {
+    height: 100%;
+    background: var(--text-2);
+}
+
+.vw-vol-knob {
+    position: absolute;
+    top: 50%;
+    width: 12px;
+    height: 12px;
+    margin: -6px 0 0 -6px;
+    border-radius: 50%;
+    background: var(--text);
+    box-shadow: var(--sh-1);
+}
+
+/* ---------- Seek bar ---------- */
+.vw-seek {
+    position: relative;
+    height: 24px;
+    margin: 0 6px;
+    cursor: pointer;
+    touch-action: none;
+}
+
+.vw-seek-track {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 4px;
+    margin-top: -2px;
+    border-radius: 2px;
+    background: var(--bg-4);
+    transition: height 0.12s var(--ease), margin-top 0.12s var(--ease);
+}
+
+.vw-seek:hover .vw-seek-track,
+.vw-seek.is-scrubbing .vw-seek-track {
+    height: 6px;
+    margin-top: -3px;
+}
+
+.vw-seek-buffered {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 0;
+    border-radius: inherit;
+    background: var(--line-3);
+}
+
+.vw-seek-played {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-radius: inherit;
+    background: var(--accent);
+}
+
+.vw-seek-ranges {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.vw-range {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    min-width: 2px;
+    border-radius: 3px;
+}
+
+.vw-range.is-segment {
+    background: color-mix(in srgb, var(--success) 38%, transparent);
+}
+
+.vw-range.is-active {
+    background: color-mix(in srgb, var(--success) 50%, transparent);
+    box-shadow: inset 0 0 0 1.5px var(--success);
+}
+
+.vw-range.is-inout {
+    background: color-mix(in srgb, var(--warning) 42%, transparent);
+    box-shadow: inset 0 0 0 1.5px var(--warning);
+}
+
+.vw-range.is-point,
+.vw-range.is-loop-a {
+    width: 3px !important;
+    min-width: 3px;
+    top: -5px;
+    bottom: -5px;
+    background: var(--warning);
+}
+
+.vw-range.is-loop-a {
+    background: var(--info);
+}
+
+.vw-range.is-loop {
+    background: color-mix(in srgb, var(--info) 40%, transparent);
+    box-shadow: inset 0 0 0 1.5px var(--info);
+}
+
+.vw-seek-knob {
+    position: absolute;
+    top: 50%;
+    width: 14px;
+    height: 14px;
+    margin: -7px 0 0 -7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-soft), var(--sh-1);
+    transform: scale(0.6);
+    pointer-events: none;
+    transition: transform 0.12s var(--ease);
+}
+
+.vw-seek:hover .vw-seek-knob,
+.vw-seek.is-scrubbing .vw-seek-knob {
+    transform: scale(1);
+}
+
+.vw-seek-hover-line {
+    position: absolute;
+    top: -4px;
+    bottom: -4px;
+    width: 2px;
+    margin-left: -1px;
+    border-radius: 1px;
+    background: var(--text);
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+.vw-seek-hover {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    transform: translateX(-50%);
+    pointer-events: none;
+}
+
+.vw-seek-preview {
+    display: none;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r);
+    background: var(--bg-2);
+    box-shadow: var(--sh-2);
+}
+
+.vw-seek-preview.ready:not([hidden]) {
+    display: block;
+}
+
+.vw-seek-hover-time {
+    padding: 3px 8px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-sm);
+    background: var(--bg-1);
+    box-shadow: var(--sh-1);
+    color: var(--text);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Markers on the seek bar: a slim line through the track with a diamond head */
+.vw-seek-marks {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.vw-mark {
+    position: absolute;
+    top: 0;
+    width: 14px;
+    height: 24px;
+    margin-left: -7px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+.vw-mark::before {
+    content: '';
+    position: absolute;
+    left: 6px;
+    top: 7px;
+    bottom: 7px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--c, var(--accent));
+}
+
+.vw-mark::after {
+    content: '';
+    position: absolute;
+    left: 3px;
+    top: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--c, var(--accent));
+    box-shadow: 0 0 0 1.5px var(--bg-1);
+    transform: rotate(45deg);
+    transition: transform var(--dur) var(--ease);
+}
+
+.vw-mark:hover::after {
+    transform: rotate(45deg) scale(1.35);
+}
+
+/* ---------- Marker popover ---------- */
+.vw-mk-popover {
+    width: 290px;
+    max-width: 290px !important;
+}
+
+.vw-mk-pop {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vw-mk-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 2px;
+}
+
+.vw-mk-time {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text);
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+}
+
+.vw-mk-time .ico {
+    color: var(--accent-2);
+}
+
+.vw-mk-colors {
+    display: flex;
+    gap: 5px;
+}
+
+.vw-mk-color {
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: var(--c);
+    cursor: pointer;
+    transition: transform var(--dur) var(--ease);
+}
+
+.vw-mk-color:hover {
+    transform: scale(1.15);
+}
+
+.vw-mk-color.on {
+    box-shadow: 0 0 0 2px var(--bg-2), 0 0 0 3.5px var(--c);
+}
+
+.vw-mk-pop .input {
+    height: 32px;
+}
+
+.vw-mk-memo {
+    min-height: 54px;
+    resize: none;
+}
+
+.vw-mk-foot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+.vw-mk-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-right: 4px;
+    color: var(--text-4);
+    font-size: var(--fs-xs);
+}
+
+.vw-mk-hint .kbd {
+    height: 17px;
+    font-size: 9.5px;
+}
+
+.btn.vw-mk-del {
+    color: var(--danger);
+}
+
+.btn.vw-mk-del:hover {
+    background: var(--danger-soft);
+    color: var(--danger);
+}
+
+/* ---------- Marker panel ---------- */
+.vw-mk-panel-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 14px 8px 16px;
+    font-size: var(--fs-sm);
+}
+
+.vw-mk-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0 8px 12px;
+}
+
+.vw-mk-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 6px 8px 10px;
+    border-radius: var(--r);
+    cursor: pointer;
+    outline: none;
+    transition: background var(--dur) var(--ease);
+}
+
+.vw-mk-row:hover {
+    background: var(--bg-2);
+}
+
+.vw-mk-row:focus-visible {
+    box-shadow: var(--focus-ring);
+}
+
+.vw-mk-row.is-current {
+    background: var(--accent-soft);
+}
+
+.vw-mk-dot {
+    flex-shrink: 0;
+    width: 9px;
+    height: 9px;
+    margin-top: 6px;
+    border-radius: 2px;
+    background: var(--c, var(--accent));
+    transform: rotate(45deg);
+}
+
+.vw-mk-t {
+    flex-shrink: 0;
+    height: 22px;
+    padding: 0 6px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-sm);
+    background: var(--bg-2);
+    color: var(--text-2);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+}
+
+.vw-mk-t:hover {
+    border-color: var(--accent-line);
+    color: var(--accent-2);
+}
+
+.vw-mk-body {
+    flex: 1;
+    min-width: 0;
+    padding-top: 2px;
+}
+
+.vw-mk-name {
+    overflow: hidden;
+    font-weight: 550;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vw-mk-memo-text {
+    margin-top: 2px;
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.vw-mk-actions {
+    display: flex;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease);
+}
+
+.vw-mk-row:hover .vw-mk-actions,
+.vw-mk-row:focus-within .vw-mk-actions {
+    opacity: 1;
+}
+
+/* Narrow windows: drop the less important controls */
+@media (max-width: 1100px) {
+    .vw-ctl .vw-opt,
+    .vw-stepset span {
+        display: none;
+    }
+}
+
+@media (max-width: 860px) {
+    .vw-ctl .vw-step-btn,
+    .vw-ctl .vw-stepset {
+        display: none;
+    }
+}
