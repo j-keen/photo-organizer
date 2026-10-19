@@ -10,6 +10,7 @@ function scrollRun(page, steps) {
         const frames = [];
         let blank = 0;
         let maxDom = 0;
+        let bubble = '';
         let last = performance.now();
         const twoFrames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         // First item whose box reaches below the top of the viewport, from layout geometry
@@ -33,10 +34,12 @@ function scrollRun(page, steps) {
             const i = firstVisible(s.scrollTop + 40);
             if (!App.gallery.cardFor(App.view.visible[i].path)) blank++;
             maxDom = Math.max(maxDom, document.querySelectorAll('#gallery > .card, #gallery > .lrow').length);
+            const b = document.querySelector('.scroll-bubble.show');
+            if (b) bubble = b.textContent;
         }
         frames.sort((a, b) => a - b);
         const avg = frames.reduce((a, b) => a + b, 0) / frames.length;
-        return { avg, p95: frames[Math.floor(frames.length * 0.95)], max: frames[frames.length - 1], blank, maxDom };
+        return { avg, p95: frames[Math.floor(frames.length * 0.95)], max: frames[frames.length - 1], blank, maxDom, bubble };
     }, steps);
 }
 
@@ -62,6 +65,7 @@ module.exports = [
             const thumbCalls = await page.evaluate(() => window.__thumbCalls);
             console.log(`      grid: avg ${grid.avg.toFixed(1)}ms/frame, p95 ${grid.p95.toFixed(1)}ms, max ${grid.max.toFixed(1)}ms, max DOM ${grid.maxDom}, blank ${grid.blank}, thumbnail requests ${thumbCalls}`);
             assert.ok(thumbCalls < 500, `flinging past 1500 items doesn't queue a thumbnail for each (${thumbCalls})`);
+            assert.equal(grid.bubble, 'I', 'the scroll bubble shows the initial of the names under the viewport');
             await page.waitForSelector('.card[data-path="many/IMG_01500.png"].has-thumb', { timeout: 15000 });
             assert.ok(grid.maxDom < 260, `grid keeps the DOM small (${grid.maxDom} cards)`);
             assert.equal(grid.blank, 0, 'the viewport is never blank after a frame');

@@ -1840,6 +1840,68 @@
         gallery.scrollTo(list[hit].path);
     }
 
+    // ---------- Scroll bubble: in long folders, fast scrolling shows where you are (initial / month / size...) ----------
+    const CHOSEONG = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+    let bubbleEl = null;
+    let bubbleTimer = 0;
+    let scrollerTop = 0; // offset of the scroller inside #content (below the view bar), kept from the ResizeObserver
+
+    function initialOf(name) {
+        const ch = String(name || '').trim().charAt(0);
+        if (!ch) return '';
+        const code = ch.charCodeAt(0);
+        if (code >= 0xac00 && code <= 0xd7a3) return CHOSEONG[Math.floor((code - 0xac00) / 588)];
+        return ch.toLocaleUpperCase();
+    }
+
+    function bubbleText(entry) {
+        const key = App.view.sort.key;
+        if (entry.kind === 'dir') return key === 'name' ? initialOf(entry.name) : '폴더';
+        const cat = App.catalog.peek(entry.path);
+        switch (key) {
+            case 'mtime': {
+                if (!entry.mtime) return '';
+                const d = new Date(entry.mtime);
+                return `${d.getFullYear()}년 ${d.getMonth() + 1}월`;
+            }
+            case 'size':
+                return formatBytes(entry.size);
+            case 'type':
+                return entry.type === 'video' ? '영상' : entry.type === 'image' ? '사진' : '파일';
+            case 'rating':
+                return cat?.rating ? '★'.repeat(Math.min(5, cat.rating)) : '별점 없음';
+            case 'resolution':
+                return cat?.meta?.w ? `${cat.meta.w}×${cat.meta.h}` : '—';
+            case 'duration':
+                return cat?.meta?.duration > 0 && isFinite(cat.meta.duration) ? formatDuration(cat.meta.duration) : '—';
+            default:
+                return initialOf(entry.name);
+        }
+    }
+
+    function hideBubble() {
+        clearTimeout(bubbleTimer);
+        bubbleEl?.classList.remove('show');
+    }
+
+    function updateBubble() {
+        if (!bubbleEl) return;
+        const n = App.view.visible.length;
+        const total = canvasHeight();
+        // Only for long lists, and only when moving fast enough that you'd lose track
+        if (n < 60 || total < viewH * 4 || scrollMotion.vel < 1.2) return;
+        const top = getScrollTop();
+        const entry = App.view.visible[indexAtY(top + viewH / 3)];
+        const text = entry ? bubbleText(entry) : '';
+        if (!text) return hideBubble();
+        if (bubbleEl.textContent !== text) bubbleEl.textContent = text;
+        const progress = clamp(top / Math.max(1, total - viewH), 0, 1);
+        bubbleEl.style.transform = `translateY(${Math.round(scrollerTop + 10 + progress * Math.max(0, viewH - 52))}px)`;
+        bubbleEl.classList.add('show');
+        clearTimeout(bubbleTimer);
+        bubbleTimer = setTimeout(hideBubble, 750);
+    }
+
     // ---------- Empty state / loading ----------
     function updateEmpty() {
         if (!emptyEl) return;
@@ -2113,7 +2175,8 @@
             scroller.insertBefore(headEl, canvas);
             loadingEl = h('div', { class: 'gallery-loading', 'aria-hidden': 'true' }, h('i'));
             typePillEl = h('div', { class: 'type-pill', 'aria-live': 'polite' });
-            content.append(loadingEl, typePillEl);
+            bubbleEl = h('div', { class: 'scroll-bubble', 'aria-hidden': 'true' });
+            content.append(loadingEl, typePillEl, bubbleEl);
             applyModeClasses();
 
             L.width = scroller.clientWidth;
@@ -2122,6 +2185,7 @@
                 if (pendingScroll == null) scrollTopCache = scroller.scrollTop;
                 noteScroll(scroller.scrollTop);
                 if (scrub.card) endScrub();
+                updateBubble();
                 schedule();
             }, { passive: true });
             let lastCols = L.cols;
@@ -2132,6 +2196,7 @@
                 const widthChanged = w !== L.width;
                 L.width = w;
                 viewH = hh;
+                scrollerTop = scroller.offsetTop;
                 if (widthChanged) {
                     const a = anchor;
                     layout();
@@ -2181,6 +2246,7 @@
             App.bus.on('view:changed', ({ reason }) => {
                 const restore = reason === 'entries' ? onEntriesChanged() : null;
                 endScrub();
+                hideBubble();
                 layout();
                 if (restore != null) setScrollTop(restore);
                 if (mode === 'list' && (reason === 'sort' || reason === 'entries')) renderHead();
