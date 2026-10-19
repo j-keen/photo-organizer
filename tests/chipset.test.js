@@ -68,7 +68,8 @@ module.exports = [
         async run({ openApp, assert, card }) {
             const { page } = await openApp({ seed: SEED });
             await setupChips(page);
-            assert.ok(!(await page.isVisible('#inspector .insp-off')), 'the "open a workspace" placeholder is gone');
+            // the "open a workspace" placeholder goes away once the inspector re-renders for the workspace
+            await page.waitForSelector('#inspector .insp-off', { state: 'hidden' });
             await (await card(page, 'a.png')).click();
             await page.waitForSelector('.insp-zone-top .insp-preview');
             await page.waitForSelector(`.insp-zone-scroll ${INSP} .chip-cat`);

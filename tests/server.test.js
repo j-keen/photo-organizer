@@ -125,6 +125,10 @@ function collect(page) {
         if (message.type() === 'error' && !/pretendard|favicon|net::ERR_/i.test(message.text())) errors.push('console: ' + message.text());
     });
     page.on('dialog', (dialog) => { errors.push('native dialog: ' + dialog.type()); dialog.dismiss().catch(() => {}); });
+    // Name the request behind "Failed to load resource" console errors
+    page.on('response', (r) => {
+        if (r.status() >= 400 && !/favicon/.test(r.url())) errors.push(`http ${r.status()} ${r.request().method()} ${r.url().replace(/^https?:\/\/[^/]+/, '')}`);
+    });
     return errors;
 }
 async function withServer(h, kind, run, picker = false) {

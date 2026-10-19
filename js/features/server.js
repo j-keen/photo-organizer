@@ -763,10 +763,11 @@
             orig.cancelExcept?.(paths);
         };
 
-        T.clearCache = async () => {
+        T.clearCache = async (opts) => {
             forget(() => true);
             failed.clear();
-            await orig.clearCache?.();
+            // pass options through (e.g. { disk: false } keeps the workspace thumbnail cache)
+            return orig.clearCache?.(opts);
         };
 
         function reset() {

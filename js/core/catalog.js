@@ -86,6 +86,8 @@
     // ---------- Catalog ----------
     let data = { version: 1, items: {} };
     let dirty = false;
+    let failures = 0; // consecutive failed saves
+    let retryTimer = null;
 
     function isEmpty(e) {
         return (!e.chips || !e.chips.length) && !e.rating && !e.label && !e.memo && (!e.markers || !e.markers.length) && (!e.meta || !Object.keys(e.meta).length) && !e.legacyImported;
@@ -142,21 +144,32 @@
             data = { version: 1, items: {} };
             catalog.loaded = false;
             dirty = false;
+            failures = 0;
+            clearTimeout(retryTimer);
         },
 
-        /** Events for a save indicator: 'catalog:saving', 'catalog:saved', 'catalog:error' { error } */
+        /**
+         * Events for a save indicator: 'catalog:saving', 'catalog:saved', 'catalog:error' { error, failures }.
+         * A failed write (folder briefly unavailable, local server restarting...) is retried with backoff;
+         * the user is only alerted when it keeps failing.
+         */
         async save() {
             if (!dirty || !App.fs.ready) return;
             dirty = false;
+            clearTimeout(retryTimer);
             App.bus.emit('catalog:saving');
             try {
                 await wsdata.write('catalog', data);
+                if (failures >= 3) App.ui.toast('밀려 있던 정보를 저장했어요', { type: 'success', id: 'catalog-save' });
+                failures = 0;
                 App.bus.emit('catalog:saved');
             } catch (e) {
                 dirty = true;
-                console.error('[catalog] save failed', e);
-                App.bus.emit('catalog:error', { error: e });
-                App.ui.toast('정보 저장에 실패했어요. 폴더 권한을 확인하세요.', { type: 'error' });
+                failures++;
+                console.warn(`[catalog] save failed (attempt ${failures}), retrying`, e && e.message);
+                App.bus.emit('catalog:error', { error: e, failures });
+                retryTimer = setTimeout(() => catalog.save(), Math.min(30000, 2000 * 2 ** (failures - 1)));
+                if (failures === 3) App.ui.toast('정보를 아직 저장하지 못했어요. 계속 다시 시도하고 있어요 — 폴더 권한이나 로컬 서버를 확인해 주세요.', { type: 'error', id: 'catalog-save', duration: 0 });
             }
         },
 

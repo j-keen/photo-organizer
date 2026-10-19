@@ -2290,12 +2290,16 @@
         run: () => revealInFolder(App.select.list()[0]),
     });
 
-    // Extra sort keys used by the list view headers (also show up in the sort menu)
-    App.view.registerSortKey('resolution', '해상도', (e) => {
-        const m = App.catalog.peek(e.path)?.meta;
-        return m && m.w && m.h ? m.w * m.h : 0;
-    });
-    App.view.registerSortKey('duration', '길이', (e) => App.catalog.peek(e.path)?.meta?.duration || 0);
+    // Extra sort keys used by the list view headers — only when the thumbnail module (which also fills in
+    // missing media info while sorting) hasn't registered them already
+    const hasSortKey = (key) => App.view.sortKeys().some((k) => k.key === key);
+    if (!hasSortKey('resolution')) {
+        App.view.registerSortKey('resolution', '해상도', (e) => {
+            const m = App.catalog.peek(e.path)?.meta;
+            return m && m.w && m.h ? m.w * m.h : 0;
+        });
+    }
+    if (!hasSortKey('duration')) App.view.registerSortKey('duration', '영상 길이', (e) => App.catalog.peek(e.path)?.meta?.duration || 0);
 
     // ---------- Init ----------
     App.register('gallery', {
