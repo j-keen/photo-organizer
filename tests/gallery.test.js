@@ -485,7 +485,7 @@ module.exports = [
             const labels = await page.$$eval('.menu .menu-label', (els) => els.map((e) => e.textContent));
             for (const want of ['보기', '훑어보기', '복사', '잘라내기', '다른 폴더로 이동…', '이름 바꾸기', '휴지통으로 이동']) assert.ok(labels.includes(want), `menu has ${want} (${labels.join(', ')})`);
             const copyRegistered = await page.evaluate(() => !!App.commands.get('organize.copyTo'));
-            assert.equal(labels.includes('다른 폴더에 복사…'), copyRegistered, 'organize.copyTo shows exactly when it is registered');
+            assert.equal(labels.includes('다른 폴더로 복사…'), copyRegistered, 'organize.copyTo shows exactly when it is registered');
             await page.click('.menu .menu-item:has-text("다른 폴더로 이동…")');
             assert.deepEqual(await page.evaluate(() => window.__movedTo), ['a-photo.png']);
             // Empty space

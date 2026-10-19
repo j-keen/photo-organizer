@@ -214,7 +214,14 @@
     // Modules with their own debounced .fluid-organizer files (e.g. clips.json) register a flush here,
     // so pending writes reach the old folder before the backend switches
     async function flushModules() {
-        await Promise.all((workspace.flushHooks || []).map((f) => Promise.resolve().then(f).catch((e) => console.warn('[workspace] flush hook failed', e))));
+        let failed = 0;
+        await Promise.all((workspace.flushHooks || []).map((f) => Promise.resolve().then(f).catch((e) => {
+            failed++;
+            console.warn('[workspace] flush hook failed', e);
+        })));
+        // Don't trap the user in a folder that can't be written (e.g. a removed drive): the modules keep a rescue copy
+        // in this browser and restore it the next time the folder opens — but say so instead of failing quietly
+        if (failed) ui.toast('일부 정리 정보를 폴더에 저장하지 못했어요. 이 브라우저에 보관해 두었다가 다음에 이 폴더를 열 때 되살려요.', { type: 'warning', id: 'ws-flush', duration: 9000 });
     }
 
     async function doOpen(backend, { restore = false, auto = false, reload = false, keepUndo = false } = {}, gen) {

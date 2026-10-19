@@ -1847,7 +1847,7 @@
             add(cmdItem('file.copy', '복사'), cmdItem('file.cut', '잘라내기'));
             if (clip && clip.count && one && one.kind === 'dir') add(cmdItem('file.paste', `이 폴더에 붙여넣기 (${formatCount(clip.count)}개)`, { args: { dir: one.path } }));
             sep();
-            add(cmdItem('organize.moveTo', '다른 폴더로 이동…'), cmdItem('organize.copyTo', '다른 폴더에 복사…'));
+            add(cmdItem('organize.moveTo', '다른 폴더로 이동…'), cmdItem('organize.copyTo', '다른 폴더로 복사…'));
             if (one) add(cmdItem('file.rename', '이름 바꾸기'));
             else add(cmdItem('organize.rename', '이름 한꺼번에 바꾸기…'));
             sep();

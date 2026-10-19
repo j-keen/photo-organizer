@@ -1154,9 +1154,7 @@
             if (has('trash.open')) items.push({ label: '휴지통 열기', icon: 'trash', command: 'trash.open' });
             return items;
         }
-        if (has('organize.moveTo')) items.push({ label: '다른 폴더로 이동…', icon: 'folder-input', command: 'organize.moveTo' });
-        if (has('organize.copyTo')) items.push({ label: '다른 폴더로 복사…', icon: 'copy', command: 'organize.copyTo' });
-        if (has('organize.rename') && entries.length > 1) items.push({ label: '이름 일괄 변경…', icon: 'edit', command: 'organize.rename' });
+        // 이동·복사·이름 한꺼번에 바꾸기 are already in the gallery's own menu (gallery.js) — no duplicates here
         const tidy = [
             has('organize.rename') && entries.length === 1 ? { label: '이름 규칙으로 바꾸기…', icon: 'edit', command: 'organize.rename' } : null,
             dirs.length && has('organize.unwrap') ? { label: dirs.length > 1 ? `폴더 ${dirs.length}개 풀기` : '폴더 풀기', icon: 'folder-output', command: 'organize.unwrap' } : null,

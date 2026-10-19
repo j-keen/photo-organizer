@@ -525,7 +525,8 @@ module.exports = [
             await (await card(page, 'a.png')).click({ button: 'right' });
             await page.waitForSelector('.menu');
             const labels = await page.$$eval('.menu .menu-label', (els) => els.map((e) => e.textContent));
-            for (const l of ['다른 폴더로 이동…', '다른 폴더로 복사…', '정리하기', '중복 찾기']) assert.ok(labels.includes(l), `menu has ${l} (got ${labels.join(', ')})`);
+            for (const l of ['다른 폴더로 이동…', '다른 폴더로 복사…', '정리하기', '중복검사']) assert.ok(labels.includes(l), `menu has ${l} (got ${labels.join(', ')})`);
+            for (const l of ['다른 폴더로 이동…', '다른 폴더로 복사…']) assert.equal(labels.filter((x) => x === l).length, 1, `${l} appears once`);
             assert.ok(await page.isVisible('.menu .menu-item:has-text("다른 폴더로 이동") .menu-hint:has-text("Shift+M")'));
             await page.keyboard.press('Escape');
             await page.click('#gallery-scroll', { position: { x: 600, y: 600 }, button: 'right' });
