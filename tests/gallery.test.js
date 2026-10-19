@@ -220,6 +220,20 @@ module.exports = [
             await page.click('.lrow[data-path="b-photo.jpg"] .lstar[data-n="3"]');
             assert.equal(await page.evaluate(() => App.catalog.get('b-photo.jpg').rating), 3);
             await page.waitForSelector('.lrow[data-path="b-photo.jpg"] .lstar.on[data-n="3"]');
+            // Rated stars keep the warning color in both themes
+            for (const theme of ['dark', 'light']) {
+                const [star, token] = await page.evaluate((t) => {
+                    document.documentElement.dataset.theme = t;
+                    const probe = document.createElement('i');
+                    probe.style.color = 'var(--warning)';
+                    document.body.append(probe);
+                    const want = getComputedStyle(probe).color;
+                    probe.remove();
+                    return [getComputedStyle(document.querySelector('.lrow[data-path="b-photo.jpg"] .lstar.on')).color, want];
+                }, theme);
+                assert.equal(star, token, `${theme}: rated star uses --warning`);
+            }
+            await page.evaluate(() => (document.documentElement.dataset.theme = 'dark'));
             await page.keyboard.press('Control+z');
             assert.equal(await page.evaluate(() => App.catalog.get('b-photo.jpg').rating), 0);
             // Big folder stays virtualized in list mode

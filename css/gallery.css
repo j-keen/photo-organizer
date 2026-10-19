@@ -667,7 +667,7 @@
     transition: color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 
-:root[data-theme="light"] .lstar {
+:root[data-theme="light"] .lstar:not(.on) {
     color: var(--line-2);
 }
 
@@ -884,7 +884,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 5px 12px 5px 5px;
+    padding: 5px 6px 5px 12px;
     border-radius: var(--r-full);
     border: 1px solid var(--line-2);
     background: var(--bg-1);
@@ -919,6 +919,11 @@
 .type-pill.miss .tp-key {
     background: var(--danger-soft);
     color: var(--danger);
+}
+
+.type-pill .tp-miss {
+    padding-right: 6px;
+    color: var(--text-3);
 }
 
 /* View bar controls (fit + mode) */

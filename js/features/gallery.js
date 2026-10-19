@@ -1772,7 +1772,7 @@
 
     function showTypePill(text, found) {
         if (!typePillEl) return;
-        typePillEl.innerHTML = `<span class="tp-key">${escapeHtml(text)}</span><span class="tp-msg">${found ? '로 시작하는 항목' : '일치하는 항목이 없어요'}</span>`;
+        typePillEl.innerHTML = `<span class="tp-msg">이름 찾기</span><span class="tp-key">${escapeHtml(text)}</span>${found ? '' : '<span class="tp-miss">일치하는 항목이 없어요</span>'}`;
         typePillEl.classList.toggle('miss', !found);
         typePillEl.classList.add('show');
         clearTimeout(typeTimer);
@@ -2013,7 +2013,7 @@
         },
     });
 
-    App.commands.register({ id: 'select.all', title: '모두 선택', group: '선택', icon: 'check', keys: ['Mod+A'], when: () => App.view.visible.length > 0, run: () => App.select.all() });
+    App.commands.register({ id: 'select.all', title: '모두 선택', group: '선택', icon: 'check-circle', keys: ['Mod+A'], when: () => App.view.visible.length > 0, run: () => App.select.all() });
     App.commands.register({ id: 'select.clear', title: '선택 해제', group: '선택', icon: 'x', keys: ['Escape'], when: hasSelection, run: () => App.select.clear() });
     App.commands.register({ id: 'gallery.zoomIn', title: '썸네일 크게', group: '보기', icon: 'zoom-in', keys: ['Mod+='], run: () => gallery.setZoom(gallery.zoom * 1.15) });
     App.commands.register({ id: 'gallery.zoomOut', title: '썸네일 작게', group: '보기', icon: 'zoom-out', keys: ['Mod+-'], run: () => gallery.setZoom(gallery.zoom / 1.15) });
