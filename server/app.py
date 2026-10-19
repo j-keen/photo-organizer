@@ -180,7 +180,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise ApiError('ENOENT', '요청한 주소를 찾을 수 없어요')
         if not os.path.isfile(abs_path):
             raise ApiError('ENOENT', '요청한 주소를 찾을 수 없어요')
-        return file_response(request, abs_path, cache_control='no-cache')
+        return file_response(request, abs_path, cache_control='no-cache', sandbox=False)
 
     app.add_middleware(SecurityMiddleware, port=settings.port, session=session)
     return app

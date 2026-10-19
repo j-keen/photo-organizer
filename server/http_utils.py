@@ -63,6 +63,9 @@ def parse_range(header: str | None, size: int) -> tuple[int, int] | None | str:
     return start, end
 
 
+SANDBOX_CSP = "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'"
+
+
 def file_response(
     request: Request,
     abs_path: str,
@@ -71,6 +74,7 @@ def file_response(
     cache_control: str = 'no-cache',
     headers: dict | None = None,
     display: str | None = None,
+    sandbox: bool = True,
 ) -> Response:
     """Serve a file with ETag, conditional GET, Range and HEAD support."""
     try:
@@ -88,6 +92,10 @@ def file_response(
         'X-FI-Mtime': str(mtime_ms(st)),
         'X-FI-Size': str(st.st_size),
     }
+    if sandbox:
+        # User files are data, never documents of this origin: an .html/.svg opened directly runs in an opaque,
+        # script-less sandbox (no cookies, no API access). <img>/<video> rendering is unaffected.
+        base_headers['Content-Security-Policy'] = SANDBOX_CSP
     if headers:
         base_headers.update(headers)
     ctype = media_type or guess_type(abs_path)

@@ -5,6 +5,8 @@ import os
 import stat
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
 
 import anyio
 from fastapi import APIRouter, Depends, Request
@@ -17,6 +19,27 @@ from .errors import ApiError, from_os_error
 from .workspaces import Workspace
 
 router = APIRouter()
+_claims_lock = threading.Lock()
+_claims: set[str] = set()  # destinations being written right now (two tabs can't race into the same name)
+
+
+@contextmanager
+def _claim(dst: str):
+    key = os.path.normcase(os.path.abspath(dst))
+    with _claims_lock:
+        if key in _claims:
+            raise ApiError('EEXIST', '같은 이름의 항목을 지금 만들고 있어요. 잠시 후 다시 해 주세요')
+        _claims.add(key)
+    try:
+        yield
+    finally:
+        with _claims_lock:
+            _claims.discard(key)
+
+
+def _not_busy(abs_path: str, rel: str) -> None:
+    if ffmpeg.busy(abs_path):
+        raise ApiError('EBUSY', f'"{rel}" 영상을 처리하는 작업이 끝난 뒤에 다시 해 주세요')
 
 
 class PathBody(BaseModel):
@@ -181,9 +204,11 @@ def _transfer_paths(ws: Workspace, body: TransferBody, *, moving: bool):
 @router.post('/api/fs/move')
 def move(body: TransferBody, ws: Workspace = Depends(deps.workspace)):
     src, dst = _transfer_paths(ws, body, moving=True)
+    _not_busy(src, body.src)
     try:
-        ffmpeg.release(src)
-        fsutil.move(src, dst, before_retry=lambda: ffmpeg.release(src))
+        with _claim(dst):
+            ffmpeg.release(src)
+            fsutil.move(src, dst, before_retry=lambda: ffmpeg.release(src))
     except OSError as exc:
         raise from_os_error(exc, body.src) from exc
     return {'ok': True, 'path': ws.rel(dst)}
@@ -193,7 +218,8 @@ def move(body: TransferBody, ws: Workspace = Depends(deps.workspace)):
 def copy(body: TransferBody, ws: Workspace = Depends(deps.workspace)):
     src, dst = _transfer_paths(ws, body, moving=False)
     try:
-        fsutil.copy(src, dst)
+        with _claim(dst):
+            fsutil.copy(src, dst)
     except OSError as exc:
         raise from_os_error(exc, body.src) from exc
     return {'ok': True, 'path': ws.rel(dst)}
@@ -204,6 +230,7 @@ def remove(request: Request, body: RemoveBody, ws: Workspace = Depends(deps.work
     target = ws.resolve(body.path)
     if not ws.rel(target):
         raise ApiError('EPERM', '작업 폴더 자체는 지울 수 없어요')
+    _not_busy(target, body.path)
     try:
         ffmpeg.release(target)
         if not os.path.lexists(target):

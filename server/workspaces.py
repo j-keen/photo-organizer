@@ -86,10 +86,11 @@ class WorkspaceRegistry:
             raise ApiError('ENOENT', '폴더를 찾을 수 없어요. 경로를 확인해 주세요')
         if not os.path.isdir(real):
             raise ApiError('EINVAL', '파일이 아니라 폴더를 골라 주세요')
-        meta = self._ensure_meta(real)
         token = token_for(real)
-        ws = Workspace(token=token, id=meta['id'], name=display_name(real), root=real)
+        # Under the lock: two tabs opening the same new folder at once must agree on one workspace id
         with self._lock:
+            meta = self._ensure_meta(real)
+            ws = Workspace(token=token, id=meta['id'], name=display_name(real), root=real)
             self._open[token] = ws
             self._current = token
         if remember:
@@ -97,7 +98,8 @@ class WorkspaceRegistry:
         return ws
 
     def _ensure_meta(self, real: str) -> dict:
-        meta_path = os.path.join(real, DATA_DIR_NAME, 'workspace.json')
+        # resolve() refuses a .fluid-organizer that is a link pointing outside the folder
+        meta_path = resolve(real, f'{DATA_DIR_NAME}/workspace.json')
         try:
             with open(meta_path, 'r', encoding='utf-8') as f:
                 meta = json.load(f)

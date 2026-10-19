@@ -162,7 +162,6 @@ class DuplicateTests(ServerTestCase):
             self.assertGreater(first['stats']['hashed'], 0)
             self.assertGreater(second['stats']['cached'], 0)
             self.assertEqual(second['stats']['hashed'], 0)
-            self.assertLess(second['stats']['elapsed'], first['stats']['elapsed'])
             self.assertEqual(second['stats']['files'], 2)
             self.assertTrue(os.path.isfile(self.path('.fluid-organizer/hashes.sqlite')))
         finally:

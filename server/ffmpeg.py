@@ -29,6 +29,7 @@ log = logging.getLogger('fi.ffmpeg')
 _exe_cache: list = []
 _encoders_cache: dict[str, bool] = {}
 _active: dict[subprocess.Popen, tuple[str, ...]] = {}
+_job_procs: set[subprocess.Popen] = set()  # long-running edits (trim/concat/...) — never killed by release()
 _active_lock = threading.Lock()
 _probe_cache: OrderedDict = OrderedDict()
 _probe_lock = threading.Lock()
@@ -83,14 +84,17 @@ def has_encoder(name: str) -> bool:
 
 
 # ---------- process tracking ----------
-def _track(proc: subprocess.Popen, inputs) -> None:
+def _track(proc: subprocess.Popen, inputs, *, job: bool = False) -> None:
     with _active_lock:
         _active[proc] = tuple(os.path.abspath(p) for p in (inputs or ()))
+        if job:
+            _job_procs.add(proc)
 
 
 def _untrack(proc: subprocess.Popen) -> None:
     with _active_lock:
         _active.pop(proc, None)
+        _job_procs.discard(proc)
 
 
 def _kill(proc: subprocess.Popen) -> None:
@@ -103,12 +107,20 @@ def _kill(proc: subprocess.Popen) -> None:
 
 
 def release(abs_prefix: str) -> int:
-    """Stop our ffmpeg processes that read files at/under abs_prefix (Windows can't rename open files)."""
+    """Stop our short-lived ffmpeg readers (thumbnails, probes, live streams) of files at/under abs_prefix,
+    because Windows can't rename or delete a file another process has open. Editing jobs are left alone —
+    check busy() first and tell the user to wait instead."""
     with _active_lock:
-        victims = [p for p, ins in _active.items() if any(is_inside(i, abs_prefix) for i in ins)]
+        victims = [p for p, ins in _active.items() if p not in _job_procs and any(is_inside(i, abs_prefix) for i in ins)]
     for p in victims:
         _kill(p)
     return len(victims)
+
+
+def busy(abs_prefix: str) -> bool:
+    """True while an editing job (trim/concat/transform/dupes...) reads a file at/under abs_prefix."""
+    with _active_lock:
+        return any(p in _job_procs and any(is_inside(i, abs_prefix) for i in ins) for p, ins in _active.items())
 
 
 def kill_all() -> None:
@@ -151,7 +163,7 @@ def capture(args: list[str], *, inputs=(), timeout: float = 60, job=None) -> byt
     """Run ffmpeg and return stdout (e.g. `-f image2pipe -c:v png -`). Raises ApiError on failure."""
     cmd = [require(), '-hide_banner', '-nostdin', '-loglevel', 'error', *args]
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **popen_kwargs())
-    _track(proc, inputs)
+    _track(proc, inputs, job=job is not None)
     if job is not None:
         job.add_proc(proc)
     try:
@@ -185,7 +197,7 @@ def run(args: list[str], *, job=None, duration: float | None = None, inputs=(), 
     """Run ffmpeg to completion, mapping `-progress` output to job progress. Raises ApiError / JobCancelled."""
     cmd = [require(), '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats', *args]
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **popen_kwargs())
-    _track(proc, inputs)
+    _track(proc, inputs, job=True)
     if job is not None:
         job.add_proc(proc)
     err_chunks: list[bytes] = []

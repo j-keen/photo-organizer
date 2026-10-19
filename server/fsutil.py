@@ -170,11 +170,18 @@ def move(src: str, dst: str, *, before_retry: Callable[[], None] | None = None) 
         if not cross_device:
             raise
         tmp = tmp_path_for(dst)
-        if os.path.isdir(src) and not is_link_like(src):
-            shutil.copytree(src, tmp, symlinks=True, copy_function=shutil.copy2)
-        else:
-            shutil.copy2(src, tmp, follow_symlinks=False)
-        os.replace(tmp, dst)
+        try:
+            if os.path.isdir(src) and not is_link_like(src):
+                shutil.copytree(src, tmp, symlinks=True, copy_function=shutil.copy2)
+            else:
+                shutil.copy2(src, tmp, follow_symlinks=False)
+            if os.path.lexists(dst):
+                raise FileExistsError(errno.EEXIST, 'exists', dst)
+            os.rename(tmp, dst)
+        except BaseException:
+            if os.path.lexists(tmp):
+                remove(tmp)  # never leave a hidden partial copy behind
+            raise
         remove(src)
 
 

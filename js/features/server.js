@@ -264,12 +264,16 @@
     // The original goes to the app trash, so undo is always possible.
     async function replaceOriginal(original, output, label, active) {
         const saved = App.catalog.peek(original);
+        const stillHere = () => {
+            if (backend() !== active) throw failure('EINVAL', '작업 폴더가 바뀌어서 원본 바꾸기를 멈췄어요. 새 파일은 원래 폴더에 그대로 있어요');
+        };
         let originalIds = await App.fs.trash([original], { undoable: false, silent: true });
         let replaced;
         try {
+            stillHere();
             replaced = await App.fs.rename(output, P.base(original), { undoable: false });
         } catch (err) {
-            await App.fs.restore(originalIds);
+            if (backend() === active) await App.fs.restore(originalIds);
             throw err;
         }
         if (saved) {
@@ -337,6 +341,21 @@
         return rel ? base + sep + rel.split('/').join(sep) : base || sep;
     }
 
+    /** 'C:\Users\me\Pictures\2024\Trip' -> 'C:\…\2024\Trip' when long: keeps the drive and the folders that matter. */
+    function shortPath(full, max = 46) {
+        if (!full || full.length <= max) return full || '';
+        const sep = full.includes('\\') ? '\\' : '/';
+        const parts = full.split(sep);
+        const head = parts[0] || sep;
+        let tail = parts[parts.length - 1];
+        for (let i = parts.length - 2; i > 0; i--) {
+            const next = parts[i] + sep + tail;
+            if (head.length + next.length + 3 > max) break;
+            tail = next;
+        }
+        return `${head}${sep}…${sep}${tail}`;
+    }
+
     async function copyText(text, message = '경로를 복사했어요') {
         try {
             await navigator.clipboard.writeText(text);
@@ -375,7 +394,7 @@
             return dir + '\\server\\start.bat';
         }
         if (info?.appRoot) return absolutePath(info.appRoot, 'server/start.bat');
-        return 'server\\start.bat';
+        return null; // unknown (opened from some other web address)
     }
 
     // ---------- Workspace (served mode) ----------
@@ -587,9 +606,10 @@
         };
         const LIMIT = 4;
         const MAX_URLS = 1500;
+        const MAX_FAILED = 5000;
         const loaded = new Map(); // thumb url -> { objectUrl, path }
         const pending = new Map(); // thumb url -> task
-        const failed = new Set(); // thumb urls the server can't render (this session)
+        const failed = new Set(); // thumb urls the server can't render (undecodable/corrupt files only, bounded)
         const queue = [];
         let running = 0;
 
@@ -641,7 +661,11 @@
                 return load(task, true);
             }
             if (res.status === 204) {
-                failed.add(task.url);
+                // Remember only "can't decode this file"; missing/locked/busy files may work on the next look
+                if (res.headers.get('X-FI-Error') === 'EINVAL') {
+                    failed.add(task.url);
+                    if (failed.size > MAX_FAILED) failed.delete(failed.values().next().value);
+                }
                 return null;
             }
             if (!res.ok) return null;
@@ -765,7 +789,8 @@
             title: '미디어 정보',
             order: 15,
             when: ({ primary }) => !!backend() && primary?.kind === 'file' && (primary.type === 'image' || primary.type === 'video'),
-            render(body, { primary }) {
+            // Resolution and length are already in the info section above; this adds what only the server knows.
+            render(body, { primary }, section) {
                 const active = backend();
                 const box = h('div', { class: 'srv-media', role: 'status', text: '정보 읽는 중…' });
                 body.append(box);
@@ -775,21 +800,22 @@
                         box.textContent = '정보를 읽지 못했어요';
                         return;
                     }
+                    const video = primary.type === 'video';
                     const rows = [
-                        ['코덱', [d.vcodec, d.acodec].filter(Boolean).join(' · ') || d.format],
-                        ['해상도', d.width && d.height ? `${d.width} × ${d.height}` : null],
+                        ['코덱', video ? [d.vcodec, d.acodec].filter(Boolean).join(' · ') : null],
                         ['프레임', d.fps ? fmtFps(d.fps) : null],
-                        ['길이', d.duration ? App.util.formatDuration(d.duration) : null],
                         ['비트레이트', d.bitrate ? `${(d.bitrate / 1e6).toFixed(1)} Mbps` : null],
+                        ['소리', video ? (d.hasAudio ? '있음' : '없음') : null],
                         ['회전', d.rotation ? `${d.rotation}°` : null],
                         ['촬영', d.taken ? App.util.formatDate(d.taken, true) : null],
                         ['카메라', d.camera],
-                    ];
-                    const table = h('div', { class: 'insp-table' });
-                    for (const [k, v] of rows) {
-                        if (v == null || v === '') continue;
-                        table.append(h('div', { class: 'insp-k', text: k }), h('div', { class: 'insp-v', text: v, title: String(v) }));
+                    ].filter(([, v]) => v != null && v !== '');
+                    if (!rows.length) {
+                        (section || body).remove();
+                        return;
                     }
+                    const table = h('div', { class: 'insp-table' });
+                    for (const [k, v] of rows) table.append(h('div', { class: 'insp-k', text: k }), h('div', { class: 'insp-v', text: v, title: String(v) }));
                     box.replaceWith(table);
                 }, () => {
                     if (box.isConnected) box.textContent = '정보를 읽지 못했어요';
@@ -872,14 +898,14 @@
         ['avif', 'AVIF 사진', 'Pillow'],
     ];
 
-    function capabilityList() {
+    function capabilityList({ compact = false } = {}) {
         const caps = server.capabilities;
-        return h('ul', { class: 'srv-caps' }, CAPS.map(([key, label, tech]) => {
+        return h('ul', { class: `srv-caps${compact ? ' compact' : ''}` }, CAPS.map(([key, label, tech]) => {
             const on = !!caps[key];
-            return h('li', { class: on ? 'on' : 'off' },
+            return h('li', { class: on ? 'on' : 'off', title: on ? `${label} · ${tech}` : `${label}: 설치되지 않았어요` },
                 h('span', { class: 'srv-cap-icon', html: ui.icon(on ? 'check' : 'x', { size: 12 }) }),
                 h('span', { class: 'grow', text: label }),
-                h('span', { class: 'srv-cap-tech', text: on ? tech : '없음' }));
+                compact ? null : h('span', { class: 'srv-cap-tech', text: on ? tech : '없음' }));
         }));
     }
 
@@ -895,14 +921,15 @@
             h('div', { class: 'srv-pop-head' },
                 h('span', { class: 'srv-pop-logo', html: ui.icon('server', { size: 16 }) }),
                 h('div', { class: 'grow' },
-                    h('div', { class: 'srv-strong', text: 'Fluid Identity 로컬 서버' }),
-                    h('div', { class: `srv-pop-state ${offline ? 'bad' : 'good'}`, text: offline ? '연결이 끊겼어요' : `${location.host} · 이 PC 안에서만 동작해요` })),
+                    h('div', { class: 'srv-strong', text: '로컬 서버' }),
+                    h('div', { class: `srv-pop-state ${offline ? 'bad' : 'good'}`, text: offline ? '연결이 끊겼어요' : `${location.host}에서 실행 중이에요` })),
                 info?.version ? h('span', { class: 'badge', text: `v${info.version}` }) : null),
             capabilityList(),
             active
                 ? h('div', { class: 'srv-pop-ws' },
                     h('div', { class: 'srv-section-title', text: '작업 폴더' }),
-                    h('div', { class: 'srv-pop-root', text: active.root, title: active.root }))
+                    h('div', { class: 'srv-pop-name', text: active.name }),
+                    h('div', { class: 'srv-pop-root', text: shortPath(active.root), title: active.root }))
                 : null,
             h('div', { class: 'srv-pop-actions' },
                 offline ? h('button', { class: 'btn sm primary', type: 'button', html: `${ui.icon('refresh', { size: 14 })}<span>다시 연결</span>`, onclick: () => recover() }) : null,
@@ -962,18 +989,20 @@
                 h('span', { class: 'srv-live-icon' }, h('span', { class: 'spinner' })),
                 h('div', { class: 'grow' },
                     h('div', { class: 'srv-strong', text: '서버를 기다리는 중…' }),
-                    h('div', { class: 'srv-muted', text: `127.0.0.1:${port} 에서 켜지는지 2초마다 확인하고 있어요` })));
+                    h('div', { class: 'srv-muted', text: `127.0.0.1:${port}에서 켜지는지 2초마다 확인하고 있어요` })));
         }
 
         function renderReady(alreadyServed) {
             live.dataset.state = 'ready';
-            live.replaceChildren(
+            const children = [
                 h('span', { class: 'srv-live-icon', html: ui.icon('check', { size: 16 }) }),
                 h('div', { class: 'grow' },
                     h('div', { class: 'srv-strong', text: alreadyServed ? '이미 로컬 서버로 실행 중이에요' : '서버가 켜졌어요!' }),
-                    h('div', { class: 'srv-muted', text: alreadyServed ? '아래 기능을 모두 쓸 수 있어요' : '서버 주소로 다시 열면 모든 기능을 쓸 수 있어요' }),
-                    alreadyServed ? capabilityList() : null),
-                alreadyServed ? null : h('button', { class: 'btn primary', type: 'button', html: `${ui.icon('external', { size: 14 })}<span>서버 주소로 열기</span>`, onclick: () => openServerUrl() }));
+                    h('div', { class: 'srv-muted', text: alreadyServed ? '아래 기능을 모두 쓸 수 있어요.' : '서버 주소로 다시 열면 모든 기능을 쓸 수 있어요.' }),
+                    alreadyServed ? capabilityList({ compact: true }) : null),
+            ];
+            if (!alreadyServed) children.push(h('button', { class: 'btn primary', type: 'button', html: `${ui.icon('external', { size: 14 })}<span>서버 주소로 열기</span>`, onclick: () => openServerUrl() }));
+            live.replaceChildren(...children);
             live.querySelector('.btn.primary')?.focus();
         }
 
@@ -1003,9 +1032,11 @@
                     h('span', { class: 'srv-step-no', text: '1' }),
                     h('div', { class: 'grow' },
                         h('div', null, h('code', { class: 'srv-code', text: 'server\\start.bat' }), '을 더블클릭해서 실행해요'),
-                        h('div', { class: 'srv-step-path' },
-                            h('span', { class: 'srv-path-text', text: pathText, title: pathText }),
-                            h('button', { class: 'btn ghost sm', type: 'button', html: `${ui.icon('copy', { size: 13 })}<span>경로 복사</span>`, onclick: () => copyText(pathText).catch(reportError) })))),
+                        pathText
+                            ? h('div', { class: 'srv-step-path' },
+                                h('span', { class: 'srv-path-text', text: shortPath(pathText, 58), title: pathText }),
+                                h('button', { class: 'btn ghost sm', type: 'button', html: `${ui.icon('copy', { size: 13 })}<span>경로 복사</span>`, onclick: () => copyText(pathText).catch(reportError) }))
+                            : h('div', { class: 'srv-muted', text: '앱 폴더(사진영상정리기.html이 있는 곳) 안의 server 폴더에 있어요.' }))),
                 h('li', null, h('span', { class: 'srv-step-no', text: '2' }), h('div', { class: 'grow', text: '처음 한 번은 준비하느라 1~2분 걸려요. 검은 창은 켜 둔 채로 두세요.' })),
                 h('li', null, h('span', { class: 'srv-step-no', text: '3' }), h('div', { class: 'grow', text: '서버가 켜지면 이 창이 저절로 바뀌어요.' }))),
             live,
