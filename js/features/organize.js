@@ -1164,14 +1164,7 @@
             files.length && has('organize.byChip') ? { label: '칩별로 정리…', icon: 'tag', command: 'organize.byChip' } : null,
         ].filter(Boolean);
         if (tidy.length) items.push({ label: '정리하기', icon: 'sparkles', submenu: tidy });
-        if (has('dupes.open')) {
-            const one = entries.length === 1 ? entries[0] : null;
-            const sub = [];
-            if (one && one.kind === 'file' && has('dupes.findSimilar')) sub.push({ label: one.type === 'image' ? '이 사진과 비슷한 항목 찾기' : '이 파일과 같은 항목 찾기', icon: 'search', command: 'dupes.findSimilar', args: { path: one.path } });
-            if (entries.length > 1 || dirs.length) sub.push({ label: '선택한 항목에서 중복 찾기', icon: 'layers', command: 'dupes.open', args: { scope: 'selection' } });
-            sub.push({ label: '이 폴더에서 중복 찾기…', icon: 'layers', command: 'dupes.open', args: { scope: 'folder' } });
-            items.push({ label: '중복 찾기', icon: 'layers', submenu: sub });
-        }
+        // The duplicate submenu for selected items ('중복검사') comes from dupes-tools.js (round 2)
         return items;
     }
 

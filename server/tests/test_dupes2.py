@@ -11,7 +11,7 @@ import unittest
 
 from PIL import Image
 
-from server import dupes2, ffmpeg
+from server import dupes2, ffmpeg, fsutil
 from server.errors import ApiError
 from server.tests.helpers import Client, ServerTestCase, make_image, make_video
 
@@ -289,6 +289,28 @@ class Dupes2IntegrationTests(ServerTestCase):
             self.assertError(self.api.post('/api/dupes/scan', body), status, code)
         response = self.api.request('POST', '/api/dupes/scan', body=b'{broken', headers={'Content-Type': 'application/json'})
         self.assertError(response, 400, 'EINVAL')
+
+    def test_07b_external_stat_and_media(self):
+        # The review re-verifies files on other drives right before removing them, and plays them from the server
+        target = os.path.join(self.ext_dir, 'stat-media.mp4')
+        shutil.copy2(self.base, target)
+        st = os.stat(target)
+        response = self.api.get('/api/dupes/stat', path=target)
+        self.assertEqual(response.status, 200, response.text)
+        body = response.json()
+        self.assertEqual((body['kind'], body['size']), ('file', st.st_size))
+        self.assertEqual(body['mtime'], fsutil.mtime_ms(st))
+        self.assertError(self.api.get('/api/dupes/stat', path=os.path.join(self.ext_dir, 'gone.mp4')), 404, 'ENOENT')
+        outside = os.path.join(self.tmp, 'outside.mp4')
+        self.assertError(self.api.get('/api/dupes/stat', path=outside), 403, 'EPERM')
+        response = self.api.get('/api/dupes/media', path=target)
+        self.assertEqual(response.status, 200, response.text[:200])
+        self.assertEqual(len(response.body), st.st_size)
+        ranged = self.api.request('GET', '/api/dupes/media', query={'path': target}, headers={'Range': 'bytes=0-99'})
+        self.assertEqual(ranged.status, 206)
+        self.assertEqual(len(ranged.body), 100)
+        self.assertError(self.api.get('/api/dupes/media', path=outside), 403, 'EPERM')
+        self.assertError(self.api.get('/api/dupes/media', path=os.path.join(self.ext_dir, 'gone.mp4')), 404, 'ENOENT')
 
     def test_08_request_validation(self):
         for body in [[], {'dirs': 'videos'}, {'roots': [1]}, {'kinds': []}, {'kinds': ['unknown']},

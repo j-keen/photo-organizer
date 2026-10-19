@@ -931,6 +931,15 @@
             if (expanded.has(p)) items.push({ label: '하위 폴더 모두 접기', icon: 'chevron-up', action: () => collapseSubtree(p) });
         }
         items.push({ label: '새로 고침', icon: 'refresh', command: 'nav.refreshTree', args: { path: p } });
+        // Extension point: other modules add folder actions (e.g. dupes-tools.js '중복검사')
+        for (const fn of sidebar.folderMenuItems) {
+            try {
+                const more = fn(p);
+                if (more && more.length) items.push('-', ...more);
+            } catch (e) {
+                console.error('[sidebar] folderMenuItems', e);
+            }
+        }
         if (!isRoot) items.push('-', { label: '휴지통으로 이동', icon: 'trash', danger: true, command: 'nav.trashFolder', args: { path: p }, hint: 'Del' });
         return items;
     }
@@ -1256,6 +1265,9 @@
     }
 
     const sidebar = {
+        /** fns (folderPath) => menu items, appended to the folder tree's context menu */
+        folderMenuItems: [],
+
         addSection(section) {
             const i = sections.findIndex((s) => s.id === section.id);
             if (i >= 0) sections.splice(i, 1);

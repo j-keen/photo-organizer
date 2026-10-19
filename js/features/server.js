@@ -504,6 +504,13 @@
             return request('POST', endpoint, endpoint === '/api/dupes/scan' ? { v: 2, ...body } : body);
         },
         frameUrl,
+        /** {kind, size, mtime} of a file under a picked external root; rejects with code ENOENT (404) when it's gone. */
+        stat: (path) => request('GET', '/api/dupes/stat', null, { query: { path } }),
+        /** Playable URL (Range) for a file under a picked external root — review players. */
+        mediaUrl: (path) => {
+            const active = backend();
+            return active && typeof path === 'string' ? api.url('/api/dupes/media', { path, ws: active.token }) : null;
+        },
         quarantine,
         restore,
         quarantined: async () => (await request('GET', '/api/dupes/quarantine'))?.items || [],

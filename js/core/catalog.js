@@ -20,6 +20,9 @@
     const KEEP_BACKUPS = 10;
 
     // ---------- Workspace data documents ----------
+    // A read-only window (another window owns this workspace — App.lock, core-lock.js) never writes
+    const readOnly = () => !!(App.lock && App.lock.canWrite && !App.lock.canWrite());
+
     const wsdata = {
         path(name) {
             return `${DIR}/${name}.json`;
@@ -41,10 +44,12 @@
             }
         },
         write(name, obj) {
+            if (readOnly()) return Promise.resolve(); // the read-only banner already tells the user
             return App.fs.writeJSON(wsdata.path(name), obj);
         },
         // Once per day keep a copy in backups/<name>-YYYYMMDD.json, pruning old ones.
         async backup(name, obj) {
+            if (readOnly()) return;
             const d = new Date();
             const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
             const target = `${BACKUP_DIR}/${name}-${stamp}.json`;
@@ -154,7 +159,7 @@
          * the user is only alerted when it keeps failing.
          */
         async save() {
-            if (!dirty || !App.fs.ready) return;
+            if (!dirty || !App.fs.ready || readOnly()) return; // no retries while read-only; take-over reloads from disk
             dirty = false;
             clearTimeout(retryTimer);
             App.bus.emit('catalog:saving');
@@ -205,6 +210,10 @@
         },
 
         updateMany(paths, patch, { silent = false, undoable = true, label = '정보 변경', coalesceKey = null } = {}) {
+            if (readOnly()) {
+                App.lock.nudge?.(); // refuse up front instead of changing memory that is never saved
+                return;
+            }
             const before = undoable ? snapshot(paths) : null;
             for (const p of paths) {
                 const entry = data.items[p] ? JSON.parse(JSON.stringify(data.items[p])) : {};
@@ -227,6 +236,7 @@
 
         /** Merge cached media info without marking as a user edit or emitting noisy events. */
         setMeta(p, meta) {
+            if (readOnly()) return;
             const entry = data.items[p] || {};
             entry.meta = { ...(entry.meta || {}), ...meta };
             data.items[p] = entry;

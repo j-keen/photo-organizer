@@ -899,6 +899,7 @@
         async restore(ids) {
             this._guardWrite();
             const restored = [];
+            const from = []; // original path of each restored item (same order) — a taken name makes `to` differ
             await this._updateTrashManifest(async (m) => {
                 for (const id of ids) {
                     const item = m.items.find((i) => i.id === id);
@@ -912,11 +913,12 @@
                     if (item.catalog && App.catalog) App.catalog.put(item.catalog, item.originalPath, to);
                     item.restoredTo = to;
                     restored.push(to);
+                    from.push(item.originalPath);
                 }
                 m.items = m.items.filter((i) => !ids.includes(i.id));
             });
             App.bus.emit('trash:changed');
-            if (restored.length) this.emitChange({ type: 'restore', paths: restored, dirs: restored.map((p) => P.parent(p)) });
+            if (restored.length) this.emitChange({ type: 'restore', paths: restored, from, dirs: restored.map((p) => P.parent(p)) });
             return restored;
         },
 

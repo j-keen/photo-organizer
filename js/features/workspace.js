@@ -211,6 +211,12 @@
         return cwd ? `${P.base(cwd)} — ${ws.name} — Fluid Identity` : `${ws.name} — Fluid Identity`;
     }
 
+    // Modules with their own debounced .fluid-organizer files (e.g. clips.json) register a flush here,
+    // so pending writes reach the old folder before the backend switches
+    async function flushModules() {
+        await Promise.all((workspace.flushHooks || []).map((f) => Promise.resolve().then(f).catch((e) => console.warn('[workspace] flush hook failed', e))));
+    }
+
     async function doOpen(backend, { restore = false, auto = false, reload = false, keepUndo = false } = {}, gen) {
         if (auto && gen !== openGen) return false; // something newer was requested: let it win
         if (reload && App.fs.backend !== backend) return false; // the workspace changed meanwhile
@@ -218,7 +224,10 @@
         const history = reload ? { back: [...App.nav.back], fwd: [...App.nav.fwd] } : null;
         opening = true;
         try {
-            if (App.fs.ready) await App.catalog.flush();
+            if (App.fs.ready) {
+                await App.catalog.flush();
+                await flushModules();
+            }
             App.fs.use(backend);
             let meta = await App.fs.readJSON(`${App.fs.DATA_DIR}/workspace.json`, null).catch(() => null);
             if (!meta || !meta.id) {
@@ -310,6 +319,7 @@
 
     const workspace = {
         supported: 'showDirectoryPicker' in window,
+        flushHooks: [], // () => Promise — awaited before a workspace switch/close (see flushModules)
 
         async pick() {
             if (!workspace.supported) {
@@ -361,6 +371,7 @@
             const run = async () => {
                 saveViewState();
                 await App.catalog.flush();
+                await flushModules();
                 App.fs.use(null);
                 App.index.reset();
                 App.catalog.reset();

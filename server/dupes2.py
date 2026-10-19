@@ -17,7 +17,7 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from . import config, deps, dupes, errors, external, ffmpeg, fsutil, mediacache, paths, routes_workspace
+from . import config, deps, dupes, errors, external, ffmpeg, fsutil, http_utils, mediacache, paths, routes_workspace
 from .errors import ApiError
 from .jobs import JobManager
 from .workspaces import Workspace
@@ -765,6 +765,30 @@ def frame_route(request: Request, path: str, t: float = 0, w: int = 160, v: str 
     except _READ_ERRORS as exc:
         code = exc.code if isinstance(exc, ApiError) else 'ENOENT' if isinstance(exc, FileNotFoundError) else 'EINVAL'
         return Response(status_code=204, headers={'X-FI-Error': code})
+
+
+@router.get('/api/dupes/stat')
+def stat_route(request: Request, path: str, ws: Workspace = Depends(deps.workspace)):
+    """Size/mtime of a file under a picked external root — the review re-verifies the keeper right before removing."""
+    absolute, _ = request.app.state.external.resolve_file(path)
+    try:
+        st = os.stat(absolute)
+    except FileNotFoundError:
+        raise ApiError('ENOENT', '파일을 찾을 수 없어요')
+    except OSError as exc:
+        raise ApiError('ESERVER', f'파일 정보를 읽지 못했어요: {exc.strerror or exc}')
+    if os.path.isdir(absolute):
+        return {'kind': 'dir', 'size': 0, 'mtime': fsutil.mtime_ms(st)}
+    return {'kind': 'file', 'size': st.st_size, 'mtime': fsutil.mtime_ms(st)}
+
+
+@router.get('/api/dupes/media')
+def media_route(request: Request, path: str, ws: Workspace = Depends(deps.workspace)):
+    """Play a file under a picked external root in the review (Range/ETag like /api/fs/file)."""
+    absolute, _ = request.app.state.external.resolve_file(path)
+    if not os.path.isfile(absolute):
+        raise ApiError('ENOENT', '파일을 찾을 수 없어요')
+    return http_utils.file_response(request, absolute, cache_control='no-cache', display=os.path.basename(absolute))
 
 
 @router.get('/api/dupes/roots')

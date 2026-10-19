@@ -240,7 +240,12 @@
             for (const e of byPath.values()) {
                 const meta = App.catalog.peek(e.path);
                 const chips = meta?.chips?.length ? meta.chips.map(chipName).join(' ') : '';
-                const hay = (e.path + ' ' + (meta?.memo || '') + ' ' + (meta?.legacyTags || []).join(' ') + ' ' + chips).toLowerCase();
+                // Notes inside a video: edited pieces (memo + chips, viewer meta.edit) and markers (title + memo)
+                let notes = '';
+                const pieces = meta?.meta?.edit?.pieces;
+                if (pieces) for (const x of Object.values(pieces)) notes += ` ${x.memo || ''} ${(x.chips || []).map(chipName).join(' ')}`;
+                if (meta?.markers?.length) for (const m of meta.markers) notes += ` ${m.title || ''} ${m.memo || ''}`;
+                const hay = (e.path + ' ' + (meta?.memo || '') + ' ' + (meta?.legacyTags || []).join(' ') + ' ' + chips + notes).toLowerCase();
                 if (words.every((w) => hay.includes(w))) {
                     out.push(e);
                     if (out.length >= limit) break;

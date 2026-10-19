@@ -227,7 +227,12 @@
         saveEl.hidden = !App.fs.ready;
         saveEl.className = `sb-item sb-btn sb-pill sb-save is-${save.state}`;
         saveEl.innerHTML = '';
-        if (save.state === 'saving') {
+        if (App.lock && App.lock.canWrite && !App.lock.canWrite()) {
+            // Another window owns this workspace (core-lock.js): nothing here is saved, so never claim 저장됨
+            saveEl.classList.add('is-readonly');
+            saveEl.append(iconSpan('lock', 12), h('span', { class: 'sb-text', text: '보기 전용' }));
+            saveEl.dataset.tip = '다른 창에서 이 작업 폴더를 쓰고 있어서 이 창은 보기만 할 수 있어요';
+        } else if (save.state === 'saving') {
             saveEl.append(h('span', { class: 'spinner sb-spinner' }), h('span', { class: 'sb-text', text: '저장 중…' }));
             saveEl.dataset.tip = '변경 사항을 작업 폴더에 저장하고 있어요';
         } else if (save.state === 'error') {
@@ -617,6 +622,7 @@
                 save.mode = 'events';
                 setSave('error', p && p.error && (p.error.message || String(p.error)));
             });
+            App.bus.on('lock:changed', () => invalidate('save'));
             App.bus.on('catalog:changed', () => {
                 if (!App.fs.ready) return;
                 if (save.state !== 'saving') setSave('saving');

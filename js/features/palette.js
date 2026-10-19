@@ -629,7 +629,7 @@
 
     // ----- Commands -----
     // Good first things to try, shown when the palette opens empty (until the user's own history takes over)
-    const SUGGESTED = ['workspace.reopen', 'workspace.open', 'search.focus', 'folder.new', 'edit.history', 'organize.byDate', 'dupes.open', 'trash.open', 'backup.now', 'view.toggleTheme', 'settings.open', 'help.shortcuts'];
+    const SUGGESTED = ['workspace.reopen', 'workspace.open', 'search.focus', 'folder.new', 'edit.history', 'organize.byDate', 'dupes.open', 'dupes.scanHere', 'trash.open', 'backup.now', 'view.toggleTheme', 'settings.open', 'help.shortcuts'];
 
     function isPaletteCommand(c) {
         if (!c.title || c.hidden || c.palette === false) return false;

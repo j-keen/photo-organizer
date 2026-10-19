@@ -146,7 +146,7 @@
 
     /**
      * toast(message, { type: 'info'|'success'|'error'|'warning'|'loading', duration (ms, 0 = sticky),
-     *                  action: { label, run }, id (reuse/update an existing toast) })
+     *                  action: { label, run }, actions: [{ label, run }], id (reuse/update an existing toast) })
      */
     const MAX_TOASTS = 3;
 
@@ -187,13 +187,13 @@
             el.innerHTML = '';
             el.append(t === 'loading' ? h('span', { class: 'spinner' }) : h('span', { class: `toast-icon ${t}`, html: icon(TOAST_ICONS[t] || 'info') }));
             el.append(h('span', { class: 'toast-msg', text: msg }));
-            if (o.action) {
+            for (const a of [...(o.action ? [o.action] : []), ...(o.actions || [])]) {
                 el.append(h('button', {
                     class: 'toast-action',
-                    text: o.action.label,
+                    text: a.label,
                     onclick: () => {
                         handle.close();
-                        o.action.run();
+                        a.run();
                     },
                 }));
             }

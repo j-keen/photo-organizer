@@ -1101,6 +1101,19 @@
             const ent = entryOf(m);
             if (m.root) {
                 const sd = App.server?.dupes;
+                const media = typeof sd?.mediaUrl === 'function' && App.util.browserCanDecode(m.name || baseOf(m.path)) ? sd.mediaUrl(m.path) : null;
+                if (media && m.type === 'video') {
+                    // Files on another drive play straight from the local server (Range requests)
+                    const v = h('video', { muted: true, playsinline: true, preload: 'metadata', src: media });
+                    v.muted = true;
+                    box.append(v);
+                    players.push({ path: m.path, video: v, dur: m.dur || 0, member: m });
+                    return;
+                }
+                if (media && m.type === 'image') {
+                    box.append(h('img', { src: media, alt: m.name || '', draggable: 'false', decoding: 'async' }));
+                    return;
+                }
                 if (sd && typeof sd.frameUrl === 'function') box.append(h('img', { src: sd.frameUrl(m.path, (m.dur || 0) * 0.5), alt: '', draggable: 'false' }));
                 else box.append(h('div', { class: 'dup-mmedia-ph', html: icon('hard-drive', 22) }));
                 box.append(h('span', { class: 'dup-mmedia-note', text: '다른 드라이브 파일은 장면만 볼 수 있어요' }));

@@ -1353,7 +1353,7 @@
             if (!auto && !ctx.cancelled && !silent) {
                 ui.toast(ctx.made ? `썸네일 ${formatCount(ctx.made)}개를 미리 만들었어요` : '썸네일 정보를 모두 갱신했어요', { type: 'success' });
             }
-            if (!ctx.cancelled && sortNeedsRefresh()) App.view.recompute('sort');
+            if (!ctx.cancelled && sortNeedsRefresh()) App.view.recompute('sort', { background: true });
             return { total: ctx.total, made: ctx.made, failed: ctx.failed, cancelled: ctx.cancelled };
         } catch (e) {
             console.warn('[thumbs] pre-generation stopped', e);
@@ -1517,7 +1517,7 @@
         }
         // Same place still (a reload replaces the source object, so compare what it points at)
         const cur = App.view.source;
-        if (App.view.sort.key === key && cur.type === source.type && cur.path === source.path && backend === App.fs.backend) App.view.recompute('sort');
+        if (App.view.sort.key === key && cur.type === source.type && cur.path === source.path && backend === App.fs.backend) App.view.recompute('sort', { background: true });
         // Files that appeared meanwhile get their turn
         if (App.view.visible.some((e) => needsSortInfo(e, App.view.sort.key))) fillForSort();
     }
