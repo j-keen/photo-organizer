@@ -646,12 +646,12 @@
         const cols = h('div', { class: columns === 2 ? 'kb-cols' : 'kb-cols one' });
         let shown = 0;
         for (const [group, rows] of collectShortcuts()) {
-            const groupHit = q && App.palette ? App.palette.match(q, group) : null;
+            const groupHit = q ? App.util.matchKo(q, group) : null;
             const items = [];
             for (const row of rows) {
                 let ranges = null;
                 if (q) {
-                    const m = App.palette ? App.palette.match(q, row.title) : (row.title.includes(q) ? { ranges: [] } : null);
+                    const m = App.util.matchKo(q, row.title);
                     const keyHit = comboText(row).toLowerCase().replace(/\s+/g, '').includes(qKeys);
                     if (!m && !keyHit && !groupHit) continue;
                     ranges = m ? m.ranges : null;

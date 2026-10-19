@@ -1,34 +1,6 @@
 /* Responsive panels (folding + overlays), focus mode and the shell's status-bar items — shell team */
 
-/* Pin every pane to its own grid column. Hidden panes are display:none, and without explicit placement the
-   remaining items would auto-flow into the collapsed 0px columns (the gallery would vanish). */
-#main > #sidebar,
-#main > #sidebar-resizer,
-#main > #content,
-#main > #inspector-resizer,
-#main > #inspector {
-    grid-row: 1;
-}
-
-#main > #sidebar {
-    grid-column: 1;
-}
-
-#main > #sidebar-resizer {
-    grid-column: 2;
-}
-
-#main > #content {
-    grid-column: 3;
-}
-
-#main > #inspector-resizer {
-    grid-column: 4;
-}
-
-#main > #inspector {
-    grid-column: 5;
-}
+/* (Explicit grid columns for the panes now live in base.css.) */
 
 /* Panels shown as overlays on narrow windows: the grid column stays collapsed, the panel floats */
 .app.no-sidebar.sidebar-overlay #sidebar,

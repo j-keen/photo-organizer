@@ -5,26 +5,10 @@
  *   App.shell.stamp(date)        'YYYYMMDD-HHMMSS' (file-name friendly)
  *   App.shell.isAutomated()      true under Playwright/WebDriver — first-run tips stay out of the way
  *   App.shell.passUndoKeys(box)  Ctrl+Z / Ctrl+Y keep working inside a shell dialog (outside text fields)
- * Extra icons used by the shell are added to App.ui.ICONS (only when the name is still free).
+ * (The shell's icons — monitor, hard-drive, history, ... — live in core ICONS.)
  */
 (() => {
     'use strict';
-
-    const EXTRA_ICONS = {
-        monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
-        'hard-drive': '<path d="M22 12H2M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/>',
-        database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>',
-        'shield-check': '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>',
-        'mouse-pointer': '<path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="m13 13 6 6"/>',
-        'corner-down-left': '<path d="M9 10 4 15l5 5"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/>',
-        lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
-        history: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
-        'cloud-off': '<path d="m2 2 20 20"/><path d="M5.78 5.78A7 7 0 0 0 9 19h8.5a4.5 4.5 0 0 0 1.31-.2M21.53 16.5A4.5 4.5 0 0 0 17.5 10h-1.79A7 7 0 0 0 9.34 5.1"/>',
-        'panel-left-close': '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M16 15l-3-3 3-3"/>',
-    };
-    for (const [name, body] of Object.entries(EXTRA_ICONS)) {
-        if (App.ui.ICONS && !App.ui.ICONS[name]) App.ui.ICONS[name] = body;
-    }
 
     function relTime(ms, now = Date.now()) {
         if (!ms) return '';
