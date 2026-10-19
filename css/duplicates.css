@@ -1,1 +1,664 @@
 /* Duplicate finder */
+
+/* ---------- Setup ---------- */
+.dup-setup {
+    flex: 1;
+    overflow-y: auto;
+    width: 100%;
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 28px 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+}
+
+.dup-step {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.dup-step-title {
+    font-size: var(--fs-md);
+    font-weight: 700;
+    color: var(--text);
+}
+
+.dup-modes {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.dup-mode {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 16px;
+    text-align: left;
+    border-radius: var(--r-lg);
+    border: 1px solid var(--line-2);
+    background: var(--bg-2);
+    color: var(--text);
+    cursor: pointer;
+    transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.dup-mode:hover {
+    border-color: var(--line-3);
+}
+
+.dup-mode:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+.dup-mode.on {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.dup-mode-ico {
+    width: 38px;
+    height: 38px;
+    border-radius: 11px;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    background: var(--bg-3);
+    color: var(--text-2);
+    transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.dup-mode.on .dup-mode-ico {
+    background: var(--accent);
+    color: var(--on-accent);
+}
+
+.dup-mode-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.dup-mode-title {
+    font-size: var(--fs-md);
+    font-weight: 700;
+}
+
+.dup-mode-desc {
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+    line-height: 1.5;
+}
+
+.dup-mode-radio {
+    width: 18px;
+    height: 18px;
+    margin-top: 2px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line-3);
+    flex-shrink: 0;
+    transition: border var(--dur) var(--ease);
+}
+
+.dup-mode.on .dup-mode-radio {
+    border: 5px solid var(--accent);
+    background: var(--bg-1);
+}
+
+.dup-threshold {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border-radius: var(--r-lg);
+    border: 1px solid var(--line);
+    background: var(--bg-2);
+    font-size: var(--fs-sm);
+}
+
+.dup-range {
+    flex: 1;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.dup-range-label {
+    min-width: 120px;
+    text-align: right;
+    font-weight: 600;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+
+.dup-server {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-radius: var(--r-lg);
+    border: 1px dashed var(--line-2);
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+}
+
+.dup-server.on {
+    border-style: solid;
+    border-color: transparent;
+    background: var(--success-soft);
+    color: var(--text);
+}
+
+.dup-server-ico {
+    display: inline-flex;
+    color: var(--text-4);
+}
+
+.dup-tips {
+    list-style: none;
+    margin: 0;
+    padding: 16px 0 0;
+    border-top: 1px solid var(--line);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 24px;
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+}
+
+.dup-tips li {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    line-height: 1.5;
+}
+
+.dup-tips li > span:first-child {
+    display: inline-flex;
+    margin-top: 2px;
+    color: var(--accent);
+}
+
+.dup-like {
+    color: var(--text-3);
+}
+
+.dup-server.on .dup-server-ico {
+    color: var(--success);
+}
+
+/* ---------- Scanning ---------- */
+.dup-scan {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 40px;
+    text-align: center;
+}
+
+.dup-scan-ico {
+    width: 68px;
+    height: 68px;
+    border-radius: 22px;
+    display: grid;
+    place-items: center;
+    background: var(--accent-soft);
+    color: var(--accent-2);
+    animation: dup-pulse 1.6s var(--ease) infinite;
+    margin-bottom: 6px;
+}
+
+@keyframes dup-pulse {
+    50% {
+        transform: scale(1.06);
+        box-shadow: 0 0 0 10px var(--accent-soft);
+    }
+}
+
+.dup-scan-phase {
+    font-size: var(--fs-lg);
+    font-weight: 700;
+    color: var(--text);
+}
+
+.progress.dup-scan-bar {
+    width: min(440px, 80%);
+    height: 6px;
+}
+
+.dup-scan-bar.indeterminate > i {
+    width: 32% !important;
+    animation: dup-indet 1.3s var(--ease) infinite;
+}
+
+@keyframes dup-indet {
+    from {
+        left: -32%;
+    }
+
+    to {
+        left: 100%;
+    }
+}
+
+.dup-scan-count {
+    min-height: 18px;
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.dup-scan-hint {
+    font-size: var(--fs-xs);
+    color: var(--text-4);
+}
+
+/* ---------- Results ---------- */
+.dup-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--line);
+}
+
+.dup-summary {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+}
+
+.dup-sum-main {
+    font-size: var(--fs-md);
+    font-weight: 700;
+    color: var(--text);
+    white-space: nowrap;
+}
+
+.dup-sum-sub {
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+    white-space: nowrap;
+}
+
+.dup-tool-label {
+    font-size: var(--fs-xs);
+    color: var(--text-4);
+    margin-left: 4px;
+}
+
+.select.dup-strategy {
+    max-width: 230px;
+}
+
+.dup-list {
+    background: var(--bg);
+}
+
+.dup-group-wrap {
+    padding: 10px 16px 2px;
+}
+
+.dup-group {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--r-lg);
+    border: 1px solid var(--line);
+    background: var(--bg-1);
+    overflow: hidden;
+    transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.dup-group.focused {
+    border-color: var(--accent-line);
+    box-shadow: 0 0 0 1px var(--accent-line);
+}
+
+.dup-ghead {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 8px 7px 14px;
+    border-bottom: 1px solid var(--line);
+}
+
+.dup-kind {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: var(--r-full);
+    font-size: 10.5px;
+    font-weight: 700;
+}
+
+.dup-kind.exact {
+    background: var(--info-soft);
+    color: var(--info);
+}
+
+.dup-kind.similar {
+    background: var(--warning-soft);
+    color: var(--warning);
+}
+
+.dup-kind.hidden {
+    background: var(--bg-3);
+    color: var(--text-3);
+}
+
+.dup-group.is-hidden {
+    border-style: dashed;
+}
+
+.dup-group.is-hidden .dup-cards {
+    opacity: 0.7;
+}
+
+.dup-empty .btn {
+    margin-top: 6px;
+}
+
+.dup-gtitle {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.dup-gsave {
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+}
+
+.dup-cards {
+    flex: 1;
+    display: flex;
+    gap: 10px;
+    padding: 10px 14px 12px;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+.dup-card {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--r);
+    border: 1px solid var(--line-2);
+    background: var(--bg-2);
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.dup-card:hover {
+    border-color: var(--line-3);
+}
+
+.dup-card.keep {
+    border-color: var(--success);
+    box-shadow: 0 0 0 1px var(--success);
+}
+
+.dup-card.focused {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.dup-card-media {
+    position: relative;
+    height: 124px;
+}
+
+.org-thumb.dup-thumb {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+}
+
+.dup-card.remove .dup-thumb::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--danger-soft);
+    pointer-events: none;
+}
+
+.dup-card.remove .dup-thumb img {
+    filter: saturate(0.7);
+}
+
+.dup-flag {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    height: 20px;
+    padding: 0 7px;
+    border-radius: var(--r-full);
+    font-size: 10.5px;
+    font-weight: 700;
+    pointer-events: none;
+}
+
+.dup-flag .ico {
+    stroke-width: 2.6;
+}
+
+.dup-flag.keep {
+    background: var(--success);
+    color: #03140d;
+}
+
+.dup-flag.rm {
+    background: var(--danger);
+    color: #fff;
+}
+
+.dup-flag.skip {
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    backdrop-filter: blur(6px);
+}
+
+.dup-dur {
+    position: absolute;
+    right: 6px;
+    bottom: 6px;
+    z-index: 1;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: var(--r-full);
+    background: rgba(0, 0, 0, 0.62);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+}
+
+.dup-keepbtn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 1;
+    height: 22px;
+    padding: 0 8px;
+    border: none;
+    border-radius: var(--r-full);
+    background: rgba(0, 0, 0, 0.66);
+    color: #fff;
+    font-size: 10.5px;
+    font-weight: 600;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.dup-card:hover .dup-keepbtn,
+.dup-card.focused .dup-keepbtn {
+    opacity: 1;
+}
+
+.dup-keepbtn:hover {
+    background: var(--success);
+    color: #03140d;
+}
+
+.dup-card-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 7px 9px 8px;
+    font-size: var(--fs-xs);
+    color: var(--text-2);
+}
+
+.dup-card-name {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--text);
+}
+
+.dup-card-line {
+    display: flex;
+    gap: 5px;
+    white-space: nowrap;
+}
+
+.dup-card-line > span + span::before {
+    content: '·';
+    margin-right: 5px;
+    color: var(--text-4);
+}
+
+.dup-better {
+    color: var(--success);
+    font-weight: 600;
+}
+
+.dup-card-path {
+    color: var(--text-4);
+}
+
+/* ---------- Compare overlay ---------- */
+.dup-compare {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    animation: fade-in var(--dur) var(--ease);
+}
+
+.dup-cmp-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 14px 12px 20px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-1);
+}
+
+.dup-cmp-title {
+    font-size: var(--fs-md);
+    font-weight: 700;
+    color: var(--text);
+}
+
+.dup-cmp-panes {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--line);
+}
+
+.dup-cmp-pane {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-1);
+}
+
+.dup-cmp-pane.keep .dup-cmp-media {
+    box-shadow: inset 0 0 0 2px var(--success);
+}
+
+.dup-cmp-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    min-height: 48px;
+}
+
+.dup-cmp-head .dup-flag {
+    position: static;
+}
+
+.dup-cmp-name {
+    flex: 1;
+    min-width: 0;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.dup-cmp-media {
+    flex: 1;
+    min-height: 0;
+    margin: 0 14px;
+    border-radius: var(--r);
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+    background: var(--bg-3);
+}
+
+.dup-cmp-media img,
+.dup-cmp-media video {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+
+.dup-cmp-info {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 16px;
+    padding: 12px 14px 14px;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+}
+
+.dup-cmp-info > div {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.dup-cmp-info .k {
+    width: 74px;
+    flex-shrink: 0;
+    color: var(--text-4);
+}
