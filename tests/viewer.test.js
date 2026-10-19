@@ -510,21 +510,26 @@ module.exports = [
             await mark(2.6, 'o');
             await page.keyboard.press('Enter');
             const segs = () => page.evaluate(() => App.videoEditor.segments.map((s) => [Math.round(s.start * 10) / 10, Math.round(s.end * 10) / 10]));
-            assert.deepEqual(await segs(), [[0.4, 1.4], [2, 2.6]]);
+            // Wait for the editor to apply the change (clicks/drags are handled asynchronously under load)
+            const expectSegs = async (want) => {
+                await page.waitForFunction((w) => JSON.stringify(App.videoEditor.segments.map((s) => [Math.round(s.start * 10) / 10, Math.round(s.end * 10) / 10])) === JSON.stringify(w), want, { timeout: 5000 }).catch(() => {});
+                assert.deepEqual(await segs(), want);
+            };
+            await expectSegs([[0.4, 1.4], [2, 2.6]]);
             assert.equal(await page.locator('.ve-seg').count(), 2);
             assert.ok(await page.locator('.vw-range.is-segment, .vw-range.is-active').count() >= 2, 'segments are drawn on the seek bar');
             await page.focus('.ve-seg:nth-child(2)');
             await page.keyboard.press('Alt+ArrowUp');
-            assert.deepEqual(await segs(), [[2, 2.6], [0.4, 1.4]]);
+            await expectSegs([[2, 2.6], [0.4, 1.4]]);
             // drag the grip back down
             const g = await page.locator('.ve-seg:nth-child(1) .ve-grip').boundingBox();
             await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2);
             await page.mouse.down();
             await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2 + 50, { steps: 5 });
             await page.mouse.up();
-            assert.deepEqual(await segs(), [[0.4, 1.4], [2, 2.6]]);
+            await expectSegs([[0.4, 1.4], [2, 2.6]]);
             await page.click('.ve-seg:nth-child(2) button[aria-label="목록에서 빼기"]');
-            assert.deepEqual(await segs(), [[0.4, 1.4]]);
+            await expectSegs([[0.4, 1.4]]);
             await page.click('.toast-action:has-text("되돌리기")');
             assert.equal((await segs()).length, 2);
             // Shift+I jumps to the in point, Alt+X clears marks
