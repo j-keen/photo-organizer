@@ -332,7 +332,7 @@ module.exports = [
 
                 // Inspector: codec info only the server knows
                 await page.locator('.card[data-path="c.avi"]').click();
-                await page.waitForFunction(() => /mpeg4/.test(document.querySelector('.insp-server-media')?.textContent || ''));
+                await page.waitForFunction(() => /mpeg4/.test(document.querySelector('.insp-sec-server-media')?.textContent || ''));
 
                 // Viewer: an AVI plays through the fragmented-MP4 stream
                 await page.keyboard.press('Enter');

@@ -195,7 +195,8 @@ Whole-workspace flat list for search/smart views: `items`, `folders`, `get(p)`, 
   Drag data type for internal drags: `application/x-fi-paths` (JSON array of paths).
 - `App.thumbs.get(entry, {size})` → url|null, `peek`, `canThumb`, `prioritize(paths)`, `clearCache()`.
 - `App.inspector.addSection({id, title, order, render(body, ctx), when(ctx)})`, `refresh()`.
-  ctx = `{entries, primary, folder}`. Built-ins: `preview` (0), `info` (10).
+  ctx = `{entries, primary, folder, files, single}`. Each section renders into `<section class="insp-section insp-sec-<id>">`.
+  Built-ins (chips team): preview 0, quick 5, chips 20, info 90, memo 100 (docked bottom).
 - `App.sidebar.addSection({id, title, order, render(body)})`; `App.tree.reveal(path)`, `refresh(dir)`.
 - `App.topbar.addViewbarItem(() => Element)`, `clearSearch()`, `setTypeFilter('all'|'image'|'video')`.
 - `App.statusbar.addItem(id, el, {side})`.
