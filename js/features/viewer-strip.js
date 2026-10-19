@@ -536,8 +536,10 @@
         icon: 'info',
         scope: 'viewer',
         keys: ['I'],
-        when: () => open() && !V.isPanelOpen('editor'),
-        run: () => {
+        when: open,
+        run: (a) => {
+            // While the video editor is open, the I key marks the in point (NLE convention) — one key, one command
+            if (a?.event && V.isPanelOpen('editor') && App.commands.isEnabled('video.markIn')) return App.commands.run('video.markIn');
             App.settings.set('viewer.info', !infoOn());
             ensureInfo();
             renderInfo();
@@ -545,6 +547,7 @@
         },
     });
     App.commands.register({ id: 'viewer.slideshow', title: '슬라이드쇼 시작/끝내기', group: '보기', icon: 'vw-slideshow', scope: 'viewer', keys: ['S'], when: open, run: () => slideshow.toggle() });
-    App.commands.register({ id: 'viewer.slideshowShorter', title: '슬라이드쇼 더 빨리 넘기기', group: '보기', icon: 'minus', scope: 'viewer', keys: ['-'], when: () => slideshow.running, run: () => slideshow.nudge(-1) });
-    App.commands.register({ id: 'viewer.slideshowLonger', title: '슬라이드쇼 더 천천히 넘기기', group: '보기', icon: 'plus', scope: 'viewer', keys: ['=', '+'], when: () => slideshow.running, run: () => slideshow.nudge(1) });
+    // (- / = during a slideshow run viewer.zoomOut / viewer.zoomIn, which change the interval while it runs)
+    App.commands.register({ id: 'viewer.slideshowShorter', title: '슬라이드쇼 더 빨리 넘기기', group: '보기', icon: 'minus', scope: 'viewer', when: () => slideshow.running, run: () => slideshow.nudge(-1) });
+    App.commands.register({ id: 'viewer.slideshowLonger', title: '슬라이드쇼 더 천천히 넘기기', group: '보기', icon: 'plus', scope: 'viewer', when: () => slideshow.running, run: () => slideshow.nudge(1) });
 })();

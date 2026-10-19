@@ -1533,8 +1533,9 @@
     const hasPlayer = () => V.isOpen && V.kind === 'video' && !!V.player && !V.player.failed;
     const reg = (cmd) => App.commands.register({ group: '영상', scope: 'viewer', when: hasPlayer, ...cmd });
     reg({ id: 'video.playPause', title: '재생/일시정지', icon: 'play', keys: ['K'], run: () => V.player.toggle() });
-    reg({ id: 'video.seekBack', title: '뒤로 건너뛰기', icon: 'vw-seek-back', keys: ['ArrowLeft'], run: () => V.player.seekStep(-1) });
-    reg({ id: 'video.seekForward', title: '앞으로 건너뛰기', icon: 'vw-seek-fwd', keys: ['ArrowRight'], run: () => V.player.seekStep(1) });
+    // ←/→ reach these through viewer.prev / viewer.next (they seek while a video plays, change file for photos)
+    reg({ id: 'video.seekBack', title: '뒤로 건너뛰기', icon: 'vw-seek-back', run: () => V.player.seekStep(-1) });
+    reg({ id: 'video.seekForward', title: '앞으로 건너뛰기', icon: 'vw-seek-fwd', run: () => V.player.seekStep(1) });
     reg({ id: 'video.frameBack', title: '이전 프레임', icon: 'vw-frame-prev', keys: [','], run: () => V.player.frameStep(-1) });
     reg({ id: 'video.frameForward', title: '다음 프레임', icon: 'vw-frame-next', keys: ['.'], run: () => V.player.frameStep(1) });
     reg({ id: 'video.slower', title: '느리게 재생', icon: 'vw-gauge', keys: ['['], run: () => V.player.nudgeRate(-1) });

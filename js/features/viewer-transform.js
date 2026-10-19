@@ -497,28 +497,11 @@
 
     // ---------- Commands ----------
     const zoomable = () => V.isOpen && !!V.view && !!V.view.nat && !V.slideshow?.running;
-    const zoomIn = App.commands.register({ id: 'viewer.zoomIn', title: '확대', group: '보기', icon: 'zoom-in', scope: 'viewer', keys: ['=', '+'], when: zoomable, run: () => V.view.zoomStep(1) });
-    App.commands.register({ id: 'viewer.zoomOut', title: '축소', group: '보기', icon: 'zoom-out', scope: 'viewer', keys: ['-'], when: zoomable, run: () => V.view.zoomStep(-1) });
+    // During a slideshow the same keys change the interval (one command per key, no clash)
+    const zoomOrInterval = () => zoomable() || !!V.slideshow?.running;
+    App.commands.register({ id: 'viewer.zoomIn', title: '확대', group: '보기', icon: 'zoom-in', scope: 'viewer', keys: ['=', '+'], when: zoomOrInterval, run: () => (V.slideshow?.running ? V.slideshow.nudge(1) : V.view.zoomStep(1)) });
+    App.commands.register({ id: 'viewer.zoomOut', title: '축소', group: '보기', icon: 'zoom-out', scope: 'viewer', keys: ['-'], when: zoomOrInterval, run: () => (V.slideshow?.running ? V.slideshow.nudge(-1) : V.view.zoomStep(-1)) });
     App.commands.register({ id: 'viewer.zoomFit', title: '화면에 맞춤', group: '보기', icon: 'vw-fit', scope: 'viewer', keys: ['0'], when: zoomable, run: () => V.view.fitToScreen(true) });
     App.commands.register({ id: 'viewer.zoom100', title: '실제 크기 (100%)', group: '보기', icon: 'zoom-in', scope: 'viewer', keys: ['Z'], when: zoomable, run: () => V.view.zoom100() });
 
-    // The core key parser can't register a bare "+" yet (normalizeCombo splits on '+'; see integration request).
-    // Until it can, route "+" (Shift+= / numpad +) to whichever viewer command wants it.
-    const PLUS_COMMANDS = ['viewer.zoomIn', 'viewer.slideshowLonger'];
-    if (zoomIn && Array.isArray(zoomIn.keys) && !zoomIn.keys.includes('+')) {
-        App.bus.on('app:ready', () => {
-            for (const id of PLUS_COMMANDS) {
-                const c = App.commands.get(id);
-                if (c) c.keys = c.keys.filter(Boolean);
-            }
-        });
-        document.addEventListener('keydown', (e) => {
-            if (e.defaultPrevented || e.isComposing || e.key !== '+' || e.ctrlKey || e.metaKey || e.altKey) return;
-            if (App.layers.top() !== 'viewer' || App.util.isTypingTarget(e.target)) return;
-            const id = PLUS_COMMANDS.find((c) => App.commands.get(c) && App.commands.isEnabled(c));
-            if (!id) return;
-            e.preventDefault();
-            App.commands.run(id);
-        });
-    }
 })();

@@ -496,40 +496,14 @@
         return s;
     }
 
-    // Keep a copy of the original in the app trash (restorable as "<name> (회전 전 원본).<ext>").
+    // Keep a copy of the original in the app trash (restorable as "<name> (회전 전 원본).<ext>"). Returns { id }.
     async function backupToTrash(entry, bytes, type) {
-        const fsx = App.fs;
         const stem = P.stem(entry.name);
         const ext = P.ext(entry.name);
         const name = `${stem} (회전 전 원본)${ext ? '.' + ext : ''}`;
         const data = new Blob([bytes], { type: type || 'application/octet-stream' });
-        if (typeof fsx.trashCopy === 'function') return fsx.trashCopy(entry.path, { name, data }); // future public API
-        const batchDir = P.join(fsx.TRASH_DIR, `b${Date.now().toString(36)}r`);
-        const trashPath = P.join(batchDir, name);
-        await fsx.writeRaw(trashPath, data);
-        const peek = App.catalog.peek(entry.path);
-        const item = {
-            id: App.util.uid('t'),
-            name,
-            kind: 'file',
-            size: bytes.length,
-            originalPath: entry.path,
-            trashPath,
-            deletedAt: Date.now(),
-            catalog: peek ? { '': JSON.parse(JSON.stringify(peek)) } : null,
-            reason: 'rotate-backup',
-        };
-        if (typeof fsx._updateTrashManifest === 'function') {
-            await fsx._updateTrashManifest((m) => {
-                m.items.push(item);
-            });
-        } else {
-            const m = await fsx.readTrashManifest();
-            m.items.push(item);
-            await fsx.writeJSON(P.join(fsx.TRASH_DIR, 'manifest.json'), m);
-        }
-        App.bus.emit('trash:changed');
-        return item;
+        const id = await App.fs.trashCopy(entry.path, { name, data, reason: 'rotate-backup' });
+        return { id };
     }
 
     // Catalog side of "apply": the view orientation becomes identity (or comes back on undo); size swaps for 90°/270°.

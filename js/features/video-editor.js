@@ -796,7 +796,8 @@
         when: () => V.isOpen && V.kind === 'video',
         run: () => V.togglePanel('editor'),
     });
-    reg({ id: 'video.markIn', title: '시작점 찍기', icon: 'vw-in-point', keys: ['I'], run: () => editor.markIn() });
+    // I is routed here by viewer.info while the editor is open (see viewer-strip.js)
+    reg({ id: 'video.markIn', title: '시작점 찍기', icon: 'vw-in-point', run: () => editor.markIn() });
     reg({ id: 'video.markOut', title: '끝점 찍기', icon: 'vw-out-point', keys: ['O'], run: () => editor.markOut() });
     reg({ id: 'video.gotoIn', title: '시작점으로 이동', icon: 'vw-in-point', keys: ['Shift+I'], run: () => editor.gotoMark('in') });
     reg({ id: 'video.gotoOut', title: '끝점으로 이동', icon: 'vw-out-point', keys: ['Shift+O'], run: () => editor.gotoMark('out') });
