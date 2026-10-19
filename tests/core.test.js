@@ -218,6 +218,22 @@ module.exports = [
         },
     },
     {
+        name: 'toasts never pile up: same message updates in place, at most 3 on screen',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: SEED });
+            const counts = await page.evaluate(async () => {
+                document.querySelectorAll('#toasts .toast').forEach((t) => t.remove());
+                for (let i = 0; i < 5; i++) App.ui.toast('+5초', { duration: 4000 });
+                const same = document.querySelectorAll('#toasts .toast:not(.leaving)').length;
+                for (let i = 0; i < 6; i++) App.ui.toast(`메시지 ${i}`, { duration: 4000 });
+                await new Promise((r) => setTimeout(r, 250));
+                return { same, max: document.querySelectorAll('#toasts .toast').length };
+            });
+            assert.equal(counts.same, 1);
+            assert.equal(counts.max, 3);
+        },
+    },
+    {
         name: 'nested dialogs: Esc closes only the top one',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: SEED });

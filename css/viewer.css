@@ -131,7 +131,7 @@
     gap: 6px;
 }
 
-.vw-tools,
+/* Buttons other modules add via App.viewer.toolbarItems (e.g. the chip drawer) — hidden only when empty */
 .vw-tools:empty {
     display: none;
 }

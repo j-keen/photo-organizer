@@ -100,7 +100,8 @@ module.exports = [
             await page.click(`${row('trip')}`, { button: 'right' });
             const labels = await menuLabels(page);
             for (const l of ['열기', '새 폴더', '이름 바꾸기', '즐겨찾기에 추가', '새로 고침', '휴지통으로 이동']) assert.ok(labels.includes(l), `menu has ${l}: ${labels}`);
-            assert.ok(!labels.includes('폴더 풀기'), 'unwrap only shows when organize registers it');
+            const hasUnwrap = await page.evaluate(() => !!App.commands.get('organize.unwrap'));
+            assert.equal(labels.includes('폴더 풀기'), hasUnwrap, 'unwrap shows exactly when organize registers it');
             assert.ok(!labels.includes('탐색기에서 보기'), 'reveal only shows when the backend supports it');
             await clickMenu(page, '새 폴더');
             const input = page.locator('.tree-row.phantom input.tree-edit');
@@ -379,8 +380,8 @@ module.exports = [
             await page.keyboard.press('Control+z');
             await page.waitForFunction(() => App.navFavorites.list().join() === 'family,travel,empty');
 
-            // Keyboard list (Ctrl+Shift+D) and persistence across reloads
-            await page.keyboard.press('Control+Shift+D');
+            // Keyboard list (Ctrl+Alt+B) and persistence across reloads
+            await page.keyboard.press('Control+Alt+B');
             assert.deepEqual((await menuLabels(page)).slice(0, 3), ['family', 'travel', 'empty']);
             await page.keyboard.press('Escape');
             await page.evaluate(() => App.catalog.flush());

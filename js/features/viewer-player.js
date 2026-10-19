@@ -498,7 +498,13 @@
         seekStep(dir) {
             const step = seekStepSec();
             this.seekBy(dir * step);
-            V.osd(`${dir > 0 ? '+' : '−'}${step}초`, { icon: dir > 0 ? 'vw-seek-fwd' : 'vw-seek-back', duration: 500 });
+            // Repeated presses add up in ONE overlay ("+15초 · 1:23") instead of a new message per press
+            const now = performance.now();
+            if (this.seekAccDir === dir && now - (this.seekAccAt || 0) < 900) this.seekAcc += step;
+            else this.seekAcc = step;
+            this.seekAccDir = dir;
+            this.seekAccAt = now;
+            V.osd(`${dir > 0 ? '+' : '−'}${this.seekAcc}초 · ${fmt(this.time)}`, { icon: dir > 0 ? 'vw-seek-fwd' : 'vw-seek-back', duration: 700 });
         }
 
         frameStep(dir) {

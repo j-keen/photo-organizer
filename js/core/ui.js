@@ -148,20 +148,25 @@
      * toast(message, { type: 'info'|'success'|'error'|'warning'|'loading', duration (ms, 0 = sticky),
      *                  action: { label, run }, id (reuse/update an existing toast) })
      */
+    const MAX_TOASTS = 3;
+
     function toast(message, opts = {}) {
         const type = opts.type || 'info';
         const duration = opts.duration ?? (type === 'error' ? 6000 : type === 'loading' ? 0 : 3200);
-        let handle = opts.id && toastMap.get(opts.id);
+        // Never stack: an explicit id, or the same message already on screen, updates that toast in place
+        const key = opts.id || `${type}|${message}`;
+        let handle = toastMap.get(key);
 
         if (!handle) {
             const el = h('div', { class: 'toast' });
-            ensureToastRoot().append(el);
+            const root = ensureToastRoot();
+            root.append(el);
             handle = {
                 el,
                 timer: null,
                 close() {
                     clearTimeout(handle.timer);
-                    if (opts.id) toastMap.delete(opts.id);
+                    if (toastMap.get(key) === handle) toastMap.delete(key);
                     el.classList.add('leaving');
                     setTimeout(() => el.remove(), 180);
                 },
@@ -169,7 +174,11 @@
                     render(msg, { ...opts, ...o });
                 },
             };
-            if (opts.id) toastMap.set(opts.id, handle);
+            el._toast = handle;
+            toastMap.set(key, handle);
+            // Keep the pile short: drop the oldest when too many are visible
+            const live = [...root.children].filter((c) => !c.classList.contains('leaving'));
+            for (const old of live.slice(0, Math.max(0, live.length - MAX_TOASTS))) old._toast?.close();
         }
 
         function render(msg, o) {

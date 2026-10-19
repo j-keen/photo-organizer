@@ -401,8 +401,18 @@ module.exports = [
             // Esc ends it early; the gallery still works while it shows (clicks pass through)
             await page.evaluate(() => App.onboarding.start({ force: true }));
             await page.waitForSelector('.ob-spot');
-            await page.click('.card[data-path="a-photo.png"]');
-            assert.deepEqual(await page.evaluate(() => App.select.list()), ['a-photo.png']);
+            // Click a card the tour card itself doesn't cover (its position depends on the tree's height)
+            const target = await page.evaluate(() => {
+                const ob = document.querySelector('.ob-card').getBoundingClientRect();
+                const free = [...document.querySelectorAll('.card')].find((c) => {
+                    const r = c.getBoundingClientRect();
+                    return r.right < ob.left || r.left > ob.right || r.bottom < ob.top || r.top > ob.bottom;
+                });
+                return free?.dataset.path;
+            });
+            assert.ok(target, 'some card is outside the tour card');
+            await page.click(`.card[data-path="${target}"]`);
+            assert.deepEqual(await page.evaluate(() => App.select.list()), [target]);
             await page.keyboard.press('Escape');
             await page.waitForFunction(() => !document.querySelector('.ob-card'));
         },

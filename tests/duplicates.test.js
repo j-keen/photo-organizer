@@ -148,6 +148,7 @@ module.exports = [
             // Keep a different one: "이걸 남기기" on the small jpg, then send the rest to the trash
             await page.hover('.dup-card[data-path="web/sun-small.jpg"]');
             await page.click('.dup-card[data-path="web/sun-small.jpg"] .dup-keepbtn');
+            await page.waitForSelector('.dup-card.keep[data-path="web/sun-small.jpg"]');
             assert.equal((await groupsShown(page))[0][0], 'web/sun-small.jpg');
             // Untick the tiny one: it stays where it is
             await page.click('.dup-card[data-path="thumbs/sun-tiny.png"] .dup-card-meta');

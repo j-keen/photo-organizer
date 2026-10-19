@@ -6,7 +6,7 @@
  *   App.navFavorites.has(p), list(), add(p, index?), addMany(paths, index?), remove(p), toggle(p), move(p, toIndex)
  *   Each call is one App.undo entry (add/addMany/remove/move), so one Ctrl+Z reverts one user action.
  * Commands: nav.favoriteToggle (Ctrl+D — current folder, or the one folder selected in the gallery),
- *           nav.favoritesMenu (Ctrl+Shift+D — keyboard list of favorites)
+ *           nav.favoritesMenu (Ctrl+Alt+B — keyboard list of favorites)
  * Drag & drop: drag a favorite to reorder; drop gallery items / files on a favorite to move (Ctrl = copy) or import;
  * drop folders between favorites (or on the empty box) to pin them there.
  */
@@ -427,7 +427,7 @@
             toggle(p);
         },
     });
-    App.commands.register({ id: 'nav.favoritesMenu', title: '즐겨찾기 목록 열기', group: '이동', icon: 'star', keys: ['Mod+Shift+D'], when: () => App.fs.ready, run: favoritesMenu });
+    App.commands.register({ id: 'nav.favoritesMenu', title: '즐겨찾기 목록 열기', group: '이동', icon: 'star', keys: ['Mod+Alt+B'], when: () => App.fs.ready, run: favoritesMenu });
 
     App.register('navFavorites', {
         init() {

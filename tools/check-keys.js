@@ -17,12 +17,18 @@ const { openApp } = require('../tests/lib/harness');
             byCombo.get(k).push(c);
         }
         const clashes = [];
+        // Pairs that share a key on purpose: their `when` conditions never hold at the same time
+        const ALLOWED = [
+            ['layout.closeOverlay', 'select.clear'], // Esc closes an overlay panel first, otherwise clears the selection
+            ['file.rename', 'organize.rename'], // F2: one item → inline rename, several → batch rename
+        ];
+        const allowed = (a, b) => ALLOWED.some(([x, y]) => (a.id === x && b.id === y) || (a.id === y && b.id === x));
         for (const [combo, list] of byCombo) {
             for (let i = 0; i < list.length; i++) {
                 for (let j = i + 1; j < list.length; j++) {
                     const a = list[i];
                     const b = list[j];
-                    if (a.scope === b.scope || a.scope === 'global' || b.scope === 'global') clashes.push({ combo, a, b });
+                    if ((a.scope === b.scope || a.scope === 'global' || b.scope === 'global') && !allowed(a, b)) clashes.push({ combo, a, b });
                 }
             }
         }
