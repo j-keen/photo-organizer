@@ -12,8 +12,13 @@ const OWNERSHIP = {
     gallery: ['js/features/gallery.js', 'css/gallery.css', /^tests\/gallery[\w.-]*\.test\.js$/],
     thumbs: ['js/features/thumbs.js', 'js/features/statusbar.js', 'css/jobs.css', /^tests\/thumbs[\w.-]*\.test\.js$/],
     chips: ['js/features/inspector.js', 'js/features/chipset.js', 'css/inspector.css', 'css/chipset.css', /^tests\/(chipset|chips|inspector)[\w.-]*\.test\.js$/],
-    viewer: ['js/features/viewer.js', 'js/features/video-editor.js', 'css/viewer.css', 'css/video-editor.css', /^tests\/viewer[\w.-]*\.test\.js$/],
-    server: [/^server\//, 'js/core/fs-server.js', 'js/features/server.js', 'css/server.css', /^tests\/server[\w.-]*\.test\.js$/],
+    // Round 2: the viewer team also owns video-* files and an optional vendored remux library
+    viewer: ['js/features/viewer.js', /^js\/features\/video-[\w-]+\.js$/, 'css/viewer.css', /^css\/video-[\w-]+\.css$/, /^tests\/(viewer|video)[\w.-]*\.test\.js$/, /^vendor\/mediabunny[\w.-]*$/],
+    server: [/^server\//, 'js/core/fs-server.js', 'js/features/server.js', 'css/server.css', /^tests\/server[\w.-]*\.test\.js$/, 'docs/server-api.md'],
+    // Round 2 teams
+    clips: [/^tests\/clips[\w.-]*\.test\.js$/],
+    dupes: ['js/features/duplicates.js', 'css/duplicates.css', /^tests\/(duplicates|dupes)[\w.-]*\.test\.js$/],
+    core: ['js/core/nav.js', 'js/core/index.js', 'js/core/fs.js', /^js\/core\/core-[\w-]+\.js$/, /^tests\/core[\w.-]*\.test\.js$/],
     organize: ['js/features/organize.js', 'js/features/duplicates.js', 'css/organize.css', 'css/duplicates.css', /^tests\/(organize|duplicates)[\w.-]*\.test\.js$/],
     shell: ['js/features/workspace.js', 'js/features/layout.js', 'js/features/palette.js', 'css/welcome.css', 'css/palette.css', /^tests\/shell[\w.-]*\.test\.js$/],
 };

@@ -146,7 +146,8 @@
         });
     }
 
-    App.commands.register({ id: 'view.toggleSidebar', title: '사이드바 열고 닫기', group: '보기', icon: 'sidebar', keys: ['Mod+B'], scope: 'global', run: () => toggle('sidebar') });
+    // Main screen only: in the viewer Ctrl+B is the video razor (round 2, owner request)
+    App.commands.register({ id: 'view.toggleSidebar', title: '사이드바 열고 닫기', group: '보기', icon: 'sidebar', keys: ['Mod+B'], scope: 'main', run: () => toggle('sidebar') });
     App.commands.register({ id: 'view.toggleInspector', title: '정보 패널 열고 닫기', group: '보기', icon: 'panel-right', keys: ['Mod+I'], scope: 'global', run: () => toggle('inspector') });
     App.commands.register({ id: 'view.zen', title: '집중 모드 (패널 모두 숨기기)', group: '보기', icon: 'maximize', keys: ['Mod+.'], keywords: ['zen', 'focus', '전체 화면'], run: toggleZen });
     App.commands.register({ id: 'layout.closeOverlay', title: '떠 있는 패널 닫기', keys: ['Escape'], hidden: true, palette: false, when: () => overlay.sidebar || overlay.inspector, run: closeOverlays });

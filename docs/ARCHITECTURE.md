@@ -27,6 +27,20 @@ Need a change in someone else's file or in `js/core/*`? Don't edit it — put it
 `integrationRequests` (file, exact change, reason). The orchestrator applies those between rounds.
 Prefer extension points (events, `addSection`, `cardDecorators`, `contextMenuItems`, `toolbarItems`, commands).
 
+**Round 2 teams** (2026-10-19; `<team>-*` / `<team>.*` files under `js/features/` and `css/` always belong to that team):
+
+| Team | Owns |
+|---|---|
+| gallery | `js/features/gallery*.js`, `css/gallery*.css`, `tests/gallery*.test.js` |
+| viewer | `js/features/viewer*.js`, `js/features/video-*.js`, `css/viewer*.css`, `css/video-*.css`, `tests/viewer*.test.js`, `tests/video*.test.js`, new `vendor/mediabunny*` |
+| clips | `js/features/clips*.js`, `css/clips*.css`, `tests/clips*.test.js` |
+| dupes | `js/features/duplicates.js`, `js/features/dupes-*.js`, `css/duplicates.css`, `css/dupes-*.css`, `tests/duplicates*.test.js`, `tests/dupes*.test.js` |
+| server | `server/**`, `js/core/fs-server.js`, `js/features/server*.js`, `css/server*.css`, `tests/server*.test.js`, `docs/server-api.md` |
+| core | `js/core/nav.js`, `js/core/index.js`, `js/core/fs.js`, new `js/core/core-*.js`, `tests/core*.test.js` |
+| orchestrator | everything else (other `js/core/*`, nav/thumbs/chips/organize/shell features, `css/tokens.css`, `css/base.css`, `tests/lib/*`, `tests/run.js`, `tests/smoke.test.js`, docs) |
+
+Round 1 teams (for reference — their files now belong to the orchestrator unless listed above):
+
 | Team | Owns |
 |---|---|
 | nav | `js/features/topbar.js`, `js/features/sidebar.js`, `css/topbar.css`, `css/sidebar.css`, `tests/nav.test.js` |
@@ -228,3 +242,61 @@ replaces `showDirectoryPicker`, then opens it as the workspace. A test fails on 
 Helpers: `cardNames(page)`, `card(page, name)`, `waitIdle(page)`, `window.__opfs.{exists,read,list}` for assertions.
 Each team adds `tests/<team>.test.js`; **the whole suite must pass** before you finish.
 Visual check: take a screenshot with Playwright (`page.screenshot`) and look at it before you call it done.
+
+## 8. Round 2 contracts (2026-10-19)
+
+Teams build these in parallel, so code against the contract and **feature-detect** the other side
+(`App.clips?.add`, `App.viewer?.openAt`, `App.server?.dupes?.scanV2` …): your feature must work (degraded, never broken)
+before the other team's code is merged, and fully after.
+
+### Keys
+- `Mod+B` (`view.toggleSidebar`) is scope `main` now — in the viewer, Ctrl+B is the video razor (viewer team).
+- Viewer editing keys (viewer team): `Q` = cut away everything before the playhead, `W` = everything after it,
+  `Mod+B` = split at the playhead. Run `node tools/check-keys.js` before you finish: no clashes.
+
+### Video edit state (viewer team owns the format)
+`App.catalog.get(path).meta.edit = { cuts: [t, …], removed: [[a, b], …], pieces?: {"<start>": {memo, chips}}, updatedAt }`
+(seconds, 3 decimals). Others read it only. Changes go through `App.catalog.updateMany`, so Ctrl+Z works.
+
+### App.viewer playback API (viewer team implements; clips / dupes call it)
+- `App.viewer.openAt(path, { start, end, loop = false, autoplay = true })` opens the viewer on that video at `start`;
+  with `end` it stops (or loops) there and shows a small dismissible "구간 재생 01:23–01:45" chip.
+- `App.viewer.playSequence(items, { title })` with `items = [{ path, start, end, title? }]` plays them back to back
+  in the viewer with a queue indicator (n / total, previous / next).
+
+### App.clips — the clip library "보관함" (clips team implements; the viewer calls `add`)
+Stored in `.fluid-organizer/clips.json` via `App.wsdata` (`{ version: 1, clips: [Clip] }`, daily backup like chipsets).
+`Clip = { id, path, start, end, title, memo, chips: [chipId], order, createdAt, updatedAt, missing? }`.
+- `ready`, `list({ path } = {})` (library order; for one path: by start), `get(id)`, `forPath(path)`, `search(query)`
+  (title/memo/chips, Korean initial consonants via `App.util.matchKo`).
+- `add(clip | clip[])` → created clips (ONE undo step), `update(id, patch, { coalesceKey })` (typing coalesces),
+  `remove(ids)` (one undo step), `reorder(ids)`.
+- Follows `fs:changed`: rename/move rewrite `path`; trashing the video sets `missing` (hidden), restoring clears it.
+- Event `clips:changed` `{ ids, paths, reason: 'add'|'update'|'remove'|'reorder'|'relocate'|'load' }`.
+
+### Duplicate review data (dupes team)
+- `.fluid-organizer/dupes.json` = `{ version: 1, excludedFiles: [path], excludedFolders: [path], notDuplicates: [[a, b]], rules, lastScan }`
+  (follows renames/moves). `.fluid-organizer/dupes-log.json` = append-only log of applied clean-ups (what was removed,
+  which copy was kept, where it went).
+- Fingerprints are cached per file (`path|size|mtime`) in IndexedDB (browser engine) or the server's SQLite (server engine).
+  Store the engine with each fingerprint and only compare fingerprints from the same engine.
+
+### Matching rule — the owner's own proven algorithm (F:\_중복검사\find_dupes.py; both engines implement exactly this)
+- Exact: same size → quick hash (first + last 1 MB + size) → full hash.
+- Same video: |Δduration| ≤ max(2 s, 1 %) of the longer; 5 frames at 15/35/50/65/85 % of the duration →
+  9×8 grayscale → 64-bit dHash (left > right pixel); nearly flat frames (stddev < 4) are skipped; two frames match when
+  Hamming ≤ 10 bits; same video when ≥ 3 frames match; score = matched / compared.
+- "확실" (sure) = exact copy, or same video with Δduration ≤ 0.3 s. Everything else is "애매" → the owner reviews it.
+- Keep suggestion: highest resolution → longest → largest. All thresholds are user-adjustable (stored in `rules`).
+
+### Server dupes API v2 (server team implements and documents in docs/server-api.md first thing; dupes team consumes)
+- `POST /api/dupes/fingerprint { roots?: [absPath], dirs?: [wsPath], kinds: ['exact','video','image'] }` → job
+  (incremental: only new/changed files; progress; pause/cancel).
+- `POST /api/dupes/scan { roots?, dirs?, compare?: { a: [..], b: [..] }, rules?, exclude?: { files, folders, pairs } }` → job → result
+  `{ groups: [{ id, kind: 'exact'|'video'|'image', sure, keep, members: [{ path, root?, size, mtime, duration, w, h }],
+  evidence: [{ a, b, score, dDur, frames: [{ t, bits }] }] }], stats }`. `compare` keeps only groups that span both sides.
+- `GET /api/dupes/frame?path=&t=&w=` → small JPEG of that frame (review strips).
+- External roots (folders outside the workspace, e.g. `D:\VideoDownloader`): scanning is read-only; removing a duplicate
+  there = `POST /api/dupes/quarantine { paths }` → moved to `<root>\_중복정리\NNN_<name>` + logged (the owner's own
+  convention); `POST /api/dupes/restore { ids }` undoes it.
+- Client: `App.server.dupes.fingerprint(opts)`, `.scanV2(opts)`, `.frameUrl(path, t)`, `.quarantine(paths)`, `.restore(ids)`.
