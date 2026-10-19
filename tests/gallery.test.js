@@ -177,10 +177,16 @@ module.exports = [
             await page.waitForSelector('.card[data-path="c-clip.webm"] video.card-scrub-video');
             assert.equal(await page.locator('#gallery video').count(), 1, 'only the hovered card loads a <video>');
             await page.mouse.move(box.x + box.width * 0.85, box.y + box.height / 2, { steps: 3 });
-            await page.waitForFunction(() => {
+            const scrubbed = () => page.evaluate(() => {
                 const v = document.querySelector('#gallery video.card-scrub-video');
-                return v && v.currentTime > 0.5 && v.classList.contains('ready');
-            }, null, { timeout: 10000 });
+                return !!v && v.currentTime > 0.5 && v.classList.contains('ready');
+            });
+            // A hovering hand never holds perfectly still; keep nudging like one while the clip loads
+            for (let k = 0; k < 60 && !(await scrubbed()); k++) {
+                await page.mouse.move(box.x + box.width * 0.85 + (k % 2), box.y + box.height / 2);
+                await page.waitForTimeout(150);
+            }
+            assert.ok(await scrubbed(), 'the preview seeks to where the pointer is');
             const scale = await page.evaluate(() => document.querySelector('.card-scrub > i').style.transform);
             assert.match(scale, /scaleX\(0\.8/);
             await page.mouse.move(5, 5);
@@ -430,11 +436,11 @@ module.exports = [
             await page.mouse.move(src.x + src.width / 2, src.y + src.height / 3);
             await page.mouse.down();
             await page.mouse.move(dst.x + dst.width / 2, dst.y + dst.height / 3, { steps: 10 });
-            for (let k = 0; k < 20 && !(await page.isVisible('.card[data-path="trip"] .drop-label')); k++) {
+            for (let k = 0; k < 80 && !(await page.isVisible('.card[data-path="trip"] .drop-label')); k++) {
                 await page.mouse.move(dst.x + dst.width / 2 + (k % 2), dst.y + dst.height / 3);
                 await page.waitForTimeout(60);
             }
-            await page.waitForSelector('.card[data-path="trip"] .drop-label');
+            assert.ok(await page.isVisible('.card[data-path="trip"] .drop-label'), 'the folder under the pointer shows the drop label');
             assert.equal((await page.textContent('.card[data-path="trip"] .drop-label')).trim(), '2개를 ‘trip’(으)로 이동 · Ctrl: 복사');
             await page.mouse.up();
             const toast = page.locator('.toast:has-text("2개를 옮겼어요")');

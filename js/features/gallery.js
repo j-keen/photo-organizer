@@ -431,6 +431,32 @@
         return entry.ext ? `${kind} · ${entry.ext.toUpperCase()}` : kind;
     }
 
+    // While the user flings through a big folder, cards only flash by: don't queue thumbnail work for them.
+    // Requests made during fast scrolling wait until it settles and are dropped if their card is gone by then.
+    const scrollMotion = { top: 0, t: 0, vel: 0, timer: 0 };
+    const deferredThumbs = new Set();
+
+    function noteScroll(top) {
+        const now = performance.now();
+        const dt = Math.max(1, now - scrollMotion.t);
+        scrollMotion.vel = scrollMotion.vel * 0.4 + (Math.abs(top - scrollMotion.top) / dt) * 0.6; // px per ms, smoothed
+        scrollMotion.top = top;
+        scrollMotion.t = now;
+        clearTimeout(scrollMotion.timer);
+        scrollMotion.timer = setTimeout(flushDeferredThumbs, 140);
+    }
+
+    function flingScrolling() {
+        return performance.now() - scrollMotion.t < 140 && scrollMotion.vel > 3;
+    }
+
+    function flushDeferredThumbs() {
+        scrollMotion.vel = 0;
+        const jobs = [...deferredThumbs];
+        deferredThumbs.clear();
+        for (const j of jobs) if (j.holder.isConnected) requestThumb(j.holder, j.img, j.entry, j.onReady);
+    }
+
     function setThumb(holder, img, entry, onReady) {
         const cached = App.thumbs.peek(entry);
         if (cached) {
@@ -442,6 +468,11 @@
             holder.classList.add('no-thumb');
             return;
         }
+        if (flingScrolling()) deferredThumbs.add({ holder, img, entry, onReady });
+        else requestThumb(holder, img, entry, onReady);
+    }
+
+    function requestThumb(holder, img, entry, onReady) {
         App.thumbs.get(entry).then((url) => {
             if (!url) {
                 holder.classList.add('no-thumb');
@@ -670,7 +701,7 @@
             h('div', { class: 'lc lc-size', text: sizeText, 'data-tip': isDir ? folderTip(entry.path) : null }),
             h('div', { class: 'lc lc-mtime', text: entry.mtime ? formatDate(entry.mtime, true) : '—' }),
             h('div', { class: 'lc lc-res', text: m.w && m.h ? `${m.w}×${m.h}` : '—' }),
-            h('div', { class: 'lc lc-dur', text: entry.type === 'video' && m.duration ? formatDuration(m.duration) : '—' }),
+            h('div', { class: 'lc lc-dur', text: entry.type === 'video' && m.duration > 0 && isFinite(m.duration) ? formatDuration(m.duration) : '—' }),
             rating,
         );
         runItemHooks(row, entry);
@@ -1656,6 +1687,7 @@
         }
         if (internal && dragPaths && (dragPaths.includes(t.dir) || dragPaths.some((p) => P.isInside(t.dir, p)))) {
             clearDropTargets();
+            disarmSpring();
             return; // can't drop a folder into itself
         }
         e.preventDefault();
@@ -2088,6 +2120,7 @@
             viewH = scroller.clientHeight;
             scroller.addEventListener('scroll', () => {
                 if (pendingScroll == null) scrollTopCache = scroller.scrollTop;
+                noteScroll(scroller.scrollTop);
                 if (scrub.card) endScrub();
                 schedule();
             }, { passive: true });

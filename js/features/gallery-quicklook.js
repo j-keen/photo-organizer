@@ -97,7 +97,7 @@
         }
         const m = App.catalog.peek(entry.path)?.meta || {};
         const parts = [];
-        if (entry.type === 'video' && m.duration) parts.push(formatDuration(m.duration));
+        if (entry.type === 'video' && m.duration > 0 && isFinite(m.duration)) parts.push(formatDuration(m.duration));
         if (m.w && m.h) parts.push(`${m.w}×${m.h}`);
         parts.push(formatBytes(entry.size));
         if (entry.mtime) parts.push(formatDate(entry.mtime, true));

@@ -48,9 +48,21 @@ module.exports = [
             await page.evaluate(() => App.nav.go('many'));
             await page.waitForFunction(() => App.view.visible.length === 1500);
             await page.waitForSelector('.card[data-path="many/IMG_00001.png"]');
+            await page.evaluate(() => {
+                // Count thumbnail requests made while flinging through the folder
+                window.__thumbCalls = 0;
+                const orig = App.thumbs.get;
+                App.thumbs.get = (...a) => {
+                    window.__thumbCalls++;
+                    return orig.apply(App.thumbs, a);
+                };
+            });
 
             const grid = await scrollRun(page, 80);
-            console.log(`      grid: avg ${grid.avg.toFixed(1)}ms/frame, p95 ${grid.p95.toFixed(1)}ms, max ${grid.max.toFixed(1)}ms, max DOM ${grid.maxDom}, blank ${grid.blank}`);
+            const thumbCalls = await page.evaluate(() => window.__thumbCalls);
+            console.log(`      grid: avg ${grid.avg.toFixed(1)}ms/frame, p95 ${grid.p95.toFixed(1)}ms, max ${grid.max.toFixed(1)}ms, max DOM ${grid.maxDom}, blank ${grid.blank}, thumbnail requests ${thumbCalls}`);
+            assert.ok(thumbCalls < 500, `flinging past 1500 items doesn't queue a thumbnail for each (${thumbCalls})`);
+            await page.waitForSelector('.card[data-path="many/IMG_01500.png"].has-thumb', { timeout: 15000 });
             assert.ok(grid.maxDom < 260, `grid keeps the DOM small (${grid.maxDom} cards)`);
             assert.equal(grid.blank, 0, 'the viewport is never blank after a frame');
             assert.ok(grid.avg < 60, `grid average frame ${grid.avg.toFixed(1)}ms`);
