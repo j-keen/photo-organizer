@@ -34,10 +34,18 @@
         if (loading) return loading;
         loading = new Promise((resolve, reject) => {
             const s = document.createElement('script');
-            s.src = 'vendor/mediabunny.min.js';
+            // The single-file build (tools/build-single.js) carries the library as inert text next to the app
+            const embedded = document.getElementById('lazy:vendor/mediabunny.min.js');
+            const blobUrl = embedded ? URL.createObjectURL(new Blob([embedded.textContent], { type: 'text/javascript' })) : null;
+            s.src = blobUrl || 'vendor/mediabunny.min.js';
             s.async = true;
-            s.onload = () => (window.Mediabunny ? resolve(window.Mediabunny) : reject(fail('ELOAD', '영상 도구를 불러오지 못했어요')));
+            s.onload = () => {
+                if (blobUrl) URL.revokeObjectURL(blobUrl);
+                if (window.Mediabunny) resolve(window.Mediabunny);
+                else reject(fail('ELOAD', '영상 도구를 불러오지 못했어요'));
+            };
             s.onerror = () => {
+                if (blobUrl) URL.revokeObjectURL(blobUrl);
                 loading = null;
                 s.remove();
                 reject(fail('ELOAD', '영상 도구(vendor/mediabunny.min.js)를 불러오지 못했어요'));

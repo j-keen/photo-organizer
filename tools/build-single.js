@@ -10,6 +10,8 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const ENTRY = '사진영상정리기.html';
+// Loaded on demand by path (js/features/video-lossless.js); embedded as <script type="text/plain" id="lazy:<path>">
+const LAZY = ['vendor/mediabunny.min.js'];
 
 function build() {
     let html = fs.readFileSync(path.join(ROOT, ENTRY), 'utf8');
@@ -23,6 +25,12 @@ function build() {
         const code = fs.readFileSync(path.join(ROOT, src), 'utf8').replace(/<\/script/gi, '<\\/script');
         return `<script>/* ${src} */\n${code}\n</script>`;
     });
+    // Scripts the app loads on demand (by path) travel as inert text; the loader turns them into a Blob URL script
+    for (const src of LAZY) {
+        files++;
+        const code = fs.readFileSync(path.join(ROOT, src), 'utf8').replace(/<\/script/gi, '<\\/script');
+        html = html.replace('</body>', `<script type="text/plain" id="lazy:${src}">\n${code}\n</script>\n</body>`);
+    }
     const outDir = path.join(ROOT, 'dist');
     fs.mkdirSync(outDir, { recursive: true });
     const out = path.join(outDir, ENTRY);
