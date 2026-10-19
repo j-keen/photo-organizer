@@ -230,6 +230,7 @@ video {
 
 #viewbar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     padding: 8px 14px;
@@ -928,6 +929,8 @@ video {
     pointer-events: none;
     box-shadow: var(--sh-1);
     animation: fade-in var(--dur-fast) var(--ease);
+    word-break: keep-all;
+    overflow-wrap: anywhere;
 }
 
 .tooltip .kbd {

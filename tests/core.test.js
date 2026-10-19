@@ -203,11 +203,11 @@ module.exports = [
             const { page } = await openApp({ seed: SEED });
             const hits = await page.evaluate(() => {
                 const hits = [];
-                App.commands.register({ id: 'test.altR', title: 't', keys: 'Alt+R', run: () => hits.push('altR') });
+                App.commands.register({ id: 'test.altR', title: 't', keys: 'Alt+Q', run: () => hits.push('altR') });
                 App.commands.register({ id: 'test.j', title: 't', keys: 'J', run: () => hits.push('j') });
                 App.commands.register({ id: 'test.plus', title: 't', keys: 'Mod++', run: () => hits.push('plus') });
                 const fire = (init) => document.getElementById('gallery-scroll').dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
-                fire({ key: 'ㄱ', code: 'KeyR', altKey: true });
+                fire({ key: 'ㅂ', code: 'KeyQ', altKey: true });
                 fire({ key: 'ㅓ', code: 'KeyJ' });
                 fire({ key: 'Process', code: 'KeyJ' });
                 fire({ key: '+', code: 'Equal', ctrlKey: true, shiftKey: true });
@@ -328,8 +328,11 @@ module.exports = [
             assert.equal(await page.evaluate(() => App.nav.fwd.length), 2);
             await page.waitForFunction(() => App.index.ready);
             const hits = await page.evaluate(() => {
-                window.App.chipset = window.App.chipset || { labelOf: (id) => (id === 'c-kim' ? '배우 › 김수현' : '') };
-                App.catalog.update('b.png', { chips: ['c-kim'] }, { undoable: false });
+                // Real chipset when the chips module is loaded, a stub otherwise
+                const C = window.App.chipset;
+                const id = C?.addCategory ? C.addChip(C.addCategory({ name: '배우' }).id, '김수현').id : 'c-kim';
+                if (!C) window.App.chipset = { labelOf: (x) => (x === 'c-kim' ? '배우 › 김수현' : '') };
+                App.catalog.update('b.png', { chips: [id] }, { undoable: false });
                 return App.index.search('김수현').map((e) => e.path);
             });
             assert.deepEqual(hits, ['b.png']);
