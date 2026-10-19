@@ -17,8 +17,12 @@
  *   filesWith(id) -> paths, sortIds(ids), inActive(id)
  *   apply(pathsOrEntries, id, 'toggle'|'add'|'remove', { hud }) -> { mode, changed, total }   (ONE undo entry)
  *   addCategory, addChips, renameChip, renameCategory, setCategory, moveChip, moveCategory, moveChipTo,
- *   removeChip, removeCategory, mergeChip, setHotkey, hotkeyOf, createPreset, renamePreset, deletePreset
+ *   removeChip, removeCategory, mergeChip, setHotkey, hotkeyOf, createPreset, renamePreset, movePreset, deletePreset,
+ *   createAndApply(catId, name, files)
  *   transaction(label, fn(tx)) — structure + per-file changes as ONE undo entry
+ * Undo: every edit above is exactly ONE App.undo entry (whole-document snapshots for the structure, before/after
+ *   values for files). Catalog writes pass { undoable: false } so a catalog that records undo never doubles them.
+ *   Switching the active preset is navigation, not an edit (not undoable; undo/redo keep the preset on screen).
  *   validateName, cleanName, normKey, match(query, text) (fuzzy, Hangul-initials aware: ㄱㅅㅎ → 김수현), hud(text, opts)
  * Events: 'chipset:loaded', 'chipset:changed' { reason }
  */
