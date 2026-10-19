@@ -78,9 +78,11 @@ def list_entries(path: str = '', ws: Workspace = Depends(deps.workspace)):
         with os.scandir(target) as scan:
             for entry in scan:
                 try:
-                    if paths.is_link_like(entry.path) and not paths.link_stays_inside(entry.path, ws.root):
-                        continue
-                    st = entry.stat()
+                    st = entry.stat(follow_symlinks=False)  # cached by scandir on Windows: no extra syscall
+                    if paths.is_link_like(entry.path, st):
+                        if not paths.link_stays_inside(entry.path, ws.root):
+                            continue
+                        st = entry.stat()
                     entries.append(fsutil.entry_dict(entry.name, st, stat.S_ISDIR(st.st_mode)))
                 except OSError:
                     continue
