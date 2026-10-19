@@ -1,7 +1,7 @@
 /*
  * "하위 폴더 포함" — list every photo/video under the current folder (from App.index), remembered per folder.
  *   App.navSubfolders.isOn(path), set(path, on), toggle(), openRecursive(path)
- * Command: nav.toggleRecursive (Alt+R). View bar toggle button. While a recursive/search/smart list is shown,
+ * Command: nav.toggleRecursive (Alt+I — 'include subfolders'). View bar toggle button. While a recursive/search/smart list is shown,
  * each card gets a small badge with the folder it lives in (click it to jump there with the file selected).
  *
  * Core hook: when js/core/nav.js offers `App.nav.loadHooks` (see the nav team's integration request) the recursive
@@ -140,7 +140,7 @@
             type: 'button',
             'aria-pressed': String(on),
             'data-tip': on ? '바로 안의 항목만 보기' : '하위 폴더의 사진·영상까지 한꺼번에 보기',
-            'data-tip-keys': 'Alt+R',
+            'data-tip-keys': 'Alt+I',
             html: `${waiting ? '<span class="spinner"></span>' : ui.icon('layers', { size: 14 })}<span>하위 폴더 포함</span>`,
         });
         btn.addEventListener('click', toggle);
@@ -152,7 +152,7 @@
         title: '하위 폴더 포함해서 보기',
         group: '보기',
         icon: 'layers',
-        keys: ['Alt+R'],
+        keys: ['Alt+I'],
         allowInInput: false,
         when: () => App.fs.ready && App.state.cwd != null && App.view.source.type === 'folder',
         run: () => toggle(),

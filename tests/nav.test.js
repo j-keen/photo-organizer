@@ -217,6 +217,13 @@ module.exports = [
             await page.keyboard.press('Escape');
             await page.waitForFunction(() => !document.querySelector('.menu'));
 
+            // Alt+N starts a new subfolder under the cursor row (Ctrl+Shift+N belongs to the browser)
+            await page.keyboard.press('Alt+n');
+            await page.waitForSelector('.tree-row.phantom input.tree-edit');
+            assert.equal(await page.evaluate(() => App.tree.rows[App.tree.rows.findIndex((r) => r.phantom) - 1].p), 'trip');
+            await page.keyboard.press('Escape');
+            await page.waitForFunction(() => !document.querySelector('.tree-row.phantom') && document.activeElement.id === 'folder-tree');
+
             // Ctrl+Shift+E opens a collapsed tree section instead of focusing an invisible tree
             await page.keyboard.press('Escape');
             await page.click('.tree-section .sb-head-title');
@@ -705,7 +712,7 @@ module.exports = [
             await page.evaluate(() => App.nav.go('trip'));
             await page.waitForFunction(() => App.state.cwd === 'trip' && App.view.source.type === 'folder');
             assert.deepEqual(await cardNames(page), ['inner', 'x.png']);
-            await page.keyboard.press('Alt+r');
+            await page.keyboard.press('Alt+i');
             await page.waitForFunction(() => App.view.source.recursive === true);
             assert.deepEqual((await cardNames(page)).sort(), ['x.png', 'y.png', 'y2.png']);
             assert.equal(await page.getAttribute('.nav-rec-toggle', 'aria-pressed'), 'true');

@@ -16,7 +16,7 @@
  * stay smooth. Rows: click = open, twisty / double-click = expand, right-click = menu, drag = move (Ctrl = copy),
  * drop target for gallery items, other folders and files from the OS (hover 0.6s to expand, edges auto-scroll).
  * Keyboard (Ctrl+Shift+E): ↑↓ PgUp/PgDn Home/End move, →← expand/collapse, Enter/Space open, F2 rename,
- * Delete trash, Ctrl+Shift+N new folder, Ctrl+D favorite, Menu key / Shift+F10 folder menu, typing starts the filter,
+ * Delete trash, Alt+N new folder, Ctrl+D favorite, Menu key / Shift+F10 folder menu, typing starts the filter,
  * Esc back to the gallery. Every change (new folder, rename, trash, drop) is exactly one Ctrl+Z step.
  * Filter box (Ctrl+Shift+F): name or Hangul initials ('ㄱㅅ' → '김수현') over every folder of the workspace index.
  */
@@ -887,21 +887,11 @@
             }
             focusPath = next ?? (i > 0 ? rows[i - 1].p : P.parent(p));
         }
-        // One undo entry of our own: undo restores, redo trashes wherever the folder came back to
+        // Core pushes the single undo entry (undo restores, redo trashes it again); the toast is ours
         const name = nameOf(p);
         try {
-            let ids = await App.fs.trash([p], { undoable: false, silent: true });
+            const ids = await App.fs.trash([p], { silent: true, label: `‘${name}’ 폴더 삭제` });
             if (!ids.length) return;
-            let restored = [];
-            App.undo.push({
-                label: `‘${name}’ 폴더 삭제`,
-                undo: async () => {
-                    restored = await App.fs.restore(ids);
-                },
-                redo: async () => {
-                    if (restored.length) ids = await App.fs.trash(restored, { undoable: false, silent: true });
-                },
-            });
             ui.toast(`‘${name}’ 폴더를 휴지통으로 옮겼어요`, { type: 'success', action: { label: '실행 취소', run: () => App.undo.undo() } });
         } catch (e) {
             ui.toast(`휴지통으로 옮기지 못했어요: ${e.message || e}`, { type: 'error' });
@@ -927,7 +917,7 @@
         if (App.navSubfolders) items.push({ label: '하위 폴더까지 모두 보기', icon: 'layers', action: () => App.navSubfolders.openRecursive(p) });
         items.push(
             '-',
-            { label: '새 폴더', icon: 'folder-plus', command: 'nav.newSubfolder', args: { path: p }, hint: App.commands.displayCombo('Mod+Shift+N') },
+            { label: '새 폴더', icon: 'folder-plus', command: 'nav.newSubfolder', args: { path: p } },
             { label: '이름 바꾸기', icon: 'edit', command: 'nav.renameFolder', args: { path: p }, hint: 'F2', disabled: isRoot },
         );
         if (App.commands.get('organize.unwrap')) {
@@ -1054,9 +1044,10 @@
                 break;
         }
         if (!inTree) return false;
-        const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-        if (mod && e.shiftKey && !e.altKey && k === 'n') {
-            if (r) startNewFolder(r.p);
+        // Physical key, so shortcuts also work while the Korean IME is in 한글 mode
+        const k = /^Key[A-Z]$/.test(e.code || '') ? e.code.slice(3).toLowerCase() : e.key.length === 1 ? e.key.toLowerCase() : e.key;
+        if (e.altKey && !mod && !e.shiftKey && k === 'n') {
+            if (r) startNewFolder(r.p); // same as the nav.newSubfolder command, but under the tree cursor
             return true;
         }
         if (mod && !e.shiftKey && !e.altKey && k === 'd') {
@@ -1362,7 +1353,7 @@
 
     App.commands.register({ id: 'nav.focusTree', title: '폴더 트리로 이동 (다시 누르면 갤러리)', group: '이동', icon: 'folder', keys: ['Mod+Shift+E'], allowInInput: ['Mod+Shift+E'], when: ready, run: () => (treeFocused() ? focusGallery() : focusTree()) });
     App.commands.register({ id: 'nav.filterTree', title: '폴더 찾기 (초성 검색)', group: '이동', icon: 'search', keys: ['Mod+Shift+F'], allowInInput: true, when: ready, run: () => focusFilter() });
-    App.commands.register({ id: 'nav.newSubfolder', title: '하위 폴더 만들기', group: '파일', icon: 'folder-plus', when: ready, run: (a) => startNewFolder(target(a)) });
+    App.commands.register({ id: 'nav.newSubfolder', title: '하위 폴더 만들기 (폴더 트리)', group: '파일', icon: 'folder-plus', keys: ['Alt+N'], when: ready, run: (a) => startNewFolder(target(a)) });
     App.commands.register({ id: 'nav.renameFolder', title: '폴더 이름 바꾸기', group: '파일', icon: 'edit', when: ready, run: (a) => startRename(target(a), { inline: a?.inline !== false }) });
     App.commands.register({ id: 'nav.trashFolder', title: '폴더를 휴지통으로 이동', group: '파일', icon: 'trash', when: ready, run: (a) => trashFolder(target(a)) });
     App.commands.register({
@@ -1409,7 +1400,7 @@
             const filterBox = h('div', { class: 'search-box tree-filter', 'data-tip': '폴더 찾기', 'data-tip-keys': 'Mod+Shift+F' }, h('span', { html: ui.icon('search', { size: 13 }) }), filterInput, filterClear);
 
             const head = sectionHead('tree', '폴더', [
-                headAction('folder-plus', '새 폴더', () => App.commands.run('nav.newSubfolder', { path: App.state.cwd ?? '' })),
+                headAction('folder-plus', '새 폴더', () => App.commands.run('nav.newSubfolder', { path: App.state.cwd ?? '' }), 'Alt+N'),
                 headAction('list-collapse', '모두 접기', () => collapseAll()),
                 headAction('more', '폴더 트리 설정', (e, b) => treeOptionsMenu(b)),
             ]);
