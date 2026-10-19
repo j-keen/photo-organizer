@@ -37,16 +37,16 @@ module.exports = [
         async run({ openApp, assert, cardNames, card }) {
             const { page } = await openApp({ seed: SEED });
             await (await card(page, 'trip')).dblclick();
-            await page.waitForFunction(() => App.state.cwd === 'trip');
+            await page.waitForFunction(() => App.view.source.type === 'folder' && App.view.source.path === 'trip');
             assert.deepEqual(await cardNames(page), ['2024', 'beach.png']);
             await page.keyboard.press('Alt+ArrowUp');
-            await page.waitForFunction(() => App.state.cwd === '');
+            await page.waitForFunction(() => App.view.source.type === 'folder' && App.view.source.path === '');
             // returning up focuses the folder we came from
             await page.waitForFunction(() => App.select.focus === 'trip');
             await page.keyboard.press('Alt+ArrowLeft');
-            await page.waitForFunction(() => App.state.cwd === 'trip');
+            await page.waitForFunction(() => App.view.source.type === 'folder' && App.view.source.path === 'trip');
             await page.keyboard.press('Alt+ArrowRight');
-            await page.waitForFunction(() => App.state.cwd === '');
+            await page.waitForFunction(() => App.view.source.type === 'folder' && App.view.source.path === '');
             await page.click('.tree-row[data-path="trip"] .tree-name');
             await page.waitForFunction(() => document.querySelector('.crumb.current')?.textContent === 'trip');
             assert.ok(await page.isVisible('.tree-row.current[data-path="trip"]'));

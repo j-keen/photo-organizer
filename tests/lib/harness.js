@@ -276,7 +276,8 @@ async function openApp({ seed = {}, open = true, viewport = { width: 1440, heigh
 
 /** Wait until there are no running jobs and the gallery has rendered */
 async function waitIdle(page, timeout = 15000) {
-    await page.waitForFunction(() => App.jobs.list().length === 0, null, { timeout });
+    // Foreground work done and the index built; background housekeeping (thumbnail pre-generation) may continue
+    await page.waitForFunction(() => App.jobs.list({ foreground: true }).length === 0 && (!App.fs.ready || App.index.ready), null, { timeout });
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 }
 

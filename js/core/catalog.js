@@ -144,16 +144,25 @@
             dirty = false;
         },
 
+        /** Events for a save indicator: 'catalog:saving', 'catalog:saved', 'catalog:error' { error } */
         async save() {
             if (!dirty || !App.fs.ready) return;
             dirty = false;
+            App.bus.emit('catalog:saving');
             try {
                 await wsdata.write('catalog', data);
+                App.bus.emit('catalog:saved');
             } catch (e) {
                 dirty = true;
                 console.error('[catalog] save failed', e);
+                App.bus.emit('catalog:error', { error: e });
                 App.ui.toast('정보 저장에 실패했어요. 폴더 권한을 확인하세요.', { type: 'error' });
             }
+        },
+
+        /** True while there are edits not yet written to catalog.json */
+        get dirty() {
+            return dirty;
         },
 
         flush() {

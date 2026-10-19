@@ -58,7 +58,7 @@
             const found = new Map();
             const folders = new Set(['']);
             const sidecarDirs = new Set();
-            const job = App.jobs.start({ title: '라이브러리 색인 중', total: 0, cancellable: false });
+            const job = App.jobs.start({ title: '라이브러리 색인 중', total: 0, cancellable: false, background: true, kind: 'index' });
             const queue = [''];
             let scannedDirs = 0;
             try {
