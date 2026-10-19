@@ -25,9 +25,9 @@ function owns(team, file) {
 }
 
 function htmlEditsInRegion(branch, base, team) {
-    const diff = execSync(`git diff ${base}...${branch} -U0 -- "사진영상정리기.html"`, { encoding: 'utf8' });
+    const diff = execSync(`git -c core.quotePath=false diff ${base}...${branch} -U0 -- "사진영상정리기.html"`, { encoding: 'utf8' });
     if (!diff.trim()) return { ok: true, note: 'no HTML changes' };
-    const html = execSync(`git show ${branch}:"사진영상정리기.html"`, { encoding: 'utf8' }).split('\n');
+    const html = execSync(`git -c core.quotePath=false show ${branch}:"사진영상정리기.html"`, { encoding: 'utf8' }).split('\n');
     const regions = [];
     let start = null;
     html.forEach((line, i) => {
@@ -55,7 +55,7 @@ function main() {
         console.error('usage: node tools/check-ownership.js <branch> <team> [base]   teams: ' + Object.keys(OWNERSHIP).join(', '));
         process.exit(2);
     }
-    const files = execSync(`git diff --name-only ${base}...${branch}`, { encoding: 'utf8' }).split('\n').filter(Boolean);
+    const files = execSync(`git -c core.quotePath=false diff --name-only ${base}...${branch}`, { encoding: 'utf8' }).split('\n').filter(Boolean);
     const foreign = files.filter((f) => f !== '사진영상정리기.html' && !owns(team, f));
     console.log(`${branch} (${team}): ${files.length} files changed`);
     for (const f of files) console.log(`  ${owns(team, f) || f === '사진영상정리기.html' ? ' ' : '!'} ${f}`);
