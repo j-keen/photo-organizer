@@ -1,0 +1,172 @@
+/* Thumbnails (thumbs team): colour placeholders on gallery cards and the thumbnail/cache settings panel */
+
+/* ---------- Card placeholders ---------- */
+/* Known average colour: paint it until the thumbnail fades in, so big folders look loaded at once */
+.card.thumb-dc .card-media {
+    background-color: var(--thumb-dc);
+}
+
+.card.thumb-dc:not(.has-thumb) .card-ph {
+    opacity: 0;
+}
+
+/* Colour unknown yet: a soft sweep (static when the user prefers reduced motion) */
+.thumb-shimmer {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.thumb-shimmer::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(100deg, transparent 15%, var(--bg-4) 50%, transparent 85%);
+    opacity: 0.55;
+    transform: translateX(-100%);
+    animation: thumb-shimmer 1.5s var(--ease) infinite;
+    will-change: transform;
+}
+
+.card.has-thumb .thumb-shimmer,
+.card.no-thumb .thumb-shimmer {
+    display: none;
+}
+
+@keyframes thumb-shimmer {
+    to {
+        transform: translateX(100%);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .thumb-shimmer::before {
+        animation: none;
+        transform: none;
+        opacity: 1;
+        background: linear-gradient(160deg, var(--bg-2), var(--bg-3));
+    }
+}
+
+/* ---------- Settings panel (dialog + embeddable via App.thumbs.settingsPanel()) ---------- */
+.thumb-set {
+    display: flex;
+    flex-direction: column;
+}
+
+.thumb-set-row {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 13px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.thumb-set-row:first-child {
+    padding-top: 4px;
+}
+
+.thumb-set-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.thumb-set-label {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.thumb-set-desc {
+    margin-top: 3px;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+    color: var(--text-3);
+    word-break: keep-all;
+}
+
+.thumb-set-select {
+    width: 124px;
+    flex-shrink: 0;
+}
+
+.thumb-set-usage {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    padding: 14px 0 6px;
+}
+
+.thumb-set-usage-title {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.thumb-set-meter {
+    height: 6px;
+}
+
+.thumb-set-usage-text {
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Switch */
+.thumb-switch {
+    position: relative;
+    display: inline-flex;
+    flex-shrink: 0;
+    width: 38px;
+    height: 22px;
+    cursor: pointer;
+}
+
+.thumb-switch input {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.thumb-switch-track {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border-radius: var(--r-full);
+    background: var(--bg-4);
+    border: 1px solid var(--line-3);
+    transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+    pointer-events: none;
+}
+
+.thumb-switch-track::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--text);
+    box-shadow: var(--sh-1);
+    transition: transform var(--dur) var(--ease);
+}
+
+:root[data-theme="light"] .thumb-switch-track::after {
+    background: var(--bg-1);
+}
+
+.thumb-switch input:checked + .thumb-switch-track {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.thumb-switch input:checked + .thumb-switch-track::after {
+    transform: translateX(16px);
+}
+
+.thumb-switch input:focus-visible + .thumb-switch-track {
+    box-shadow: var(--focus-ring);
+}

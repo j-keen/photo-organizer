@@ -1,1 +1,565 @@
-/* Activity center & status bar extras (thumbnail/jobs team) */
+/* Status bar & activity center (thumbs team) */
+
+/* ---------- Status bar items ---------- */
+#statusbar {
+    gap: 10px;
+    padding: 0 8px 0 12px;
+}
+
+#statusbar .sb-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+}
+
+#statusbar .sb-left {
+    gap: 14px;
+    overflow: hidden;
+}
+
+#statusbar .sb-item {
+    min-width: 0;
+}
+
+#statusbar .sb-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+#statusbar .sb-ico {
+    display: inline-flex;
+    color: var(--text-4);
+    flex-shrink: 0;
+}
+
+#statusbar .sb-ico.sb-accent {
+    color: var(--accent-2);
+}
+
+#statusbar .sb-selection {
+    color: var(--text-2);
+}
+
+/* Clickable pill (overrides the generic .sb-btn spacing from base.css) */
+#statusbar .sb-btn.sb-pill {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    margin: 0;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    line-height: 1;
+    cursor: pointer;
+    transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+#statusbar .sb-btn.sb-pill:hover,
+#statusbar .sb-btn.sb-pill.open {
+    background: var(--bg-3);
+    color: var(--text);
+}
+
+#statusbar .sb-btn.sb-pill:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+#statusbar .sb-btn.sb-pill:hover .sb-ico,
+#statusbar .sb-btn.sb-pill.open .sb-ico {
+    color: var(--text-2);
+}
+
+#statusbar .sb-spinner {
+    width: 11px;
+    height: 11px;
+    border-width: 1.75px;
+}
+
+/* Activity */
+#statusbar .sb-activity.busy {
+    color: var(--text-2);
+    max-width: 420px;
+}
+
+#statusbar .sb-act-title {
+    max-width: 230px;
+}
+
+#statusbar .sb-progress {
+    width: 56px;
+    height: 4px;
+    flex-shrink: 0;
+}
+
+#statusbar .sb-pct {
+    min-width: 28px;
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+#statusbar .sb-paused {
+    color: var(--warning);
+}
+
+#statusbar .sb-dot {
+    position: absolute;
+    top: 3px;
+    right: 4px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 0 2px var(--bg-1);
+}
+
+/* Save state */
+#statusbar .sb-save .sb-ok {
+    color: var(--success);
+}
+
+#statusbar .sb-save.is-saving {
+    color: var(--text-2);
+}
+
+#statusbar .sb-save.is-error,
+#statusbar .sb-save.is-error .sb-ico {
+    color: var(--danger);
+}
+
+#statusbar .sb-save.is-error {
+    background: var(--danger-soft);
+    font-weight: 600;
+}
+
+#statusbar .sb-save.is-error:hover {
+    background: var(--danger-soft);
+    color: var(--danger);
+    box-shadow: inset 0 0 0 1px var(--danger);
+}
+
+/* ---------- Activity center ---------- */
+.menu.popover.act-pop {
+    width: 384px;
+    min-width: 0;
+    max-width: calc(100vw - 16px);
+    max-height: min(580px, calc(100vh - 96px));
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--r-xl);
+    box-shadow: var(--sh-3);
+    animation: act-in var(--dur-slow) var(--ease);
+}
+
+@keyframes act-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px) scale(0.985);
+    }
+}
+
+.act {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+    user-select: none;
+}
+
+.act-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 10px 10px 14px;
+    border-bottom: 1px solid var(--line-2);
+}
+
+.act-head-icon {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: var(--r);
+    background: var(--accent-soft);
+    color: var(--accent-2);
+}
+
+.act-title {
+    flex: 1;
+    font-size: var(--fs-md);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--text);
+}
+
+.act-kbd {
+    margin-right: 2px;
+}
+
+.act-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.act-section {
+    padding: 8px 6px 6px;
+}
+
+.act-section + .act-section {
+    border-top: 1px solid var(--line);
+}
+
+.act-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px 6px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--text-4);
+}
+
+.act-count {
+    min-width: 16px;
+    height: 16px;
+    padding: 0 5px;
+    border-radius: var(--r-full);
+    background: var(--accent-soft);
+    color: var(--accent-2);
+    font-size: 10px;
+    line-height: 16px;
+    text-align: center;
+}
+
+.act-count:empty {
+    display: none;
+}
+
+.act-link {
+    border: 0;
+    background: none;
+    padding: 2px 4px;
+    border-radius: var(--r-xs);
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    cursor: pointer;
+}
+
+.act-link:hover {
+    color: var(--text);
+    background: var(--bg-3);
+}
+
+.act-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+/* Running job */
+.act-job {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 8px;
+    border-radius: var(--r);
+    transition: background var(--dur) var(--ease);
+}
+
+.act-job:hover {
+    background: var(--bg-3);
+}
+
+.act-job-icon {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--r);
+    background: var(--accent-soft);
+    color: var(--accent-2);
+}
+
+.act-job-icon .spinner {
+    width: 13px;
+    height: 13px;
+}
+
+.act-job.paused .act-job-icon {
+    background: var(--warning-soft);
+    color: var(--warning);
+}
+
+.act-job-main {
+    min-width: 0;
+}
+
+.act-job-top {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.act-job-title {
+    flex: 1;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.act-job-pct {
+    color: var(--text-2);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.act-bar {
+    margin: 7px 0 6px;
+}
+
+.act-job.paused .act-bar > i {
+    background: var(--warning);
+}
+
+.act-bar.indeterminate > i {
+    width: 32% !important;
+    animation: act-indeterminate 1.3s var(--ease) infinite;
+}
+
+@keyframes act-indeterminate {
+    from {
+        transform: translateX(-100%);
+    }
+
+    to {
+        transform: translateX(320%);
+    }
+}
+
+.act-job-detail {
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.act-job-actions {
+    display: flex;
+    gap: 2px;
+}
+
+.act-btn {
+    color: var(--text-3);
+}
+
+.act-btn.act-cancel:hover {
+    color: var(--danger);
+    background: var(--danger-soft);
+}
+
+/* Empty state */
+.act-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 14px 20px 16px;
+    text-align: center;
+}
+
+.act-empty-icon {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    margin-bottom: 4px;
+    border-radius: var(--r-lg);
+    background: var(--success-soft);
+    color: var(--success);
+}
+
+.act-empty-title {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.act-empty-sub {
+    max-width: 260px;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    line-height: 1.5;
+    word-break: keep-all;
+}
+
+/* With history below, "nothing running" is a single quiet line */
+.act-empty.compact {
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 9px;
+    padding: 4px 8px 8px;
+    text-align: left;
+}
+
+.act-empty.compact .act-empty-icon {
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    border-radius: 50%;
+}
+
+.act-empty.compact .act-empty-icon .ico {
+    width: 13px;
+    height: 13px;
+}
+
+.act-empty.compact .act-empty-title {
+    font-weight: 500;
+    color: var(--text-3);
+}
+
+.act-empty.compact .act-empty-sub {
+    display: none;
+}
+
+/* Finished job */
+.act-hist {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 9px;
+    padding: 6px 8px;
+    border-radius: var(--r-sm);
+}
+
+.act-hist:hover {
+    background: var(--bg-3);
+}
+
+.act-hist-icon {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+}
+
+.act-hist.is-done .act-hist-icon {
+    color: var(--success);
+    background: var(--success-soft);
+}
+
+.act-hist.is-failed .act-hist-icon {
+    color: var(--danger);
+    background: var(--danger-soft);
+}
+
+.act-hist.is-cancelled .act-hist-icon {
+    color: var(--text-3);
+    background: var(--bg-4);
+}
+
+.act-hist-main {
+    min-width: 0;
+}
+
+.act-hist-title {
+    color: var(--text-2);
+    font-weight: 500;
+}
+
+.act-hist-result {
+    font-size: var(--fs-xs);
+    color: var(--text-4);
+}
+
+.act-hist.is-failed .act-hist-result {
+    color: var(--danger);
+}
+
+.act-hist-time {
+    font-size: var(--fs-xs);
+    color: var(--text-4);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Footer: library + cache summary */
+.act-foot {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px 14px;
+    border-top: 1px solid var(--line-2);
+    background: var(--bg-1);
+}
+
+.act-stat {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 9px;
+    font-size: var(--fs-sm);
+    color: var(--text);
+}
+
+.act-stat-icon {
+    display: inline-flex;
+    color: var(--text-3);
+}
+
+.act-stat-main {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.act-stat-sub {
+    color: var(--text-3);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+}
+
+.act-meter {
+    height: 3px;
+    margin: 0 0 2px 25px;
+}
+
+.act-meter.full > i {
+    background: var(--success);
+}
+
+.act-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+.act-actions .btn[hidden] {
+    display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .menu.popover.act-pop {
+        animation: none;
+    }
+
+    .act-bar.indeterminate > i {
+        animation: none;
+        width: 100% !important;
+        opacity: 0.45;
+    }
+}
