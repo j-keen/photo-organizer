@@ -434,6 +434,41 @@ module.exports = [
         },
     },
     {
+        name: 'tree stays virtualized with 1,500 folders; filter, expand and keyboard stay fast',
+        async run({ openApp, assert }) {
+            const seed = { 'cover.png': { image: {} } };
+            for (let i = 1; i <= 1500; i++) seed[`앨범 ${String(i).padStart(4, '0')}/`] = null;
+            const { page } = await openApp({ seed });
+            await page.waitForFunction(() => App.index.ready && App.tree.rows.length > 1500, null, { timeout: 30000 });
+            const domRows = () => page.evaluate(() => document.querySelectorAll('#folder-tree .tree-row').length);
+            assert.ok((await domRows()) < 120, `only rows near the viewport exist (${await domRows()})`);
+            // Scroll to the bottom: the last folder gets rendered, the DOM stays small
+            await page.evaluate(() => {
+                const s = App.sidebar.scrollEl;
+                s.scrollTop = s.scrollHeight;
+            });
+            await page.waitForSelector('.tree-row[data-path="앨범 1500"]');
+            assert.ok((await domRows()) < 120);
+            // Filtering 1,500 folders by initials is instant and exact
+            const t0 = Date.now();
+            await page.evaluate(() => App.tree.filter('ㅇㅂ 0042'));
+            await page.waitForSelector('.tree-row[data-path="앨범 0042"] mark.hl');
+            assert.ok(Date.now() - t0 < 1500, `filter took ${Date.now() - t0}ms`);
+            assert.equal(await page.evaluate(() => App.tree.rows.filter((r) => r.match).length), 1);
+            await page.evaluate(() => App.tree.clearFilter());
+            // Keyboard: End jumps to the last folder without rendering everything
+            await page.keyboard.press('Control+Shift+E');
+            await page.keyboard.press('End');
+            await page.waitForSelector('.tree-row.kbd-focus[data-path="앨범 1500"]');
+            assert.ok((await domRows()) < 120);
+            // Collapse all keeps the workspace root open (its 1,500 children stay listed) and scrolls back to the top
+            await page.evaluate(() => App.commands.run('nav.collapseTree'));
+            await page.waitForFunction(() => App.sidebar.scrollEl.scrollTop === 0 && App.tree.rows.length === 1501);
+            await page.waitForSelector('.tree-row[data-path="앨범 0001"]');
+            assert.ok((await domRows()) < 120);
+        },
+    },
+    {
         name: 'breadcrumb: chevron lists subfolders, crumbs are drop targets, long paths fold into …',
         async run({ openApp, assert }) {
             const deep = { ...SEED };
