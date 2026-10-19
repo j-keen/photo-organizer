@@ -1997,9 +1997,32 @@
         }, 160);
     }
 
+    // ---------- Returning to a parent folder focuses the subfolder you came from (up, back, breadcrumb) ----------
+    let lastCwd = null;
+    let returnFocus = null;
+
+    function onCwdChanged(cwd) {
+        returnFocus = null;
+        if (lastCwd != null && cwd != null && lastCwd !== cwd && P.isInside(lastCwd, cwd)) {
+            const rel = cwd === '' ? lastCwd : lastCwd.slice(cwd.length + 1);
+            returnFocus = P.join(cwd, rel.split('/')[0]);
+        }
+        lastCwd = cwd;
+    }
+
+    function onFolderLoading() {
+        // Focus right away (before the listing arrives) so keyboard users land on the folder they left
+        if (returnFocus && !App.select.focus) {
+            App.select.focus = returnFocus;
+            App.select.anchor = returnFocus;
+            App.select.emit();
+        }
+    }
+
     // ---------- Scroll memory (back / forward / up return to where you were) ----------
     const scrollMemory = new Map();
     let lastSource = null;
+    let restoredScroll = false;
 
     function sourceKey(src) {
         if (!src) return '';
@@ -2009,14 +2032,18 @@
     function onEntriesChanged() {
         const src = App.view.source;
         const key = sourceKey(src);
-        if (lastSource && sourceKey(lastSource) === key) return null; // same list reloaded: keep the position
+        if (lastSource && sourceKey(lastSource) === key) {
+            restoredScroll = true; // same list reloaded (e.g. after a move): keep the position, don't jump
+            return null;
+        }
         if (lastSource && lastSource.type === 'folder') {
             scrollMemory.delete(lastSource.path);
             scrollMemory.set(lastSource.path, getScrollTop());
             if (scrollMemory.size > 300) scrollMemory.delete(scrollMemory.keys().next().value);
         }
         lastSource = { type: src.type, path: src.path, query: src.query, title: src.title };
-        return src.type === 'folder' && scrollMemory.has(src.path) ? scrollMemory.get(src.path) : 0;
+        restoredScroll = src.type === 'folder' && scrollMemory.has(src.path);
+        return restoredScroll ? scrollMemory.get(src.path) : 0;
     }
 
     // ---------- View bar controls ----------
@@ -2300,11 +2327,20 @@
             App.bus.on('selection:changed', updateSelectionClasses);
             App.bus.on('catalog:changed', ({ paths }) => gallery.invalidate(paths));
             App.bus.on('thumbs:meta', ({ path }) => gallery.invalidate([path]));
-            App.bus.on('folder:loading', () => showLoading(true));
+            App.bus.on('state:cwd', onCwdChanged);
+            App.bus.on('folder:loading', () => {
+                showLoading(true);
+                onFolderLoading();
+            });
             App.bus.on('folder:loaded', () => {
                 showLoading(false);
+                if (returnFocus) {
+                    if (!App.select.count && App.view.indexOf(returnFocus) >= 0) App.select.set([returnFocus], { focus: returnFocus, anchor: returnFocus });
+                    returnFocus = null;
+                }
+                // Bring the focused item into view, unless we just restored where the user had scrolled to
                 const f = App.select.focus;
-                if (f && App.view.indexOf(f) >= 0) {
+                if (!restoredScroll && f && App.view.indexOf(f) >= 0) {
                     const r = itemRect(App.view.indexOf(f));
                     const { top, bottom } = viewRange();
                     if (r.y < top || r.y + r.h > bottom) gallery.scrollTo(f, { center: true });

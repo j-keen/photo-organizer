@@ -583,6 +583,25 @@ module.exports = [
         },
     },
     {
+        name: 'returning to a parent folder focuses (then selects) the subfolder you came from',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: SEED });
+            await page.evaluate(() => App.nav.go('trip/2024'));
+            await page.waitForFunction(() => App.view.source.path === 'trip/2024');
+            // Breadcrumb-style jump two levels up: focus is there as soon as loading starts
+            const early = await page.evaluate(() => {
+                App.nav.go('');
+                return App.select.focus;
+            });
+            assert.equal(early, 'trip');
+            await page.waitForFunction(() => App.view.source.path === '' && App.select.list().join() === 'trip');
+            // Going forward into a child does not invent a focus
+            await page.keyboard.press('Alt+ArrowLeft');
+            await page.waitForFunction(() => App.view.source.path === 'trip/2024');
+            assert.equal(await page.evaluate(() => App.select.count), 0);
+        },
+    },
+    {
         name: 'empty states, scroll memory on back, and zoom keeps the grid anchored',
         async run({ openApp, assert, card }) {
             const { page } = await openApp({ seed: { ...SEED, 'many/': { bulk: { count: 300 } }, 'many/sub/x.png': { image: {} } } });
