@@ -1,389 +1,576 @@
-/* Video editor panel (viewer dock): In/Out, segment bin, export, rotate/flip, server notice. */
+/* In-viewer video editing (video-edit.js / video-editor.js / viewer-playback.js):
+   the seek bar as an edit track, the selected-piece strip, '편집됨' state, save button, server notice, range chip. */
 
-.ve-sec {
-    padding: 14px 16px 16px;
-    border-bottom: 1px solid var(--line);
+/* ---------- Edit track: the seek bar grows into a piece lane once a video is edited ---------- */
+.vw-seek.has-edit {
+    height: 30px;
 }
 
-.ve-sec:last-child {
-    border-bottom: none;
+.vw-seek.has-edit .vw-seek-track,
+.vw-seek.has-edit:hover .vw-seek-track,
+.vw-seek.has-edit.is-scrubbing .vw-seek-track {
+    height: 16px;
+    margin-top: -8px;
+    border-radius: 5px;
+    background: transparent;
 }
 
-.ve-sec-title {
+.vw-seek-edit {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.vw-piece {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-right: 2px solid transparent;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--text) 16%, transparent);
+    background-clip: padding-box;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent);
+    transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.vw-piece.is-removed {
+    background:
+        repeating-linear-gradient(-45deg, color-mix(in srgb, var(--text) 13%, transparent) 0 3px, transparent 3px 7px),
+        color-mix(in srgb, var(--bg-1) 55%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 8%, transparent);
+    opacity: 0.75;
+}
+
+.vw-piece.has-note::after {
+    content: '';
+    position: absolute;
+    left: 6px;
+    top: 50%;
+    width: 5px;
+    height: 5px;
+    margin-top: -2.5px;
+    border-radius: 50%;
+    background: var(--warning);
+    box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--bg-1) 70%, transparent);
+}
+
+.vw-piece.is-selected {
+    background: color-mix(in srgb, var(--accent) 26%, transparent);
+    box-shadow: inset 0 0 0 2px var(--accent);
+    z-index: 1;
+}
+
+.vw-piece.is-removed.is-selected {
+    background:
+        repeating-linear-gradient(-45deg, color-mix(in srgb, var(--accent) 30%, transparent) 0 3px, transparent 3px 7px),
+        color-mix(in srgb, var(--bg-1) 55%, transparent);
+    opacity: 1;
+}
+
+/* progress + buffered sit over the pieces in edit mode: a soft wash instead of a solid bar */
+.vw-seek.has-edit .vw-seek-buffered {
+    opacity: 0;
+}
+
+.vw-seek.has-edit .vw-seek-played {
+    border-radius: 5px 0 0 5px;
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+    mix-blend-mode: normal;
+}
+
+.vw-seek.has-edit .vw-range {
+    top: -3px;
+    bottom: -3px;
+}
+
+/* playhead: a slim line with a round head */
+.vw-seek.has-edit .vw-seek-knob {
+    width: 3px;
+    height: 26px;
+    margin: -13px 0 0 -1.5px;
+    border-radius: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg) 60%, transparent), var(--sh-1);
+    transform: none;
+}
+
+.vw-seek.has-edit .vw-seek-knob::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: -4px;
+    width: 9px;
+    height: 9px;
+    margin-left: -4.5px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: var(--sh-1);
+}
+
+/* cut lines (drag to move) */
+.vw-seek-cuts {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.vw-cut {
+    position: absolute;
+    top: 50%;
+    width: 12px;
+    height: 24px;
+    margin: -12px 0 0 -6px;
+    cursor: ew-resize;
+    pointer-events: auto;
+    z-index: 2;
+}
+
+.vw-cut::before {
+    content: '';
+    position: absolute;
+    left: 5px;
+    top: 2px;
+    bottom: 2px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--text-2);
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease);
+}
+
+.vw-seek.has-edit:hover .vw-cut::before,
+.vw-cut.is-dragging::before {
+    opacity: 0.9;
+}
+
+.vw-cut:hover::before,
+.vw-cut.is-dragging::before {
+    background: var(--accent);
+    opacity: 1;
+}
+
+/* ---------- Selected piece strip (right above the bar) ---------- */
+.vw-piece-host {
+    margin: 4px 4px 2px;
+}
+
+.vw-pstrip {
     display: flex;
     align-items: center;
-    gap: 8px;
-    min-height: 26px;
-    margin-bottom: 10px;
-    color: var(--text-2);
-    font-size: var(--fs-sm);
-    font-weight: 650;
-}
-
-.ve-sec-title .badge {
-    font-variant-numeric: tabular-nums;
-}
-
-/* In / Out points */
-.ve-points {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-}
-
-.ve-point {
-    display: flex;
-    flex-direction: column;
     gap: 6px;
-    padding: 10px 10px 10px 12px;
+    min-height: 34px;
+    padding: 3px 4px 3px 6px;
     border: 1px solid var(--line-2);
     border-radius: var(--r-lg);
-    background: var(--bg-2);
-    transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+    background: color-mix(in srgb, var(--bg-2) 80%, transparent);
+    animation: vw-pstrip-in 0.16s var(--ease);
 }
 
-.ve-point.is-set {
-    border-color: color-mix(in srgb, var(--warning) 55%, transparent);
-    background: var(--warning-soft);
+@keyframes vw-pstrip-in {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
 }
 
-.ve-point-label {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--text-3);
+.vw-pstrip .vw-sep {
+    height: 16px;
+    margin: 0 2px;
+}
+
+.vw-pstrip-tag {
+    flex: none;
+    padding: 2px 8px;
+    border-radius: var(--r-full);
+    background: var(--accent-soft);
+    color: var(--accent);
     font-size: var(--fs-xs);
     font-weight: 650;
+    white-space: nowrap;
 }
 
-.ve-point.is-set .ve-point-label .ico {
+.vw-pstrip.is-removed .vw-pstrip-tag {
+    background: var(--bg-4);
+    color: var(--text-2);
+}
+
+.vw-pstrip-range {
+    flex: none;
+    color: var(--text-2);
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.vw-pstrip-memo.input {
+    flex: 1 1 160px;
+    min-width: 120px;
+    height: 26px;
+    background: var(--bg-1);
+}
+
+.vw-pstrip-chips {
+    display: flex;
+    flex: 0 1 auto;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.vw-pstrip-addchip.btn.sm {
+    flex: none;
+    gap: 3px;
+    padding: 0 7px;
+    color: var(--text-2);
+}
+
+.vw-pstrip .btn.sm.icon {
+    flex: none;
+    width: 28px;
+    height: 28px;
+}
+
+.vw-pstrip.is-stale {
+    border-color: color-mix(in srgb, var(--warning) 45%, var(--line-2));
+    background: color-mix(in srgb, var(--warning) 10%, var(--bg-2));
+}
+
+.vw-pstrip-warn {
+    display: flex;
+    flex: none;
+    margin-left: 4px;
     color: var(--warning);
 }
 
-.ve-point-time {
-    align-self: flex-start;
+.vw-pstrip-text {
+    min-width: 0;
+    word-break: keep-all;
+    color: var(--text);
+    font-size: var(--fs-sm);
+}
+
+/* chip pills (strip + memo list) */
+.vw-chip-pill {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 3px;
+    max-width: 140px;
+    height: 20px;
+    padding: 0 4px 0 8px;
+    border-radius: var(--r-full);
+    background: color-mix(in srgb, var(--c, var(--accent)) 18%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c, var(--accent)) 40%, transparent);
+    color: var(--text);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.vw-chip-pill > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.vw-note-chips .vw-chip-pill {
+    padding-right: 8px;
+}
+
+.vw-chip-x {
+    display: grid;
+    place-items: center;
+    width: 15px;
+    height: 15px;
     padding: 0;
     border: none;
-    background: none;
-    color: var(--text);
-    font-size: var(--fs-lg);
-    font-weight: 650;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.01em;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-2);
     cursor: pointer;
 }
 
-.ve-point-time:hover:not(:disabled) {
-    color: var(--accent-2);
+.vw-chip-x:hover {
+    background: color-mix(in srgb, var(--text) 14%, transparent);
+    color: var(--text);
 }
 
-.ve-point-time:disabled {
-    color: var(--text-4);
-    cursor: default;
+/* chip picker popover */
+.vw-chip-popover {
+    width: 260px;
 }
 
-.ve-point-set {
-    align-self: flex-start;
+.vw-chip-pop {
+    display: flex;
+    flex-direction: column;
     gap: 6px;
 }
 
-#viewer .btn .kbd {
-    height: 16px;
-    min-width: 16px;
-    padding: 0 4px;
-    font-size: 9.5px;
-    border-bottom-width: 1px;
+.vw-chip-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    max-height: 260px;
+    overflow: auto;
 }
 
-#viewer .btn.primary .kbd {
-    border-color: color-mix(in srgb, var(--on-accent) 25%, transparent);
-    background: color-mix(in srgb, var(--on-accent) 12%, transparent);
-    color: var(--on-accent);
-}
-
-.ve-row {
+.vw-chip-opt {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-top: 10px;
+    height: 30px;
+    padding: 0 8px;
+    border: none;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: var(--fs-sm);
+    text-align: left;
+    cursor: pointer;
 }
 
-.ve-len {
+.vw-chip-opt:hover,
+.vw-chip-opt.is-active {
+    background: var(--bg-3);
+}
+
+.vw-chip-dot {
+    flex: none;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--c, var(--accent));
+}
+
+.vw-chip-name {
+    flex: 1;
+    min-width: 0;
+}
+
+.vw-chip-check {
+    display: flex;
+    color: var(--accent);
+}
+
+.vw-chip-empty {
+    padding: 10px 8px;
+    color: var(--text-3);
     font-size: var(--fs-sm);
+}
+
+/* ---------- '편집됨' state in the control row ---------- */
+.vw-edit-state {
+    gap: 2px;
+    margin-left: 8px;
+}
+
+.vw-edit-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 24px;
+    padding: 0 9px 0 8px;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: var(--r-full);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font: inherit;
+    font-size: var(--fs-xs);
+    font-weight: 650;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background var(--dur) var(--ease);
+}
+
+.vw-edit-badge:hover {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.vw-edit-count {
+    color: var(--text-2);
+    font-weight: 550;
     font-variant-numeric: tabular-nums;
 }
 
-/* Segment bin */
-.ve-empty {
-    padding: 14px 14px;
-    border: 1px dashed var(--line-2);
-    border-radius: var(--r-lg);
-    color: var(--text-3);
-    font-size: var(--fs-sm);
-    line-height: 1.7;
+.vw-ctl .vw-preview-btn.active {
+    color: var(--accent);
 }
 
-.ve-empty .kbd {
-    height: 18px;
-    margin: 0 1px;
-    vertical-align: 1px;
+/* ---------- Toolbar '저장' button ---------- */
+.vw-save-btn.btn.sm {
+    gap: 5px;
+    height: 30px;
+    padding: 0 8px 0 10px;
 }
 
-.ve-list {
+.vw-save-btn .vw-save-caret {
+    opacity: 0.7;
+}
+
+/* ---------- "needs the local server" notice at save time ---------- */
+.ve-need-pop {
+    max-width: 340px !important;
+}
+
+.ve-need {
     display: flex;
-    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.ve-need-icon {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--r);
+    background: var(--warning-soft);
+    color: var(--warning);
+}
+
+.ve-need-text {
+    flex: 1;
+    word-break: keep-all;
+    color: var(--text);
+    font-size: var(--fs-sm);
+    line-height: 1.45;
+}
+
+.ve-need .btn {
+    flex: none;
     gap: 4px;
 }
 
-.ve-seg {
-    position: relative;
+/* ---------- Range / queue chip (App.viewer.openAt / playSequence) ---------- */
+.vw-segchip {
+    position: absolute;
+    left: 16px;
+    top: 16px;
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 5px 4px 5px 2px;
-    border: 1px solid var(--line);
-    border-radius: var(--r);
-    background: var(--bg-2);
-    cursor: pointer;
-    outline: none;
-    transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
-}
-
-.ve-seg:hover {
-    background: var(--bg-3);
-}
-
-.ve-seg:focus-visible {
-    box-shadow: var(--focus-ring);
-}
-
-.ve-seg.is-selected {
-    border-color: color-mix(in srgb, var(--success) 60%, transparent);
-    background: var(--success-soft);
-}
-
-.ve-list.is-sorting .ve-seg:not(.is-dragging) {
-    transition: transform 0.16s var(--ease);
-}
-
-.ve-seg.is-dragging {
-    z-index: 2;
-    background: var(--bg-3);
-    box-shadow: var(--sh-2);
-    cursor: grabbing;
-}
-
-.ve-grip {
-    display: grid;
-    place-items: center;
-    width: 18px;
-    height: 30px;
-    flex-shrink: 0;
-    color: var(--text-4);
-    cursor: grab;
-    touch-action: none;
-}
-
-.ve-grip:hover {
-    color: var(--text-2);
-}
-
-.ve-idx {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    flex-shrink: 0;
-    border-radius: 50%;
-    background: var(--bg-4);
-    color: var(--text-2);
-    font-size: 10.5px;
-    font-weight: 700;
-}
-
-.ve-seg.is-selected .ve-idx {
-    background: var(--success);
-    color: var(--bg-1);
-}
-
-.ve-seg-body {
-    flex: 1;
-    min-width: 0;
-}
-
-.ve-seg-range {
-    font-size: var(--fs-sm);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-}
-
-.ve-seg-src {
-    color: var(--text-3);
-    font-size: var(--fs-xs);
-}
-
-.ve-seg.is-other .ve-seg-src {
-    color: var(--info);
-}
-
-.ve-seg-len {
-    flex-shrink: 0;
-    margin-right: 2px;
-    color: var(--text-3);
-    font-size: var(--fs-xs);
-    font-variant-numeric: tabular-nums;
-}
-
-/* Export */
-.ve-mode {
-    display: flex;
-    width: 100%;
-}
-
-.ve-mode button {
-    flex: 1;
-    justify-content: center;
-}
-
-.ve-mode button:disabled {
-    opacity: 0.4;
-    cursor: default;
-}
-
-.ve-help {
-    margin: 8px 2px 0;
-    color: var(--text-3);
-    font-size: var(--fs-xs);
-    line-height: 1.6;
-}
-
-.ve-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    margin-top: 12px;
-}
-
-.ve-actions .btn {
-    height: 34px;
-}
-
-.ve-busy {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    margin-top: 10px;
-    padding: 10px 12px;
-    border-radius: var(--r);
-    background: var(--bg-2);
-    font-size: var(--fs-sm);
-}
-
-.ve-progress {
-    flex-basis: 100%;
-}
-
-/* Rotate / flip */
-.ve-ops {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
     gap: 6px;
-}
-
-.ve-op {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 5px;
-    padding: 9px 4px 8px;
+    max-width: min(560px, calc(100% - 32px));
+    height: 36px;
+    padding: 0 4px 0 12px;
     border: 1px solid var(--line-2);
-    border-radius: var(--r);
-    background: var(--bg-2);
-    color: var(--text-2);
-    font-size: var(--fs-xs);
-    font-weight: 600;
-    cursor: pointer;
-    transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-
-.ve-op:hover {
-    background: var(--bg-3);
+    border-radius: var(--r-full);
+    background: var(--bg-glass);
+    box-shadow: var(--sh-2);
     color: var(--text);
+    font-size: var(--fs-sm);
+    backdrop-filter: blur(18px) saturate(1.4);
+    transition: opacity 0.35s var(--ease);
 }
 
-.ve-op.on {
-    border-color: var(--accent-line);
-    background: var(--accent-soft);
-    color: var(--accent-2);
+#viewer.vw-idle .vw-segchip {
+    opacity: 0.45;
 }
 
-.ve-op .ico {
-    width: 17px;
-    height: 17px;
-}
-
-.ve-sec .ve-row .seg {
-    flex: 0 1 auto;
-}
-
-/* Server notice */
-.ve-server {
+.vw-segchip-icon {
     display: flex;
-    gap: 10px;
-    margin: 0 0 12px;
-    padding: 12px 14px;
-    border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
-    border-radius: var(--r-lg);
-    background: var(--warning-soft);
+    flex: none;
+    color: var(--accent);
 }
 
-.ve-server-icon {
-    flex-shrink: 0;
-    margin-top: 1px;
-    color: var(--warning);
+.vw-segchip-title {
+    flex: none;
+    font-weight: 650;
+    white-space: nowrap;
 }
 
-.ve-server-body {
+.vw-segchip.is-seq .vw-segchip-title {
+    flex: 0 1 auto;
     min-width: 0;
+    max-width: 160px;
 }
 
-.ve-server-title {
-    margin-bottom: 3px;
+.vw-segchip-dot {
+    flex: none;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--text-3);
+}
+
+.vw-segchip-name {
+    min-width: 0;
+    color: var(--text-2);
+}
+
+.vw-segchip-range,
+.vw-segchip-count {
+    flex: none;
+    color: var(--text-2);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.vw-segchip-count {
+    padding: 1px 7px;
+    border-radius: var(--r-full);
+    background: var(--bg-4);
     color: var(--text);
+    font-size: var(--fs-xs);
     font-weight: 650;
 }
 
-.ve-server-text {
-    margin-bottom: 8px;
-    color: var(--text-2);
-    font-size: var(--fs-sm);
-    line-height: 1.6;
+.vw-segchip .btn.sm.icon {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--r-full);
 }
 
-.ve-server-text b {
-    color: var(--text);
-    font-weight: 600;
-    word-break: keep-all;
-    overflow-wrap: anywhere;
+/* ---------- 메모 목록 (markers + pieces) ---------- */
+.vw-piece-row .vw-piece-glyph {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    background: var(--accent-soft);
+    color: var(--accent);
 }
 
-.ve-server-body .btn:only-of-type {
-    margin-top: 2px;
+.vw-piece-row.is-removed .vw-piece-glyph {
+    background: var(--bg-4);
+    color: var(--text-3);
 }
 
-/* "보기 방향 적용" row: the viewer's rotation/flip baked into a new file */
-.ve-view-orient {
-    align-items: flex-start;
-    margin-top: 6px;
-    margin-bottom: 4px;
+.vw-piece-row.is-removed .vw-mk-name {
+    color: var(--text-3);
 }
 
-.ve-view-orient .ve-help {
-    flex: 1;
-    margin: 2px 2px 0;
+.vw-piece-row.is-removed .vw-piece-title {
+    text-decoration: line-through;
+    text-decoration-color: color-mix(in srgb, var(--text-3) 60%, transparent);
 }
 
-.ve-view-orient .btn {
-    flex-shrink: 0;
+.vw-piece-row.is-selected {
+    background: var(--accent-soft);
+    box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.vw-piece-len {
+    color: var(--text-3);
+    font-weight: 500;
+}
+
+.vw-note-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 5px;
+}
+
+/* keep the 2px gap after the background shorthands above */
+.vw-seek-edit .vw-piece {
+    background-clip: padding-box;
+}
+
+/* the hover time/preview floats above the piece strip instead of covering the memo field */
+.vw-ctl:has(.vw-piece-host:not([hidden])) .vw-seek-hover {
+    bottom: calc(100% + 50px);
 }
