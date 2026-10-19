@@ -350,13 +350,136 @@
         el._i = i;
     }
 
+    // ---------- Interaction lock ----------
+    // While the user is in the middle of an interaction (pointer held on an item, a context menu or a drag), background
+    // updates (thumbnails, folder stats, media info, re-sorts) are queued instead of moving or touching the cards under the
+    // pointer. The queue is applied in one frame on release, and never waits more than ~400 ms.
+    const LOCK_MAX_MS = 400;
+    const lock = { pointer: false, timer: 0, forced: false, since: 0 };
+    let menuEl = null;
+    const dirty = new Set(); // rendered paths whose content must be refreshed in place
+    let dirtyAll = false;
+    let pendingView = null; // { reasons: Set, background } — a view change deferred by the lock
+    let hoverRecheck = false;
+
+    function locked() {
+        if (lock.forced) return false;
+        return lock.pointer || dragActive || !!(menuEl && menuEl.isConnected);
+    }
+
+    function hasQueued() {
+        return !!pendingView || dirtyAll || dirty.size > 0;
+    }
+
+    /** Apply queued updates in the next frame — or, while locked, as soon as the lock is released (max ~400 ms) */
+    function requestFlush() {
+        if (!locked()) return schedule();
+        armLockTimer();
+    }
+
+    /** A lock held for LOCK_MAX_MS lets queued work through anyway (a long press must not freeze the gallery) */
+    function armLockTimer() {
+        if (lock.timer) return;
+        lock.timer = setTimeout(onLockTimer, Math.max(16, lock.since + LOCK_MAX_MS - performance.now()));
+    }
+
+    function onLockTimer() {
+        lock.timer = 0;
+        if (!hasQueued()) return;
+        if (!locked()) return schedule();
+        const left = lock.since + LOCK_MAX_MS - performance.now();
+        if (left > 8) {
+            lock.timer = setTimeout(onLockTimer, left);
+            return;
+        }
+        lock.forced = true;
+        schedule();
+    }
+
+    /** A new interaction starts now: nothing queued may land in the middle of it for LOCK_MAX_MS */
+    function startLock() {
+        lock.since = performance.now();
+        lock.forced = false;
+        clearTimeout(lock.timer);
+        lock.timer = 0;
+        if (hasQueued()) armLockTimer();
+    }
+
+    function releaseLock() {
+        if (hasQueued()) schedule();
+    }
+
+    function releasePointerLock() {
+        if (!lock.pointer) return;
+        lock.pointer = false;
+        releaseLock();
+    }
+
+    function flushDirty() {
+        if (!dirtyAll && !dirty.size) return;
+        const paths = dirtyAll ? [...rendered.keys()] : [...dirty];
+        dirtyAll = false;
+        dirty.clear();
+        stats.flushes++;
+        const list = App.view.visible;
+        for (const p of paths) {
+            const el = rendered.get(p);
+            if (!el) continue;
+            const i = App.view.indexOf(p);
+            if (i < 0) {
+                el.remove();
+                rendered.delete(p);
+                continue;
+            }
+            updateItem(el, list[i]);
+        }
+    }
+
+    /** Remove every element and build again (view mode switch, navigation, workspace change) */
+    function rebuildAll() {
+        stats.rebuilt += rendered.size;
+        for (const el of rendered.values()) el.remove();
+        rendered.clear();
+        dirty.clear();
+        dirtyAll = false;
+        lastPrioritized = '';
+    }
+
+    let lastProgScroll = -1;
+    const lastRender = { top: -1, width: -1 };
     function renderWindow() {
         if (!scroller || !App.fs.ready) return;
+        let canFlush = !locked();
+        if (!canFlush && pendingView) {
+            // App.view already holds the deferred order: reconciling against it would move or drop the cards under the
+            // pointer. Nothing scrolled or resized → keep the window exactly as it is; otherwise apply the change now
+            // so geometry and order stay consistent.
+            if (pendingScroll == null && scrollTopCache === lastRender.top && L.width === lastRender.width) {
+                armLockTimer();
+                return;
+            }
+            lock.forced = true;
+            canFlush = true;
+        }
+        if (canFlush) {
+            lock.forced = false;
+            clearTimeout(lock.timer);
+            lock.timer = 0;
+            if (pendingView) {
+                const pv = pendingView;
+                pendingView = null;
+                applyViewChange(pv.reasons, pv.background, true);
+            }
+        }
         if (pendingScroll != null) {
+            const was = scroller.scrollTop;
             scroller.scrollTop = pendingScroll;
             pendingScroll = null;
             scrollTopCache = scroller.scrollTop; // clamped by the browser
+            lastProgScroll = scrollTopCache !== was ? scrollTopCache : -1; // a scroll event follows only if it moved
         }
+        lastRender.top = scrollTopCache;
+        lastRender.width = L.width;
         const list = App.view.visible;
         const { start, end, visStart, visEnd } = windowRange();
         for (const [p, el] of rendered) {
@@ -364,14 +487,17 @@
             if (i < start || i >= end) {
                 el.remove();
                 rendered.delete(p);
+                dirty.delete(p);
             }
         }
+        if (canFlush) flushDirty();
+        else if (hasQueued()) armLockTimer();
         let frag = null;
         for (let i = start; i < end; i++) {
             const entry = list[i];
             let el = rendered.get(entry.path);
             if (!el) {
-                el = mode === 'list' ? buildRow(entry) : buildCard(entry);
+                el = buildItem(entry);
                 rendered.set(entry.path, el);
                 (frag || (frag = document.createDocumentFragment())).append(el);
                 if (dropState.path === entry.path || spring.dir === entry.path) reattachDragState(el, entry.path);
@@ -382,8 +508,13 @@
         if (frag) canvas.append(frag);
         if (list.length) {
             const top = viewRange().top;
-            const i = indexAtY(top);
-            anchor = { i, offset: itemRect(i).y - top };
+            let i = indexAtY(top);
+            if (itemRect(i).y + itemRect(i).h <= top && i + L.cols < list.length) i += L.cols; // top sits in the gap below a row
+            anchor = { i, offset: itemRect(i).y - top, path: list[i].path };
+        }
+        if (hoverRecheck) {
+            hoverRecheck = false;
+            recheckHover();
         }
         const key = `${visStart}:${visEnd}:${L.version}`;
         if (key !== lastPrioritized) {
@@ -469,7 +600,15 @@
         scrollMotion.vel = 0;
         const jobs = [...deferredThumbs];
         deferredThumbs.clear();
-        for (const j of jobs) if (j.holder.isConnected) requestThumb(j.holder, j.img, j.entry, j.onReady);
+        for (const j of jobs) if (live(j.holder).isConnected) requestThumb(j.holder, j.img, j.entry, j.onReady);
+    }
+
+    // In-place updates (see morph) keep the OLD element and drop the freshly built one; a thumbnail request started for
+    // the fresh element follows `_live` to the element that is really on screen. A token per holder lets the newest win.
+    let thumbSeq = 0;
+    function live(n) {
+        while (n && n._live) n = n._live;
+        return n;
     }
 
     function setThumb(holder, img, entry, onReady) {
@@ -483,23 +622,32 @@
             holder.classList.add('no-thumb');
             return;
         }
+        holder._thumbToken = ++thumbSeq;
+        holder._thumbPending = true;
         if (flingScrolling()) deferredThumbs.add({ holder, img, entry, onReady });
         else requestThumb(holder, img, entry, onReady);
     }
 
     function requestThumb(holder, img, entry, onReady) {
+        const token = holder._thumbToken;
         App.thumbs.get(entry).then((url) => {
+            const H = live(holder);
+            const I = live(img);
+            if (H._thumbToken !== token) return; // a newer render of this item owns the holder now
+            H._thumbPending = false;
             if (!url) {
-                holder.classList.add('no-thumb');
+                H.classList.remove('has-thumb');
+                H.classList.add('no-thumb');
                 onReady?.(false);
                 return;
             }
-            img.src = url;
+            if (I.getAttribute('src') !== url) I.src = url;
             const show = () => {
-                holder.classList.add('has-thumb');
+                if (H._thumbToken !== token) return;
+                H.classList.add('has-thumb');
                 onReady?.(true);
             };
-            if (img.decode) img.decode().then(show, show);
+            if (I.decode) I.decode().then(show, show);
             else show();
         });
     }
@@ -542,7 +690,8 @@
         const ph = h('div', { class: 'card-ph', html: ui.icon(entry.type === 'video' ? 'film' : 'image', { size: 26 }) });
         media.append(ph, img);
         const ext = () => {
-            if (!ph.querySelector('.card-ext')) ph.append(h('span', { class: 'card-ext', text: (entry.ext || '?').toUpperCase() }));
+            const at = live(ph);
+            if (!at.querySelector('.card-ext')) at.append(h('span', { class: 'card-ext', text: (entry.ext || '?').toUpperCase() }));
         };
         if (!App.thumbs.canThumb(entry)) ext();
         setThumb(card, img, entry, (ok) => {
@@ -567,6 +716,7 @@
 
     function mosaicCell(e) {
         const cell = h('div', { class: 'mosaic-cell' });
+        cell._mkey = `${e.path}:${e.mtime || 0}`; // another sample is another cell: never morph one photo into a different one
         const img = h('img', { alt: '', draggable: 'false', decoding: 'async' });
         cell.append(img);
         setThumb(cell, img, e);
@@ -675,7 +825,7 @@
                 if (!ok) return;
                 // Images learn their resolution while the thumbnail is made: fill the cell in place
                 const mm = App.catalog.peek(entry.path)?.meta;
-                const res = row.querySelector('.lc-res');
+                const res = live(row).querySelector('.lc-res');
                 if (res && mm?.w && mm?.h) res.textContent = `${mm.w}×${mm.h}`;
             });
         }
@@ -724,6 +874,109 @@
         return row;
     }
 
+    // ---------- In-place updates ----------
+    // Owner: '폴더 다중 선택이 안 돼'. Cards used to be removed and rebuilt whenever a thumbnail, folder stats or media
+    // info arrived; a click whose mousedown and mouseup straddled a rebuild landed on the canvas and was lost. Now an
+    // item element lives as long as its path is rendered: updates build a fresh element off-DOM and morph the live one
+    // into it (attributes, classes, text, children), keeping element identity, loaded thumbnails and transient state.
+    const KEEP_SELECTOR = '.card-scrub, .card-scrub-video, .drop-label'; // owned by hover preview / drag & drop, never morphed away
+    const KEEP_CLASSES = ['scrubbing', 'drop-target', 'spring-armed'];
+    const stats = { built: 0, morphed: 0, flushes: 0, rebuilt: 0, recovered: 0 };
+
+    function isKeepNode(n) {
+        return n.nodeType === 1 && n.matches(KEEP_SELECTOR);
+    }
+
+    function nodeKey(n) {
+        if (n.nodeType !== 1) return '#' + n.nodeType;
+        const cls = n.getAttribute('class') || '';
+        const sp = cls.indexOf(' ');
+        return `${n.tagName}|${sp < 0 ? cls : cls.slice(0, sp)}|${n._mkey || ''}`;
+    }
+
+    function syncClasses(o, f) {
+        const want = new Set(f.classList);
+        for (const c of KEEP_CLASSES) if (o.classList.contains(c)) want.add(c);
+        // (A pending thumbnail shows the placeholder again: that only happens when the cached one was dropped — cache
+        // cleared, thumbnail regenerated — and its object URL may already be revoked. Cached thumbnails stay put.)
+        for (const c of [...o.classList]) if (!want.has(c)) o.classList.remove(c);
+        for (const c of want) if (!o.classList.contains(c)) o.classList.add(c);
+    }
+
+    function syncAttributes(o, f, root) {
+        for (const a of f.attributes) {
+            if (a.name === 'class' || (root && a.name === 'style')) continue;
+            if (o.getAttribute(a.name) !== a.value) o.setAttribute(a.name, a.value);
+        }
+        for (const a of [...o.attributes]) {
+            if (a.name === 'class' || a.name === 'src' || (root && a.name === 'style')) continue;
+            if (!f.hasAttribute(a.name)) o.removeAttribute(a.name);
+        }
+        syncClasses(o, f);
+        if (root) {
+            // The item root is positioned by place() (transform/size); only custom properties come from decorators
+            for (const prop of [...f.style]) if (prop.startsWith('--') && o.style.getPropertyValue(prop) !== f.style.getPropertyValue(prop)) o.style.setProperty(prop, f.style.getPropertyValue(prop));
+            for (const prop of [...o.style]) if (prop.startsWith('--') && !f.style.getPropertyValue(prop)) o.style.removeProperty(prop);
+        }
+        if (o.tagName === 'IMG' && f.hasAttribute('src') && o.getAttribute('src') !== f.getAttribute('src')) o.src = f.getAttribute('src');
+        // The fresh element's pending thumbnail request now belongs to the live element
+        if (f._thumbToken !== undefined || o._thumbToken !== undefined) {
+            o._thumbToken = f._thumbToken;
+            o._thumbPending = !!f._thumbPending;
+        }
+        f._live = o;
+    }
+
+    function morphNode(o, f, root = false) {
+        if (o.nodeType !== 1) {
+            if (o.nodeValue !== f.nodeValue) o.nodeValue = f.nodeValue;
+            return;
+        }
+        if (o.namespaceURI !== f.namespaceURI || o.tagName === 'svg') {
+            // Icons: compare the markup once instead of walking every path
+            if (o.outerHTML !== f.outerHTML) o.replaceWith(f);
+            return;
+        }
+        syncAttributes(o, f, root);
+        morphChildren(o, f);
+    }
+
+    function morphChildren(o, f) {
+        const olds = [];
+        for (const n of o.childNodes) if (!isKeepNode(n)) olds.push(n);
+        const fresh = [...f.childNodes];
+        let oi = 0;
+        let prev = null;
+        for (const n of fresh) {
+            const k = nodeKey(n);
+            let j = oi;
+            while (j < olds.length && nodeKey(olds[j]) !== k) j++;
+            if (j < olds.length) {
+                for (let x = oi; x < j; x++) olds[x].remove();
+                morphNode(olds[j], n);
+                prev = olds[j];
+                oi = j + 1;
+            } else {
+                o.insertBefore(n, prev ? prev.nextSibling : o.firstChild);
+                prev = n;
+            }
+        }
+        for (let x = oi; x < olds.length; x++) olds[x].remove();
+    }
+
+    function buildItem(entry) {
+        stats.built++;
+        return mode === 'list' ? buildRow(entry) : buildCard(entry);
+    }
+
+    /** Refresh one rendered item from its current data without replacing the element */
+    function updateItem(el, entry) {
+        const fresh = buildItem(entry);
+        morphNode(el, fresh, true);
+        stats.morphed++;
+        if (scrub.card === el) paintScrub();
+    }
+
     function setRating(paths, n) {
         const before = new Map(paths.map((p) => [p, App.catalog.get(p).rating || 0]));
         const apply = (valueFor) => App.catalog.updateMany(paths, (e, p) => {
@@ -755,23 +1008,32 @@
             return App.settings.get('gallery.size', 180);
         },
 
+        /** Refresh every rendered item in place (decorators, badges, thumbnails…). Elements keep their identity. */
         refresh() {
-            for (const el of rendered.values()) el.remove();
-            rendered.clear();
+            if (!rendered.size) return schedule();
+            dirtyAll = true;
             lastPrioritized = '';
-            schedule();
+            requestFlush();
         },
 
-        /** Re-render only these items (after their metadata changed) */
+        /** Refresh only these items (after their metadata changed), in place, coalesced into one frame */
         invalidate(paths) {
+            let any = false;
             for (const p of paths || []) {
-                const el = rendered.get(p);
-                if (!el) continue;
-                el.remove();
-                rendered.delete(p);
+                if (!rendered.has(p)) continue; // not on screen: it is built fresh when it scrolls in
+                dirty.add(p);
+                any = true;
             }
-            schedule();
+            if (any) requestFlush();
         },
+
+        /** True while a click / context menu / drag holds background updates back (they apply on release) */
+        get busy() {
+            return locked();
+        },
+
+        /** Counters for tests and diagnostics: built / morphed / rebuilt elements, flushes, recovered clicks */
+        stats,
 
         scrollTo(p, { center = false } = {}) {
             const i = App.view.indexOf(p);
@@ -819,7 +1081,8 @@
             applyModeClasses();
             layout();
             restoreAnchor(a);
-            gallery.refresh();
+            rebuildAll(); // cards and rows are different elements
+            schedule();
             App.topbar?.renderViewbar?.();
             App.bus.emit('gallery:mode', { mode: m });
         },
@@ -891,40 +1154,123 @@
     }
 
     // ---------- Clicks ----------
+    // The item under pointerdown is remembered. If the click then lands outside any item (its element changed between
+    // down and up), and the pointer did not move, the click still goes to the item that was pressed.
+    let press = null; // { path, x, y, id, button, check, star, moved, clicked, at }
+
+    function notePress(e) {
+        const el = itemElFrom(e.target);
+        if (!el || !canvas.contains(el)) {
+            press = null;
+            return;
+        }
+        const star = e.target.closest('.lstar');
+        press = {
+            path: el.dataset.path,
+            x: e.clientX,
+            y: e.clientY,
+            id: e.pointerId,
+            button: e.button,
+            check: !!e.target.closest('.card-check'),
+            star: star ? Number(star.dataset.n) : 0,
+            moved: false,
+            clicked: false,
+            at: performance.now(),
+        };
+        lock.pointer = true;
+        startLock();
+    }
+
+    /** The pressed item, when an event without an item target still belongs to it */
+    function recoverPress(e, button, pr = press) {
+        if (!pr || pr.button !== button || pr.moved || performance.now() - pr.at > 10000) return null;
+        if (Math.hypot(e.clientX - pr.x, e.clientY - pr.y) > 6) return null;
+        if (App.view.indexOf(pr.path) < 0) return null;
+        stats.recovered++;
+        return pr;
+    }
+
+    // Chrome drops the click entirely when the node under mousedown is removed before mouseup. pointerup, mouseup and
+    // click are dispatched in one task, so a press that saw no click by the next task (or by the next pointerdown,
+    // whichever comes first — timers can lag behind input on a busy page) is clicked by us.
+    let pendingUp = null; // { pr, mods, clientX, clientY }
+
+    function settlePendingUp() {
+        const u = pendingUp;
+        pendingUp = null;
+        if (!u || u.pr.clicked) return;
+        const rec = recoverPress(u, 0, u.pr);
+        if (!rec) return;
+        rec.clicked = true;
+        clickItem(rec.path, u.mods, rec);
+        // Chrome drops the dblclick with the click: the second of two quick plain clicks on one item opens it
+        const plain = !u.mods.ctrlKey && !u.mods.shiftKey && !u.mods.metaKey && !rec.check && !rec.star;
+        const lc = lastClick;
+        if (plain && lc && lc.path === rec.path && performance.now() - lc.t < 500 && Math.hypot(lc.x - u.clientX, lc.y - u.clientY) < 6) {
+            lastClick = null;
+            syntheticOpenAt = performance.now();
+            const entry = App.view.get(rec.path);
+            if (entry) App.nav.open(entry);
+        } else noteClick(rec.path, u, plain);
+    }
+
+    let lastClick = null; // { path, t, x, y } of the last plain item click (double-click recovery)
+    let syntheticOpenAt = 0;
+
+    function noteClick(p, e, plain) {
+        lastClick = plain && p ? { path: p, t: performance.now(), x: e.clientX, y: e.clientY } : null;
+    }
+
+    function clickItem(p, mods, { check = false, star = 0 } = {}) {
+        if (star) {
+            const cur = App.catalog.get(p).rating || 0;
+            setRating([p], cur === star ? 0 : star);
+            return;
+        }
+        if (check) {
+            App.select.toggle(p);
+            return;
+        }
+        if (mods.shiftKey) App.select.range(p, { additive: mods.ctrlKey || mods.metaKey });
+        else if (mods.ctrlKey || mods.metaKey) App.select.toggle(p);
+        else App.select.set([p]);
+    }
+
     function onClick(e) {
+        const pr = press;
+        if (pr) pr.clicked = true;
         if (suppressClick) {
             suppressClick = false;
             return;
         }
         if (e.target.closest('.lhead')) return;
         const el = itemElFrom(e.target);
+        const mods = e.ctrlKey || e.shiftKey || e.metaKey;
         if (!el || !canvas.contains(el)) {
-            if (!e.ctrlKey && !e.shiftKey && !e.metaKey) App.select.clear();
+            const rec = e.target.closest('.lasso') ? null : recoverPress(e, 0);
+            if (rec) clickItem(rec.path, e, rec);
+            else if (!mods) App.select.clear();
+            noteClick(rec && rec.path, e, !mods && rec && !rec.check && !rec.star);
             return;
         }
-        const p = el.dataset.path;
         const star = e.target.closest('.lstar');
-        if (star) {
-            star.blur(); // keep Space/Enter for the gallery commands
-            const n = Number(star.dataset.n);
-            const cur = App.catalog.get(p).rating || 0;
-            setRating([p], cur === n ? 0 : n);
-            return;
-        }
-        if (e.target.closest('.card-check')) {
-            App.select.toggle(p);
-            return;
-        }
-        if (e.shiftKey) App.select.range(p, { additive: e.ctrlKey || e.metaKey });
-        else if (e.ctrlKey || e.metaKey) App.select.toggle(p);
-        else App.select.set([p]);
+        if (star) star.blur(); // keep Space/Enter for the gallery commands
+        const check = !!e.target.closest('.card-check');
+        clickItem(el.dataset.path, e, { check, star: star ? Number(star.dataset.n) : 0 });
+        noteClick(el.dataset.path, e, !mods && !check && !star);
     }
 
     function onDblClick(e) {
+        if (performance.now() - syntheticOpenAt < 600) return; // already opened by the double-click recovery
         if (e.target.closest('.lstar, .lhead, .card-check')) return;
         const el = itemElFrom(e.target);
-        if (!el) return;
-        const entry = App.view.get(el.dataset.path);
+        let p = el && canvas.contains(el) ? el.dataset.path : null;
+        if (!p) {
+            const rec = recoverPress(e, 0);
+            if (rec && !rec.check && !rec.star) p = rec.path;
+        }
+        if (!p) return;
+        const entry = App.view.get(p);
         if (entry) App.nav.open(entry);
     }
 
@@ -955,6 +1301,9 @@
     }
 
     function onPointerDown(e) {
+        settlePendingUp(); // the previous click first, in order (Shift ranges depend on the anchor it sets)
+        lastPointer = { x: e.clientX, y: e.clientY };
+        notePress(e);
         endScrub();
         if (!lassoCandidate(e)) return;
         const cr = canvas.getBoundingClientRect();
@@ -977,6 +1326,8 @@
 
     function startLasso() {
         lasso.active = true;
+        if (press) press.moved = true;
+        releasePointerLock(); // the lasso hit-tests layout geometry: it never needs the cards to hold still
         try {
             scroller.setPointerCapture(lasso.id);
         } catch (err) {
@@ -1109,6 +1460,10 @@
         // Native drags swallow pointer events, so any pointermove means a drag is over (even if its source
         // card was detached by spring-loading and its dragend never reached us)
         if (dragActive && !e.buttons) endDrag();
+        lastPointer = { x: e.clientX, y: e.clientY };
+        // Only moves while the button is still down count (input runs before timers: the next item's approach can
+        // arrive before the previous click is settled)
+        if (press && !press.moved && !press.released && e.pointerId === press.id && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 5) press.moved = true;
         if (lasso && e.pointerId === lasso.id) {
             lasso.cx = e.clientX;
             lasso.cy = e.clientY;
@@ -1129,6 +1484,19 @@
 
     function onPointerUp(e) {
         if (lasso && e.pointerId === lasso.id) endLasso(false);
+        const pr = press;
+        if (pr && e.pointerId === pr.id) pr.released = true;
+        if (pr && e.pointerId === pr.id && pr.button === 0 && e.button === 0 && !pr.moved) {
+            settlePendingUp();
+            pendingUp = { pr, mods: { ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, metaKey: e.metaKey }, clientX: e.clientX, clientY: e.clientY };
+            setTimeout(settlePendingUp, 0);
+        }
+    }
+
+    // A press can end anywhere (outside the gallery, over a menu…): always release the pointer lock
+    function onWindowPointerUp(e) {
+        if (press && e.pointerId === press.id) press.released = true;
+        if (lock.pointer) setTimeout(releasePointerLock, 0); // after this task's click has seen the cards as they were
     }
 
     // ---------- Video hover scrub: only the hovered card gets a (shared) <video> ----------
@@ -1136,6 +1504,23 @@
     let scrubVideo = null;
     let scrubSrc = null; // { path, url, release } — kept for re-hovering the same clip
     let dragActive = false;
+    let lastPointer = null; // last pointer position over the gallery (client coordinates)
+
+    /**
+     * After a background refresh moved or updated cards: keep the preview while its card is still the one under the
+     * resting pointer (owner rule: only the hovered card plays), end it when the clip is gone or another card is there.
+     */
+    function recheckHover() {
+        if (!scrub.path) return;
+        if (App.view.indexOf(scrub.path) < 0 || mode !== 'grid') return endScrub();
+        const el = rendered.get(scrub.path);
+        if (!el) return endScrub();
+        if (scrub.card !== el) reattachScrub(el);
+        if (!lastPointer) return;
+        const under = document.elementFromPoint(lastPointer.x, lastPointer.y);
+        const media = under && under.closest ? under.closest('.card.is-video > .card-media') : null;
+        if (!media || media.parentElement !== el) endScrub();
+    }
 
     function scrubEnabled() {
         return App.settings.get('gallery.scrub', true) !== false;
@@ -1352,7 +1737,7 @@
         if (!media || !card.classList.contains('is-video')) return;
         scrub.card = card;
         card.classList.add('scrubbing');
-        media.append(h('div', { class: 'card-scrub', 'aria-hidden': 'true' }, h('i')));
+        if (!media.querySelector('.card-scrub')) media.append(h('div', { class: 'card-scrub', 'aria-hidden': 'true' }, h('i')));
         if (scrubVideo && scrubVideo.dataset.path === scrub.path) media.insertBefore(scrubVideo, media.querySelector('.card-check'));
         paintScrub();
     }
@@ -1492,11 +1877,18 @@
         e.preventDefault();
         endScrub();
         const el = itemElFrom(e.target);
-        if (el && !App.select.has(el.dataset.path)) App.select.set([el.dataset.path]);
-        if (!el && App.select.count && !e.ctrlKey) App.select.clear();
-        const entries = el ? App.select.entries() : [];
+        // Right-pressed on an item whose element changed before the menu event: the menu is still for that item
+        const p = el && canvas.contains(el) ? el.dataset.path : recoverPress(e, 2)?.path || null;
+        if (p && !App.select.has(p)) App.select.set([p]);
+        if (!p && App.select.count && !e.ctrlKey) App.select.clear();
+        const entries = p ? App.select.entries() : [];
         const items = buildContextMenu(entries);
-        if (items.length) ui.menu(items, { x: e.clientX, y: e.clientY });
+        if (!items.length) return;
+        ui.menu(items, { x: e.clientX, y: e.clientY });
+        // Hold background re-layouts back while the menu is open, so its item doesn't jump away underneath it
+        const menus = document.querySelectorAll('body > .menu');
+        menuEl = menus.length ? menus[menus.length - 1] : null;
+        if (menuEl) startLock();
     }
 
     // ---------- Move / copy with toast + undo (drop, paste) ----------
@@ -1711,7 +2103,9 @@
         const p = el.dataset.path;
         if (!App.select.has(p)) App.select.set([p]);
         dragPaths = App.select.list();
-        dragActive = true;
+        dragActive = true; // holds background re-layouts back until the drop (see locked())
+        if (press) press.moved = true;
+        lock.pointer = false;
         endScrub();
         e.dataTransfer.effectAllowed = 'copyMove';
         e.dataTransfer.setData('application/x-fi-paths', JSON.stringify(dragPaths));
@@ -1816,11 +2210,13 @@
     }
 
     function endDrag() {
+        const was = dragActive;
         dragPaths = null;
         dragActive = false;
         disarmSpring();
         clearDropTargets();
         scroller?.classList.remove('is-dragging');
+        if (was) releaseLock();
     }
 
     async function onDrop(e) {
@@ -2112,6 +2508,118 @@
         return restoredScroll ? scrollMemory.get(src.path) : 0;
     }
 
+    // ---------- View changes (new listing, re-sort, filter, patch) ----------
+    let lastInputAt = 0;
+    const BACKGROUND_QUIET_MS = 1000;
+
+    /** A change nobody asked for just now (e.g. thumbs re-sorting by resolution after reading media info) */
+    function isBackgroundChange(payload) {
+        if (payload && typeof payload.background === 'boolean') return payload.background;
+        return performance.now() - lastInputAt > BACKGROUND_QUIET_MS;
+    }
+
+    function onViewChanged(payload) {
+        const reason = (payload && payload.reason) || 'refresh';
+        const background = isBackgroundChange(payload);
+        if (!pendingView) pendingView = { reasons: new Set(), background: true };
+        pendingView.reasons.add(reason);
+        pendingView.background = pendingView.background && background;
+        // Navigation (another folder / search) always applies at once; same-list updates wait for the interaction lock
+        const navigation = reason === 'entries' && sourceKey(App.view.source) !== sourceKey(lastSource);
+        if (navigation || !locked()) {
+            const pv = pendingView;
+            pendingView = null;
+            applyViewChange(pv.reasons, pv.background, false);
+        } else requestFlush();
+    }
+
+    function applyViewChange(reasons, background, inFrame) {
+        const restore = reasons.has('entries') ? onEntriesChanged() : null;
+        const navigated = restore != null;
+        const sorted = reasons.has('sort');
+        hideBubble();
+        // Background re-sort: keep the first visible item where it is instead of jumping to the focus
+        const keep = !navigated && sorted && background && anchor.path ? { path: anchor.path, offset: anchor.offset } : null;
+        layout();
+        if (navigated) {
+            endScrub();
+            hideSortPill();
+            rebuildAll();
+            setScrollTop(restore);
+        } else {
+            // Same list: elements stay, content is refreshed in place (entries may carry new sizes/dates)
+            dirtyAll = rendered.size > 0;
+            if (scrub.path) hoverRecheck = true;
+        }
+        if (mode === 'list' && (sorted || reasons.has('entries'))) renderHead();
+        const f = App.select.focus;
+        const fi = f ? App.view.indexOf(f) : -1;
+        if (keep) {
+            const ni = App.view.indexOf(keep.path);
+            if (ni >= 0) setScrollTop(itemRect(ni).y - keep.offset);
+            if (fi >= 0 && !isIndexInView(fi)) showSortPill(f);
+            else hideSortPill();
+        } else if ((sorted || reasons.has('filter')) && fi >= 0) {
+            hideSortPill();
+            gallery.scrollTo(f);
+        }
+        updateEmpty();
+        if (!inFrame) schedule();
+    }
+
+    function isIndexInView(i) {
+        const r = itemRect(i);
+        const { top, bottom } = viewRange();
+        return r.y + r.h > top && r.y < bottom;
+    }
+
+    // '정렬이 바뀌었어요 · 선택한 곳으로' — shown instead of jumping when a background re-sort moved the focused item away
+    const sortPill = { el: null, timer: 0, shownFor: null };
+
+    function showSortPill(p) {
+        if (!sortPill.el) return;
+        sortPill.shownFor = p;
+        const r = itemRect(App.view.indexOf(p));
+        sortPill.el.classList.toggle('is-down', r.y >= viewRange().top);
+        sortPill.el.style.top = scrollerTop + 12 + 'px';
+        sortPill.el.classList.add('show');
+        sortPill.el.removeAttribute('inert');
+        clearTimeout(sortPill.timer);
+        sortPill.timer = setTimeout(hideSortPill, 9000);
+    }
+
+    function hideSortPill() {
+        clearTimeout(sortPill.timer);
+        sortPill.shownFor = null;
+        if (!sortPill.el) return;
+        sortPill.el.classList.remove('show');
+        sortPill.el.setAttribute('inert', '');
+    }
+
+    function revealFocus() {
+        hideSortPill();
+        const f = App.select.focus || App.select.list()[0];
+        if (f && App.view.indexOf(f) >= 0) gallery.scrollTo(f, { center: true });
+    }
+
+    function buildSortPill() {
+        const go = h('button', {
+            class: 'sp-go',
+            type: 'button',
+            'data-tip': '선택한 항목이 보이게 스크롤해요',
+            'data-tip-keys': App.commands.get('gallery.revealFocus')?.keys?.[0] || null,
+            html: `<span>선택한 곳으로</span>${ui.icon('arrow-up', { size: 12, class: 'sp-arrow' })}`,
+        });
+        go.addEventListener('click', revealFocus);
+        const close = h('button', { class: 'sp-x', type: 'button', 'aria-label': '닫기', html: ui.icon('x', { size: 12 }) });
+        close.addEventListener('click', hideSortPill);
+        return h('div', { class: 'sort-pill', role: 'status', inert: '' },
+            h('span', { class: 'sp-ico', html: ui.icon('sort', { size: 13 }) }),
+            h('span', { class: 'sp-msg', text: '정렬이 바뀌었어요' }),
+            go,
+            close);
+    }
+
     // ---------- View bar controls ----------
     function segButton(on, iconName, tip, keysCmd, run) {
         const cmd = keysCmd ? App.commands.get(keysCmd) : null;
@@ -2282,6 +2790,15 @@
         },
     });
     App.commands.register({
+        id: 'gallery.revealFocus',
+        title: '선택한 항목으로 스크롤',
+        group: '보기',
+        icon: 'eye',
+        keys: ['Alt+G'],
+        when: () => hasItems() && (!!App.select.focus || App.select.count > 0),
+        run: revealFocus,
+    });
+    App.commands.register({
         id: 'gallery.revealInFolder',
         title: '폴더에서 보기',
         group: '이동',
@@ -2318,16 +2835,26 @@
             loadingEl = h('div', { class: 'gallery-loading', 'aria-hidden': 'true' }, h('i'));
             typePillEl = h('div', { class: 'type-pill', 'aria-live': 'polite' });
             bubbleEl = h('div', { class: 'scroll-bubble', 'aria-hidden': 'true' });
-            content.append(loadingEl, typePillEl, bubbleEl);
+            sortPill.el = buildSortPill();
+            content.append(loadingEl, typePillEl, bubbleEl, sortPill.el);
             applyModeClasses();
 
             L.width = scroller.clientWidth;
             viewH = scroller.clientHeight;
             scroller.addEventListener('scroll', () => {
                 if (pendingScroll == null) scrollTopCache = scroller.scrollTop;
-                noteScroll(scroller.scrollTop);
-                if (scrub.card) endScrub();
-                updateBubble();
+                // Our own jumps (anchoring, scrollTo) are not flings: no position bubble, and the hovered preview
+                // only ends when another card is now under the resting pointer
+                const ours = scroller.scrollTop === lastProgScroll;
+                lastProgScroll = -1;
+                if (ours) {
+                    scrollMotion.top = scroller.scrollTop;
+                    if (scrub.card) hoverRecheck = true;
+                } else {
+                    noteScroll(scroller.scrollTop);
+                    if (scrub.card) endScrub();
+                    updateBubble();
+                }
                 schedule();
             }, { passive: true });
             let lastCols = L.cols;
@@ -2354,8 +2881,16 @@
             scroller.addEventListener('pointerdown', onPointerDown);
             scroller.addEventListener('pointermove', onPointerMove);
             scroller.addEventListener('pointerup', onPointerUp);
-            scroller.addEventListener('pointercancel', () => endLasso(false));
+            scroller.addEventListener('pointercancel', () => {
+                endLasso(false);
+                if (press) press.moved = true;
+                releasePointerLock();
+            });
+            window.addEventListener('pointerup', onWindowPointerUp, true);
+            // A re-sort is "background" (thumbs filling in resolution/duration…) unless the user just did something
+            for (const type of ['pointerdown', 'keydown', 'wheel']) window.addEventListener(type, () => (lastInputAt = performance.now()), { capture: true, passive: true });
             scroller.addEventListener('pointerleave', () => {
+                lastPointer = null;
                 if (!lasso) endScrub();
             });
             scroller.addEventListener('dragstart', onDragStart);
@@ -2385,16 +2920,9 @@
 
             App.topbar?.addViewbarItem?.(viewbarControls);
 
-            App.bus.on('view:changed', ({ reason }) => {
-                const restore = reason === 'entries' ? onEntriesChanged() : null;
-                endScrub();
-                hideBubble();
-                layout();
-                if (restore != null) setScrollTop(restore);
-                if (mode === 'list' && (reason === 'sort' || reason === 'entries')) renderHead();
-                gallery.refresh();
-                if ((reason === 'sort' || reason === 'filter') && App.select.focus && App.view.indexOf(App.select.focus) >= 0) gallery.scrollTo(App.select.focus);
-                updateEmpty();
+            App.bus.on('view:changed', onViewChanged);
+            App.bus.on('selection:changed', () => {
+                if (sortPill.shownFor && App.select.focus !== sortPill.shownFor) hideSortPill();
             });
             App.bus.on('selection:changed', updateSelectionClasses);
             App.bus.on('catalog:changed', ({ paths }) => gallery.invalidate(paths));
@@ -2436,8 +2964,11 @@
                 showLoading(false);
                 releaseScrubSource();
                 endDrag();
-                for (const el of rendered.values()) el.remove();
-                rendered.clear();
+                hideSortPill();
+                rebuildAll();
+                pendingView = null;
+                press = null;
+                lock.pointer = false;
                 folderStats.map = null;
                 folderStats.sig = new Map();
                 scrollMemory.clear();

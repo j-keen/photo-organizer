@@ -263,6 +263,13 @@ module.exports = [
             const box = await page.locator('.card[data-path="c-clip.webm"] .card-media').boundingBox();
             await page.mouse.move(box.x + box.width * 0.15, box.y + box.height / 2);
             await page.mouse.move(box.x + box.width * 0.2, box.y + box.height / 2);
+            // Background refreshes (listing patch, media info, folder stats) used to tear the preview down while this
+            // test waited passively: they must leave the hovered card's preview alone
+            await page.evaluate(() => {
+                App.view.recompute('patch');
+                App.gallery.invalidate(['c-clip.webm']);
+                App.gallery.refresh();
+            });
             await page.waitForSelector('.card[data-path="c-clip.webm"] video.card-scrub-video');
             assert.equal(await page.locator('#gallery video').count(), 1, 'only the hovered card loads a <video>');
             await page.mouse.move(box.x + box.width * 0.85, box.y + box.height / 2, { steps: 3 });
@@ -329,8 +336,9 @@ module.exports = [
             assert.equal(await page.evaluate(() => App.catalog.get('b-photo.jpg').rating), 3);
             await page.waitForSelector('.lrow[data-path="b-photo.jpg"] .lstar.on[data-n="3"]');
             // Rated stars keep the warning color in both themes
+            // (rows update in place now, so the star eases into its color: wait for the transition to settle)
             for (const theme of ['dark', 'light']) {
-                const [star, token] = await page.evaluate((t) => {
+                const colors = (t) => page.evaluate((t) => {
                     document.documentElement.dataset.theme = t;
                     const probe = document.createElement('i');
                     probe.style.color = 'var(--warning)';
@@ -338,7 +346,12 @@ module.exports = [
                     const want = getComputedStyle(probe).color;
                     probe.remove();
                     return [getComputedStyle(document.querySelector('.lrow[data-path="b-photo.jpg"] .lstar.on')).color, want];
-                }, theme);
+                }, t);
+                let [star, token] = await colors(theme);
+                for (let k = 0; k < 20 && star !== token; k++) {
+                    await page.waitForTimeout(50);
+                    [star, token] = await colors(theme);
+                }
                 assert.equal(star, token, `${theme}: rated star uses --warning`);
             }
             await page.evaluate(() => (document.documentElement.dataset.theme = 'dark'));
@@ -684,3 +697,6 @@ module.exports = [
         },
     },
 ];
+
+// Shared with tests/gallery-input.test.js (the runner only iterates the array entries)
+module.exports.helpers = { ensurePlayableClip, itemPoint };
