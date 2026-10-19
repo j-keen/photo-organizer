@@ -81,6 +81,7 @@
                 let rows = [];
                 let active = -1;
                 let ready = false;
+                let userPicked = false; // a row was chosen on purpose (click, arrows, search) — else "새 폴더" goes to the current folder
 
                 const input = h('input', { class: 'input', type: 'search', placeholder: '폴더 이름이나 경로로 찾기', spellcheck: 'false', autocomplete: 'off', 'aria-label': '폴더 검색' });
                 const searchBox = h('div', { class: 'search-box org-picker-search' }, ui.iconEl('search', { size: 15 }), input);
@@ -172,7 +173,10 @@
                         j = target;
                         while (j >= 0 && j < rows.length && !selectable(rows[j])) j -= dir;
                     }
-                    if (j >= 0 && j < rows.length && selectable(rows[j])) setActive(j, { scroll: true });
+                    if (j >= 0 && j < rows.length && selectable(rows[j])) {
+                        userPicked = true;
+                        setActive(j, { scroll: true });
+                    }
                 }
 
                 function renderRow(i) {
@@ -194,6 +198,7 @@
                     el.addEventListener('mousedown', (e) => {
                         if (r.disabled) return;
                         e.preventDefault();
+                        userPicked = true;
                         setActive(i);
                     });
                     el.addEventListener('dblclick', () => {
@@ -211,7 +216,9 @@
                 // ----- inline new folder -----
                 async function startInline() {
                     const r = rows[active];
-                    nfParent = r && r.type === 'folder' ? r.path : App.state.cwd || '';
+                    const here = App.state.cwd ?? '';
+                    nfParent = (userPicked || query.trim()) && r && r.type === 'folder' ? r.path : here;
+                    if (!folderSet.has(nfParent) && ready) nfParent = '';
                     nfWhere.textContent = `만들 위치: ${kit.folderPathLabel(nfParent)}`;
                     nfError.textContent = '';
                     nfInput.classList.remove('invalid');

@@ -74,8 +74,9 @@ module.exports = [
             await page.keyboard.press('Escape');
             await page.waitForSelector('.org-trash', { state: 'detached' });
             await page.keyboard.press('Control+z');
-            await until(page, () => window.__opfs.exists('b.png').then((x) => !x), null, { message: 'undo re-trashes b.png' });
+            await until(page, () => App.fs.listTrash().then((l) => l.length === 1), null, { message: 'undo re-trashes b.png' });
             assert.deepEqual(await trashList(page), ['b.png']);
+            assert.ok(!(await exists(page, 'b.png')));
             await waitIdle(page);
         },
     },
@@ -249,6 +250,95 @@ module.exports = [
         },
     },
     {
+        name: 'one Ctrl+Z undoes "move into a folder made in the picker" (files back, folder gone)',
+        async run({ openApp, assert, waitIdle }) {
+            const { page } = await openApp({ seed: { 'a.png': { image: {} }, 'b.png': { image: {} }, 'trip/x.png': { image: {} } } });
+            await select(page, ['a.png', 'b.png']);
+            await page.keyboard.press('Control+Shift+M');
+            await page.waitForSelector('.org-picker .org-picker-row');
+            await page.keyboard.press('Control+Shift+N');
+            await page.waitForSelector('.org-nf:not([hidden]) input');
+            await page.fill('.org-nf input', 'picked');
+            await page.keyboard.press('Enter');
+            await page.waitForFunction(() => document.querySelector('.org-picker-row.active')?.title === 'picked');
+            await page.keyboard.press('Enter');
+            await until(page, () => window.__opfs.exists('picked/b.png'), null, { message: 'moved into new folder' });
+            await waitIdle(page);
+            assert.match(await page.evaluate(() => App.undo.peek().label), /picked 폴더로 이동/);
+            await page.keyboard.press('Control+z');
+            await until(page, async () => (await window.__opfs.exists('a.png')) && !(await window.__opfs.exists('picked')), null, { message: 'one undo' });
+            assert.ok(await exists(page, 'b.png'));
+            assert.ok(!(await page.evaluate(() => App.undo.canUndo())), 'nothing else left on the undo stack');
+            await page.keyboard.press('Control+Shift+Z');
+            await until(page, () => window.__opfs.exists('picked/a.png'), null, { message: 'redo recreates the folder' });
+            await waitIdle(page);
+
+            // A folder made in the picker and then cancelled is still one undoable step
+            await select(page, ['trip/x.png'].length ? ['trip'] : []);
+            await page.keyboard.press('Control+Shift+M');
+            await page.waitForSelector('.org-picker .org-picker-row');
+            await page.keyboard.press('Control+Shift+N');
+            await page.waitForSelector('.org-nf:not([hidden]) input');
+            await page.fill('.org-nf input', 'later');
+            await page.keyboard.press('Enter');
+            await page.waitForFunction(() => document.querySelector('.org-picker-row.active')?.title === 'later');
+            await page.keyboard.press('Escape');
+            await page.waitForSelector('.org-picker', { state: 'detached' });
+            assert.ok(await exists(page, 'later'));
+            assert.equal(await page.evaluate(() => App.undo.peek().label), '새 폴더 "later"');
+            await page.keyboard.press('Control+z');
+            await until(page, async () => !(await window.__opfs.exists('later')), null, { message: 'undo the cancelled folder' });
+        },
+    },
+    {
+        name: 'undoing a copy moves the copies to the app trash (never a permanent delete); redo brings them back',
+        async run({ openApp, assert, waitIdle }) {
+            const { page } = await openApp({ seed: { 'a.png': { image: {} }, 'b.png': { image: {} }, 'out/': null } });
+            await page.evaluate(() => App.catalog.update('a.png', { rating: 5 }, { undoable: false }));
+            await page.evaluate(() => App.organize.copyTo(['a.png', 'b.png'], 'out'));
+            await until(page, () => window.__opfs.exists('out/b.png'), null, { message: 'copied' });
+            await waitIdle(page);
+            assert.equal(await page.evaluate(() => App.catalog.get('out/a.png').rating), 5);
+            await page.evaluate(() => App.undo.undo());
+            assert.ok(!(await exists(page, 'out/a.png')));
+            assert.deepEqual(await trashList(page), ['out/a.png', 'out/b.png'], 'copies wait in the trash');
+            assert.ok(await exists(page, 'a.png'), 'originals untouched');
+            await page.evaluate(() => App.undo.redo());
+            assert.ok(await exists(page, 'out/a.png'));
+            assert.deepEqual(await trashList(page), []);
+            assert.equal(await page.evaluate(() => App.catalog.get('out/a.png').rating), 5, 'metadata comes back with the copy');
+        },
+    },
+    {
+        name: 'empty-trash command asks inside the trash panel, and Ctrl+Z works while the panel is open',
+        async run({ openApp, assert, waitIdle }) {
+            const { page } = await openApp({ seed: { 'a.png': { image: {} }, 'b.png': { image: {} } } });
+            await page.evaluate(() => App.fs.trash(['a.png', 'b.png'], { silent: true }));
+            await page.evaluate(() => { App.commands.run('trash.empty'); });
+            await page.waitForSelector('.org-trash .org-sheet');
+            assert.match(await page.textContent('.org-sheet-title'), /휴지통을 비울까요/);
+            await page.keyboard.press('Escape'); // closes only the sheet
+            await page.waitForSelector('.org-sheet', { state: 'detached' });
+            assert.ok(await page.isVisible('.org-trash'));
+            assert.equal((await trashList(page)).length, 2, 'nothing was deleted');
+
+            // restore inside the panel, then undo it without leaving the panel
+            await page.click('.org-trash-row:has-text("a.png")');
+            await page.keyboard.press('Enter');
+            await until(page, () => window.__opfs.exists('a.png'), null, { message: 'restored' });
+            await page.waitForFunction(() => document.querySelectorAll('.org-trash-row').length === 1);
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => document.querySelectorAll('.org-trash-row').length === 2);
+            assert.ok(!(await exists(page, 'a.png')));
+            await page.keyboard.press('Control+Shift+Z');
+            await page.waitForFunction(() => document.querySelectorAll('.org-trash-row').length === 1);
+            assert.ok(await exists(page, 'a.png'));
+            await page.keyboard.press('Escape');
+            await page.waitForSelector('.org-trash', { state: 'detached' });
+            await waitIdle(page);
+        },
+    },
+    {
         name: 'conflict sheet: replace sends the old file to the trash, skip-if-same skips identical files',
         async run({ openApp, assert, waitIdle }) {
             const { page } = await openApp({
@@ -278,7 +368,7 @@ module.exports = [
             assert.ok(!(await exists(page, 'trip/same (2).png')));
 
             await page.keyboard.press('Control+z');
-            await until(page, () => window.__opfs.exists('a.png'), null, { message: 'undo' });
+            await until(page, async () => (await window.__opfs.exists('a.png')) && (await App.fs.listTrash()).length === 0, null, { message: 'undo' });
             assert.equal(await sizeOf(page, 'a.png'), newSize);
             assert.equal(await sizeOf(page, 'trip/a.png'), oldSize, 'the replaced file is back');
             assert.deepEqual(await trashList(page), []);
@@ -311,7 +401,7 @@ module.exports = [
             assert.match(await page.evaluate(() => App.undo.peek().label), /폴더 풀기/);
 
             await page.keyboard.press('Control+z');
-            await until(page, () => window.__opfs.exists('box/sub/b.png'), null, { message: 'undo unwrap' });
+            await until(page, async () => (await window.__opfs.exists('box/sub/b.png')) && (await window.__opfs.exists('box/a.png')) && !(await window.__opfs.exists('a (2).png')) && (await App.fs.listTrash()).length === 0, null, { message: 'undo unwrap' });
             assert.ok(await exists(page, 'box/a.png'));
             assert.ok(await exists(page, 'box/a.png.txt'));
             assert.ok(await exists(page, 'box/readme.txt'));
@@ -344,6 +434,7 @@ module.exports = [
             await page.waitForSelector('.org-plan .org-plan-dir');
             await page.click('.org-plan .seg button:has-text("2024/03")');
             await page.waitForFunction(() => document.querySelector('.org-plan .org-sum-main')?.textContent === '3개 파일을 폴더 2개로 정리해요');
+            await page.waitForFunction(() => document.querySelectorAll('.org-plan-dir').length === 2);
             const dirs = await page.$$eval('.org-plan-dir .org-plan-label', (els) => els.map((e) => [...e.querySelectorAll(':scope > span:not(.org-plan-sep)')].map((s) => s.textContent).join('/')));
             assert.deepEqual(dirs, ['2023/05', '2024/01']);
             await page.click('.org-plan .org-foot .btn.primary');
@@ -353,7 +444,7 @@ module.exports = [
             assert.ok(await exists(page, '2023/05/p2.png'));
             assert.ok(await exists(page, 'other.png'));
             await page.keyboard.press('Control+z');
-            await until(page, async () => (await window.__opfs.exists('p3.png')) && !(await window.__opfs.exists('2023')), null, { message: 'undo by date' });
+            await until(page, async () => (await window.__opfs.exists('p3.png')) && !(await window.__opfs.exists('2023')) && !(await window.__opfs.exists('2024')), null, { message: 'undo by date' });
             assert.ok(!(await exists(page, '2024')), 'created folders are removed again');
         },
     },
@@ -389,7 +480,7 @@ module.exports = [
             await page.keyboard.press('Control+z');
             await until(page, () => window.__opfs.exists('src'), null, { message: 'folder back' });
             await page.keyboard.press('Control+z');
-            await until(page, () => window.__opfs.exists('src/c5.png'), null, { message: 'files back' });
+            await until(page, async () => (await window.__opfs.exists('src/c5.png')) && !(await window.__opfs.exists('김배우')), null, { message: 'files back' });
             assert.ok(await exists(page, 'c2.png'));
             assert.ok(!(await exists(page, '김배우')));
         },
@@ -407,7 +498,7 @@ module.exports = [
             assert.ok(await exists(page, 'full/a.png'));
             assert.ok(await exists(page, 'mixed/b.png'));
             await page.keyboard.press('Control+z');
-            await until(page, () => window.__opfs.exists('e2/inner'), null, { message: 'undo' });
+            await until(page, async () => (await window.__opfs.exists('e2/inner')) && (await window.__opfs.exists('e3/Thumbs.db')) && (await window.__opfs.exists('mixed/empty')), null, { message: 'undo' });
             assert.ok(await exists(page, 'e3/Thumbs.db'));
             await waitIdle(page);
         },
@@ -425,6 +516,163 @@ module.exports = [
             await page.click('#gallery-scroll', { position: { x: 600, y: 600 }, button: 'right' });
             await page.waitForSelector('.menu .menu-label:has-text("이 폴더 정리하기")');
             await page.keyboard.press('Escape');
+        },
+    },
+    {
+        name: 'owner rule: every organize action is ONE undo entry — one Ctrl+Z reverts it fully, Ctrl+Y redoes it',
+        async run({ openApp, assert, waitIdle }) {
+            const { page } = await openApp({
+                seed: {
+                    'a.png': { image: { color: '#246', label: 'A' } },
+                    'b.png': { image: { color: '#462', label: 'B' } },
+                    'c.png': { image: { color: '#624', label: 'C' } },
+                    'box/x.png': { image: { color: '#357', label: 'X' } },
+                    'box/sub/y.png': { image: { color: '#573', label: 'Y' } },
+                    'dest/c.png': { image: { color: '#999', label: 'OLD' } },
+                    'dup.png': { image: { w: 320, h: 240, color: '#3a6', label: 'DUP' } },
+                    'old/dup copy.png': { image: { w: 320, h: 240, color: '#3a6', label: 'DUP' } },
+                    'shot1.png': { image: { color: '#a36', label: 'S1' } },
+                    'shot2.png': { image: { color: '#36a', label: 'S2' } },
+                    'e1/': null,
+                    'e2/inner/': null,
+                },
+            });
+            await page.evaluate(async () => {
+                await App.wsdata.write('chipsets', {
+                    version: 1,
+                    activePreset: 'p',
+                    presets: [{ id: 'p', name: '기본', categories: [{ id: 'cat', name: '배우', mode: 'search', chips: [{ id: 'k1', name: '김배우', children: [] }] }] }],
+                });
+                App.catalog.update('a.png', { chips: ['k1'], rating: 3 }, { undoable: false });
+                App.catalog.update('old/dup copy.png', { chips: ['k1'], rating: 5, memo: '복제본 메모' }, { undoable: false });
+                App.catalog.setMeta('shot1.png', { taken: new Date(2022, 6, 1, 12).getTime() });
+                App.catalog.setMeta('shot2.png', { taken: new Date(2022, 7, 9, 12).getTime() });
+                App.undo.clear();
+            });
+            await page.waitForFunction(() => App.index.ready);
+
+            // Whole visible state: every file/folder, the app trash, and the user metadata of each file
+            const snapOnce = (opts = {}) => page.evaluate(async ({ ignoreTrash }) => {
+                const out = [];
+                async function walk(dir, pre) {
+                    for await (const [n, c] of dir.entries()) {
+                        if (n === '.fluid-organizer') continue;
+                        const p = pre ? `${pre}/${n}` : n;
+                        if (c.kind === 'directory') {
+                            out.push(p + '/');
+                            await walk(c, p);
+                        } else {
+                            const e = App.catalog.get(p);
+                            out.push(`${p} ${JSON.stringify([e.chips, e.rating, e.memo, e.label])} ${(await c.getFile()).size}`);
+                        }
+                    }
+                }
+                try {
+                    await walk(window.__fakeRoot, '');
+                } catch (e) {
+                    return 'busy:' + e.name; // something moved while we looked: poll again
+                }
+                out.sort();
+                const trash = ignoreTrash ? [] : (await App.fs.listTrash()).map((i) => 'TRASH ' + i.originalPath).sort();
+                return JSON.stringify([...out, ...trash]);
+            }, { ignoreTrash: !!opts.ignoreTrash });
+            const snap = async (opts) => {
+                for (;;) {
+                    const s = await snapOnce(opts);
+                    if (!s.startsWith('busy:')) return s;
+                    await page.waitForTimeout(50);
+                }
+            };
+
+            const steps = [];
+            async function check(name, action, opts = {}) {
+                const before = await snap(opts);
+                const depth = await page.evaluate(() => App.undo.list().length);
+                await action();
+                await waitIdle(page);
+                const after = await snap(opts);
+                assert.notEqual(after, before, `${name}: changed something`);
+                assert.equal(await page.evaluate(() => App.undo.list().length), depth + 1, `${name}: exactly one undo entry`);
+                await page.keyboard.press('Control+z');
+                const t0 = Date.now();
+                while ((await snap(opts)) !== before) {
+                    if (Date.now() - t0 > 10000) assert.equal(await snap(opts), before, `${name}: one Ctrl+Z reverts everything`);
+                    await page.waitForTimeout(80);
+                }
+                await waitIdle(page);
+                await page.keyboard.press('Control+y');
+                const t1 = Date.now();
+                while ((await snap(opts)) !== after) {
+                    if (Date.now() - t1 > 10000) assert.equal(await snap(opts), after, `${name}: Ctrl+Y redoes it`);
+                    await page.waitForTimeout(80);
+                }
+                await waitIdle(page);
+                assert.equal(await page.evaluate(() => App.undo.list().length), depth + 1, `${name}: still one entry after redo`);
+                steps.push(name);
+            }
+
+            await check('batch rename', () => page.evaluate(() => App.organize.commitRenames([{ from: 'a.png', toName: 'b.png' }, { from: 'b.png', toName: 'a.png' }], '이름 일괄 변경')));
+            await check('move to', () => page.evaluate(() => App.organize.moveTo(['a.png', 'b.png'], 'dest')));
+            await check('copy to (copies go to the trash on undo)', () => page.evaluate(() => App.organize.copyTo(['shot1.png'], 'dest')), { ignoreTrash: true });
+            await check('conflict choice "replace"', () => page.evaluate(() => App.organize.commit({ op: 'move', label: '바꾸기', items: [{ from: 'c.png', toDir: 'dest', action: 'replace', existing: 'dest/c.png' }] })));
+            await check('unwrap + flatten', () => page.evaluate(() => App.organize.unwrap(['box'], { yes: true, flatten: true })));
+            await check('organize by date', async () => {
+                await page.evaluate(() => { App.organize.byDate({ paths: ['shot1.png', 'shot2.png'], pattern: 'YYYY-MM' }); });
+                await page.waitForSelector('.org-plan .org-plan-dir');
+                await page.waitForFunction(() => document.querySelector('.org-plan .org-sum-main')?.textContent.startsWith('2개 파일을'));
+                await page.click('.org-plan .org-foot .btn.primary');
+                await page.waitForSelector('.org-plan', { state: 'detached' });
+                await until(page, () => window.__opfs.exists('2022-08/shot2.png'), null, { message: 'by date' });
+            });
+            await check('organize by chip', async () => {
+                await page.evaluate(() => { App.organize.byChip({ paths: ['dest/a.png', 'dest/b.png'] }); });
+                await page.waitForSelector('.org-plan .org-plan-dir');
+                await page.click('.org-plan .org-foot .btn.primary');
+                await page.waitForSelector('.org-plan', { state: 'detached' });
+                await until(page, () => window.__opfs.exists('김배우'), null, { message: 'by chip' });
+            });
+            await check('clean empty folders', () => page.evaluate(() => App.organize.trashFolders(['e1', 'e2'], '빈 폴더 2개 정리')));
+            await check('duplicates cleanup with metadata merge', () => page.evaluate(() => App.dupes.trashDuplicates([{ keep: 'dup.png', remove: ['old/dup copy.png'] }])));
+            assert.equal(await page.evaluate(() => App.catalog.get('dup.png').rating), 5, 'redo merged the metadata again');
+            await check('trash restore', async () => {
+                const ids = await page.evaluate(() => App.fs.listTrash().then((l) => l.filter((i) => i.originalPath === 'old/dup copy.png').map((i) => i.id)));
+                assert.equal(ids.length, 1);
+                await page.evaluate((x) => App.organize.restoreTrash(x), ids);
+            });
+            assert.equal(steps.length, 10);
+        },
+    },
+    {
+        name: 'Ctrl+Z inside a planning panel (move picker, rename) dismisses it and undoes the last step; text fields keep text undo',
+        async run({ openApp, assert, waitIdle }) {
+            const { page } = await openApp({ seed: { 'a.png': { image: {} }, 'b.png': { image: {} }, 'trip/x.png': { image: {} } } });
+            await page.evaluate(() => App.organize.moveTo(['a.png'], 'trip'));
+            await waitIdle(page);
+            assert.ok(await exists(page, 'trip/a.png'));
+
+            // picker opens with the (empty) search box focused: Ctrl+Z is the app's undo there
+            await select(page, ['b.png']);
+            await page.keyboard.press('Control+Shift+M');
+            await page.waitForSelector('.org-picker .org-picker-row');
+            await page.keyboard.press('Control+z');
+            await page.waitForSelector('.org-picker', { state: 'detached' });
+            await until(page, () => window.__opfs.exists('a.png'), null, { message: 'picker Ctrl+Z undid the move' });
+            assert.ok(!(await exists(page, 'trip/a.png')));
+            await waitIdle(page);
+
+            // ...and Ctrl+Y from the rename panel (focus in its non-empty pattern field keeps native text undo)
+            await select(page, ['a.png', 'b.png']);
+            await page.keyboard.press('Control+Shift+R');
+            await page.waitForSelector('.org-rename');
+            await page.keyboard.press('Control+z'); // text field with text: native undo, panel stays
+            await page.waitForTimeout(150);
+            assert.ok(await page.isVisible('.org-rename'), 'text undo does not close the panel');
+            assert.ok(await exists(page, 'a.png'));
+            await page.evaluate(() => document.activeElement.blur());
+            await page.keyboard.press('Control+y');
+            await page.waitForSelector('.org-rename', { state: 'detached' });
+            await until(page, () => window.__opfs.exists('trip/a.png'), null, { message: 'redo from the rename panel' });
+            await waitIdle(page);
         },
     },
 ];

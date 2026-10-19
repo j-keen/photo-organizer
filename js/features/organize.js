@@ -164,6 +164,13 @@
         return !['checkbox', 'radio', 'range', 'button', 'submit', 'color', 'file'].includes((t.type || 'text').toLowerCase());
     }
 
+    /** Ctrl+Z belongs to the text field only while it holds text (an empty search box has nothing to undo). */
+    function wantsTextUndo(t) {
+        if (!isTextField(t)) return false;
+        const v = t.isContentEditable ? t.textContent : t.value;
+        return (v || '') !== '';
+    }
+
     /**
      * Panel = App.ui.dialog shell with our own header/body/footer layout and keyboard scope.
      * panel({ title, subtitle, icon, width, height, className, build(ctx) }) -> Promise (value passed to close)
@@ -171,11 +178,16 @@
      *         onKey(fn(e) -> consumed?)   every keydown while this panel is the top-most one (any focus target),
      *         onEnter(fn(e))              Enter outside buttons/selects/textareas }
      * Esc closes the panel unless an onKey handler consumed it.
-     * opts.undoKeys: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y run App.undo while the panel is open (outside text fields), so
-     * long-lived panels (trash, duplicates) can undo their own actions without being closed first.
+     * Undo keys (owner rule: Ctrl+Z works from every screen). Outside text fields (they keep their own text undo):
+     *   opts.undoKeys = true  live panels that follow fs changes (trash, duplicates): Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y
+     *                         run App.undo/redo while the panel stays open.
+     *   default               planning panels (picker, rename, by date...) would show a stale plan, so the panel is
+     *                         dismissed first (as if cancelled) and then the step is undone/redone.
+     *   opts.undoKeys = false keys are left alone.
      */
     function panel(opts) {
         const closers = [];
+        let afterClose = null; // 'undo' | 'redo' queued by the keys above
         return ui
             .dialog({
                 width: opts.width || 720,
@@ -211,14 +223,16 @@
                     closers.push(keyScope((e) => {
                         if (!isTop()) return false;
                         for (const fn of keyHandlers) if (fn(e)) return true;
-                        if (opts.undoKeys && (e.ctrlKey || e.metaKey) && !e.altKey && !isTextField(e.target)) {
+                        if (opts.undoKeys !== false && (e.ctrlKey || e.metaKey) && !e.altKey && !wantsTextUndo(e.target)) {
                             const k = e.key.toLowerCase();
-                            if (k === 'z' && !e.shiftKey) {
-                                App.undo.undo();
-                                return true;
-                            }
-                            if ((k === 'z' && e.shiftKey) || k === 'y') {
-                                App.undo.redo();
+                            const which = k === 'z' && !e.shiftKey ? 'undo' : (k === 'z' && e.shiftKey) || (k === 'y' && !e.shiftKey) ? 'redo' : null;
+                            if (which) {
+                                if (!(which === 'undo' ? App.undo.canUndo() : App.undo.canRedo())) return true;
+                                if (opts.undoKeys) App.undo[which]();
+                                else {
+                                    afterClose = which;
+                                    close(opts.dismissValue ?? null);
+                                }
                                 return true;
                             }
                         }
@@ -257,6 +271,8 @@
                         console.error(e);
                     }
                 }
+                // after the caller's own "cancelled" handling (e.g. adopting a folder made in the picker) has run
+                if (afterClose) setTimeout(() => App.undo[afterClose](), 0);
                 return v;
             });
     }
@@ -1108,6 +1124,7 @@
         trashPaths,
         restoreIds,
         isTextField,
+        wantsTextUndo,
     };
 
     // ---------- Gallery context menu ----------
