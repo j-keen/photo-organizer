@@ -1,607 +1,463 @@
 /*
- * Duplicate finder (App.dupes).
- *   Browser engine:
- *     exact   — group by size → sampled SHA-256 (head/middle/tail 64 KB) → full SHA-256 (streamed in chunks) to confirm
- *     similar — 64-bit pHash (32×32 DCT) computed in Blob-URL workers from createImageBitmap, BK-tree + union-find
- *     Hashes are cached in IndexedDB (path|size|mtime) so re-scans are instant.
- *   Server engine (App.server.dupes.scan, FAISS) when the local server is connected — also covers videos.
- *   Review UI: groups side by side, automatic "keep best" (resolution → size → oldest), checkboxes, compare view,
- *   one App.fs.trash call (= one undo entry) that also merges chips/rating/memo/markers into the kept file.
- *   Commands: dupes.open (Mod+Alt+D), dupes.findSimilar.
+ * Duplicate finder v2 — data, safe clean-up and commands (App.dupes).
+ *
+ *   duplicates.js      this file: dupes.json store (exclusions, "중복 아님" pairs, rules, folder roles, review progress),
+ *                      verified clean-up (ONE undo step, metadata merge, dupes-log.json), commands
+ *   dupes-engine.js    fingerprints (IndexedDB cache), the owner's matching rule, browser + server engines, pre-build job
+ *   dupes-review.js    the panel: scope picker, scanning, side-by-side review with synced playback
+ *   dupes-tools.js     rules dialog (live preview), exclusions manager, context menus, viewer toolbar, settings page
+ *
+ * .fluid-organizer/dupes.json = { version: 1, excludedFiles, excludedFolders, notDuplicates: [[a, b]],
+ *                                 rules: { frameBits, minFrames, durSec, durPct, sureSec, imageBits, folderPriority: [{ path, role }] },
+ *                                 lastScan: { id, at, scope, engine, counts, reviewed: { groupId: decision } } }
+ * Paths follow renames/moves. Every user change is ONE undo step (Ctrl+Z from any screen).
  */
 (() => {
     'use strict';
-    const { h, path: P, formatCount, formatBytes, formatDate, compareNames } = App.util;
+    const { path: P, formatCount, formatBytes } = App.util;
     const ui = App.ui;
     const kit = App.organize.kit;
-    const { icon, btn } = kit;
 
-    // =====================================================================
-    // Hash cache (IndexedDB)
-    // =====================================================================
-    const DB_NAME = 'fluid-identity-dupes';
-    const STORE = 'hashes';
-    let dbPromise = null;
+    // =================================================================================================
+    // Store (dupes.json)
+    // =================================================================================================
+    const ROLE_LABEL = { keep: '보관 폴더', remove: '정리 폴더' };
+    const blank = () => ({ version: 1, excludedFiles: [], excludedFolders: [], notDuplicates: [], rules: { folderPriority: [] }, lastScan: null });
+    const clone = (o) => JSON.parse(JSON.stringify(o));
+    const pairKey = (a, b) => (a < b ? `${a}\n${b}` : `${b}\n${a}`);
+    const isAbs = (p) => /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(p || '');
+    const normAbs = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 
-    function db() {
-        if (!dbPromise) {
-            dbPromise = new Promise((resolve, reject) => {
-                const req = indexedDB.open(DB_NAME, 1);
-                req.onupgradeneeded = () => req.result.createObjectStore(STORE);
-                req.onsuccess = () => resolve(req.result);
-                req.onerror = () => reject(req.error);
+    /** child inside dir (workspace paths with '/', absolute paths case-insensitively); '' never matches everything. */
+    function inside(child, dir) {
+        if (dir == null) return false;
+        if (isAbs(dir) || isAbs(child)) {
+            if (isAbs(dir) !== isAbs(child)) return false;
+            const c = normAbs(child);
+            const d = normAbs(dir);
+            return c === d || c.startsWith(d + '/');
+        }
+        if (dir === '') return true;
+        return child === dir || child.startsWith(dir + '/');
+    }
+
+    function normalize(d) {
+        const out = blank();
+        if (!d || typeof d !== 'object') return out;
+        const strs = (a) => (Array.isArray(a) ? [...new Set(a.filter((x) => typeof x === 'string'))] : []);
+        out.excludedFiles = strs(d.excludedFiles);
+        out.excludedFolders = strs(d.excludedFolders).filter((x) => x !== '');
+        const seen = new Set();
+        for (const p of Array.isArray(d.notDuplicates) ? d.notDuplicates : []) {
+            if (!Array.isArray(p) || p.length !== 2 || typeof p[0] !== 'string' || typeof p[1] !== 'string' || p[0] === p[1]) continue;
+            const k = pairKey(p[0], p[1]);
+            if (seen.has(k)) continue;
+            seen.add(k);
+            out.notDuplicates.push(p[0] < p[1] ? [p[0], p[1]] : [p[1], p[0]]);
+        }
+        const r = d.rules && typeof d.rules === 'object' ? d.rules : {};
+        out.rules = { ...r, folderPriority: [] };
+        const fp = new Map();
+        for (const x of Array.isArray(r.folderPriority) ? r.folderPriority : []) {
+            if (x && typeof x.path === 'string' && (x.role === 'keep' || x.role === 'remove')) fp.set(x.path, x.role);
+        }
+        out.rules.folderPriority = [...fp].map(([path, role]) => ({ path, role }));
+        if (d.lastScan && typeof d.lastScan === 'object') {
+            out.lastScan = { ...d.lastScan, reviewed: d.lastScan.reviewed && typeof d.lastScan.reviewed === 'object' ? { ...d.lastScan.reviewed } : {} };
+        }
+        if (Array.isArray(d.extraRoots)) out.extraRoots = strs(d.extraRoots);
+        return out;
+    }
+
+    const store = {
+        data: blank(),
+        ws: null,
+        loading: null,
+        files: new Set(),
+        pairs: new Set(),
+        pairPaths: new Set(),
+        roles: [],
+        saving: Promise.resolve(),
+        backedUp: false,
+
+        ready() {
+            const ws = App.state.workspace?.id || null;
+            if (this.ws !== ws || !this.loading) {
+                this.ws = ws;
+                this.loading = this.load(ws);
+            }
+            return this.loading;
+        },
+        async load(ws) {
+            let d = null;
+            if (ws && App.fs.ready) d = await App.wsdata.read('dupes', null);
+            if (this.ws !== ws) return;
+            this.data = normalize(d);
+            this.reindex();
+        },
+        reindex() {
+            const d = this.data;
+            this.files = new Set(d.excludedFiles);
+            this.pairs = new Set(d.notDuplicates.map(([a, b]) => pairKey(a, b)));
+            this.pairPaths = new Set(d.notDuplicates.flat());
+            this.roles = d.rules.folderPriority.slice().sort((a, b) => b.path.length - a.path.length);
+        },
+        save() {
+            const ws = this.ws;
+            const snapshot = clone(this.data);
+            this.saving = this.saving.then(async () => {
+                if (!App.fs.ready || App.state.workspace?.id !== ws) return;
+                await App.wsdata.write('dupes', snapshot);
+                if (!this.backedUp) {
+                    this.backedUp = true;
+                    App.wsdata.backup('dupes', snapshot);
+                }
             }).catch((e) => {
-                console.warn('[dupes] hash cache unavailable', e);
-                return null;
+                console.error('[dupes] saving dupes.json failed', e);
+                ui.toast('중복검사 설정을 저장하지 못했어요', { type: 'error' });
             });
-        }
-        return dbPromise;
-    }
+            return this.saving;
+        },
+        saveSoon: null,
+        isExcluded(p) {
+            if (this.files.has(p)) return true;
+            for (const f of this.data.excludedFolders) if (inside(p, f)) return true;
+            return false;
+        },
+        excludedBy(p) {
+            if (this.files.has(p)) return { type: 'file', path: p };
+            for (const f of this.data.excludedFolders) if (inside(p, f)) return { type: 'folder', path: f };
+            return null;
+        },
+        isNotDup(a, b) {
+            return this.pairs.has(pairKey(a, b));
+        },
+        roleOf(p) {
+            for (const r of this.roles) if (inside(p, r.path)) return r.role;
+            return null;
+        },
+        roleEntry(p) {
+            for (const r of this.roles) if (inside(p, r.path)) return r;
+            return null;
+        },
+        rules() {
+            const eng = App.dupes.engine;
+            return eng ? eng.normalizeRules(this.data.rules) : { ...this.data.rules };
+        },
+    };
+    store.saveSoon = App.util.debounce(() => store.save(), 400);
 
-    async function cacheGetMany(keys) {
-        const out = new Map();
-        const d = await db();
-        if (!d || !keys.length) return out;
-        return new Promise((resolve) => {
-            const tx = d.transaction(STORE, 'readonly');
-            const store = tx.objectStore(STORE);
-            for (const k of keys) {
-                const r = store.get(k);
-                r.onsuccess = () => {
-                    if (r.result) out.set(k, r.result);
-                };
-            }
-            tx.oncomplete = () => resolve(out);
-            tx.onerror = () => resolve(out);
-            tx.onabort = () => resolve(out);
-        });
-    }
-
-    async function cachePutMany(pairs) {
-        const d = await db();
-        if (!d || !pairs.length) return;
-        await new Promise((resolve) => {
-            const tx = d.transaction(STORE, 'readwrite');
-            const store = tx.objectStore(STORE);
-            for (const [k, v] of pairs) store.put(v, k);
-            tx.oncomplete = resolve;
-            tx.onerror = resolve;
-            tx.onabort = resolve;
-        });
-    }
-
-    const cacheKey = (e) => `${App.state.workspace?.id || ''}|${e.path}|${e.size || 0}|${e.mtime || 0}`;
-
-    // =====================================================================
-    // Perceptual hash
-    // =====================================================================
-    // 64-bit pHash of a 32×32 grayscale image: DCT-II, top-left 8×8, threshold at the median (DC excluded).
-    function phashFromGray(gray) {
-        const N = 32;
-        let cos = phashFromGray.cos;
-        if (!cos) {
-            cos = new Float64Array(8 * N);
-            for (let u = 0; u < 8; u++) for (let x = 0; x < N; x++) cos[u * N + x] = Math.cos(((2 * x + 1) * u * Math.PI) / (2 * N));
-            phashFromGray.cos = cos;
-        }
-        const tmp = new Float64Array(8 * N);
-        for (let u = 0; u < 8; u++) {
-            for (let x = 0; x < N; x++) {
-                let s = 0;
-                for (let y = 0; y < N; y++) s += cos[u * N + y] * gray[y * N + x];
-                tmp[u * N + x] = s;
-            }
-        }
-        const coef = new Float64Array(64);
-        for (let u = 0; u < 8; u++) {
-            for (let v = 0; v < 8; v++) {
-                let s = 0;
-                for (let x = 0; x < N; x++) s += cos[v * N + x] * tmp[u * N + x];
-                coef[u * 8 + v] = s;
-            }
-        }
-        const vals = Array.prototype.slice.call(coef, 1).sort((a, b) => a - b);
-        const med = vals[31];
-        let hi = 0;
-        let lo = 0;
-        for (let i = 0; i < 64; i++) {
-            const bit = coef[i] > med ? 1 : 0;
-            if (i < 32) hi = ((hi << 1) | bit) >>> 0;
-            else lo = ((lo << 1) | bit) >>> 0;
-        }
-        return [hi >>> 0, lo >>> 0];
-    }
-
-    // 32×32 grayscale for the pHash + average colour of the four quadrants (12 values). pHash only sees
-    // structure, so two flat pictures with the same layout but different colours would match; the colour
-    // signature rules those out while resized/re-saved copies stay within a few levels.
-    async function analyzeBlob(file) {
-        const bmp = await createImageBitmap(file, { resizeWidth: 32, resizeHeight: 32, resizeQuality: 'high' });
-        const c = new OffscreenCanvas(32, 32);
-        const g = c.getContext('2d', { willReadFrequently: true });
-        g.fillStyle = '#fff';
-        g.fillRect(0, 0, 32, 32);
-        g.drawImage(bmp, 0, 0, 32, 32);
-        bmp.close();
-        const d = g.getImageData(0, 0, 32, 32).data;
-        const gray = new Float64Array(1024);
-        const color = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        for (let y = 0; y < 32; y++) {
-            for (let x = 0; x < 32; x++) {
-                const i = y * 32 + x;
-                const r = d[i * 4];
-                const gr = d[i * 4 + 1];
-                const b = d[i * 4 + 2];
-                gray[i] = 0.299 * r + 0.587 * gr + 0.114 * b;
-                const q = ((y < 16 ? 0 : 2) + (x < 16 ? 0 : 1)) * 3;
-                color[q] += r;
-                color[q + 1] += gr;
-                color[q + 2] += b;
-            }
-        }
-        for (let k = 0; k < 12; k++) color[k] = Math.round(color[k] / 256);
-        return { gray, color };
-    }
-
-    // Worker body: gets the two functions above injected as source.
-    function workerMain(phash, analyze) {
-        self.onmessage = async (e) => {
-            const { id, file } = e.data;
-            try {
-                const { gray, color } = await analyze(file);
-                const [hi, lo] = phash(gray);
-                self.postMessage({ id, hi, lo, color });
-            } catch (err) {
-                self.postMessage({ id, error: String((err && err.message) || err) });
-            }
-        };
-    }
-
-    class HashPool {
-        constructor(size) {
-            this.queue = [];
-            this.pending = new Map();
-            this.idle = [];
-            this.workers = [];
-            this.seq = 0;
-            this.mainThread = false;
-            try {
-                const src = `(${workerMain})(${phashFromGray}, ${analyzeBlob});`;
-                this.url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
-                for (let i = 0; i < size; i++) {
-                    const w = new Worker(this.url);
-                    w.onmessage = (e) => this.done(w, e.data);
-                    w.onerror = (e) => {
-                        e.preventDefault?.();
-                        this.fail(w);
-                    };
-                    this.workers.push(w);
-                    this.idle.push(w);
-                }
-            } catch (e) {
-                console.info('[dupes] workers unavailable, hashing on the main thread', e);
-                this.mainThread = true;
-            }
-        }
-
-        hash(file) {
-            if (this.mainThread) {
-                return analyzeBlob(file)
-                    .then(({ gray, color }) => ({ hl: phashFromGray(gray), color }))
-                    .catch(() => null);
-            }
-            return new Promise((resolve) => {
-                this.queue.push({ id: ++this.seq, file, resolve });
-                this.pump();
-            });
-        }
-
-        pump() {
-            while (this.idle.length && this.queue.length) {
-                const w = this.idle.pop();
-                const t = this.queue.shift();
-                this.pending.set(t.id, { t, w });
-                w.postMessage({ id: t.id, file: t.file });
-            }
-        }
-
-        done(w, data) {
-            const p = this.pending.get(data.id);
-            this.pending.delete(data.id);
-            this.idle.push(w);
-            if (p) p.t.resolve(data.error ? null : { hl: [data.hi >>> 0, data.lo >>> 0], color: data.color });
-            this.pump();
-        }
-
-        fail(w) {
-            for (const [id, p] of this.pending) {
-                if (p.w !== w) continue;
-                this.pending.delete(id);
-                p.t.resolve(null);
-            }
-            if (!this.idle.includes(w)) this.idle.push(w);
-            this.pump();
-        }
-
-        destroy() {
-            for (const w of this.workers) w.terminate();
-            for (const t of this.queue) t.resolve(null);
-            for (const { t } of this.pending.values()) t.resolve(null);
-            this.queue = [];
-            this.pending.clear();
-            if (this.url) URL.revokeObjectURL(this.url);
-        }
-    }
-
-    function pop32(x) {
-        x = x - ((x >>> 1) & 0x55555555);
-        x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
-        return Math.imul((x + (x >>> 4)) & 0x0f0f0f0f, 0x01010101) >>> 24;
-    }
-
-    function hamming(a, b) {
-        return pop32((a[0] ^ b[0]) >>> 0) + pop32((a[1] ^ b[1]) >>> 0);
-    }
-
-    const hashHex = (hl) => hl[0].toString(16).padStart(8, '0') + hl[1].toString(16).padStart(8, '0');
-    const hexHash = (s) => [parseInt(s.slice(0, 8), 16) >>> 0, parseInt(s.slice(8, 16), 16) >>> 0];
-    const colorHex = (c) => c.map((v) => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('');
-    const hexColor = (s) => (s && s.length === 24 ? Array.from({ length: 12 }, (_, i) => parseInt(s.slice(i * 2, i * 2 + 2), 16)) : null);
-
-    /** Largest per-channel difference between two quadrant colour signatures (0..255). */
-    function colorDistance(a, b) {
-        if (!a || !b) return 0;
-        let m = 0;
-        for (let k = 0; k < 12; k++) m = Math.max(m, Math.abs(a[k] - b[k]));
-        return m;
-    }
-
-    class BKTree {
-        constructor() {
-            this.root = null;
-        }
-        add(hash, idx) {
-            const node = { hash, items: [idx], kids: new Map() };
-            if (!this.root) {
-                this.root = node;
-                return;
-            }
-            let cur = this.root;
-            for (;;) {
-                const d = hamming(hash, cur.hash);
-                if (d === 0) {
-                    cur.items.push(idx);
-                    return;
-                }
-                const next = cur.kids.get(d);
-                if (!next) {
-                    cur.kids.set(d, node);
-                    return;
-                }
-                cur = next;
-            }
-        }
-        query(hash, t, cb) {
-            if (!this.root) return;
-            const stack = [this.root];
-            while (stack.length) {
-                const n = stack.pop();
-                const d = hamming(hash, n.hash);
-                if (d <= t) for (const i of n.items) cb(i, d);
-                for (const [k, child] of n.kids) if (k >= d - t && k <= d + t) stack.push(child);
-            }
-        }
-    }
-
-    class UnionFind {
-        constructor(n) {
-            this.p = new Int32Array(n);
-            for (let i = 0; i < n; i++) this.p[i] = i;
-        }
-        find(x) {
-            while (this.p[x] !== x) {
-                this.p[x] = this.p[this.p[x]];
-                x = this.p[x];
-            }
-            return x;
-        }
-        union(a, b) {
-            const ra = this.find(a);
-            const rb = this.find(b);
-            if (ra !== rb) this.p[rb] = ra;
-        }
-    }
-
-    // =====================================================================
-    // Scan (browser engine)
-    // =====================================================================
-    function cancelledError() {
-        return Object.assign(new Error('cancelled'), { cancelled: true });
+    function emit(reason, extra) {
+        App.bus.emit('dupes:changed', { reason, ...(extra || {}) });
     }
 
     /**
-     * scan(entries, { mode: 'exact'|'similar', threshold, focus, onProgress(phase, done, total), isCancelled })
-     * -> { groups: [{ id, kind: 'exact'|'similar', items: [item] }], scanned, engine: 'browser' }
-     * item = { entry, path, size, mtime, w, h, duration, hash, phash, distance }
+     * One user change = one undo step. fn(data) mutates; resolves false when nothing changed.
+     * Mutations run one after another (no interleaved snapshots), and the before/after snapshots kept for undo follow
+     * later renames/moves (see undoSnaps).
      */
-    async function scanBrowser(entries, opts = {}) {
-        const mode = opts.mode || 'exact';
-        const threshold = opts.threshold ?? 8;
-        const progress = opts.onProgress || (() => {});
-        const isCancelled = opts.isCancelled || (() => false);
-        const check = () => {
-            if (isCancelled()) throw cancelledError();
-        };
-        const files = entries.filter((e) => e.kind === 'file' && (e.size || 0) > 0 && (e.type === 'image' || e.type === 'video'));
-        const focus = opts.focus || null;
-        progress('prepare', 0, files.length);
-        const cache = await cacheGetMany(files.map(cacheKey));
-        const fresh = new Map();
-        const rec = (e) => {
-            const k = cacheKey(e);
-            let v = fresh.get(k);
-            if (!v) {
-                v = { ...(cache.get(k) || {}) };
-                fresh.set(k, v);
-            }
-            return v;
-        };
-        const dirty = new Set();
-        const flush = async () => {
-            const pairs = [...dirty].map((k) => [k, fresh.get(k)]);
-            dirty.clear();
-            await cachePutMany(pairs);
-        };
-        const mark = (e) => dirty.add(cacheKey(e));
+    let mutateChain = Promise.resolve();
+    const undoSnaps = new Set();
+    function mutate(label, fn, opts = {}) {
+        const run = mutateChain.then(() => mutateNow(label, fn, opts));
+        mutateChain = run.catch(() => {});
+        return run;
+    }
 
-        // ---- exact: size → sample → full ----
-        const exactKey = new Map(); // path -> content key
-        let bySize = kit.groupBy(files, (e) => e.size);
-        let candidates = [];
-        for (const [size, list] of bySize) {
-            if (list.length < 2) continue;
-            if (focus && !list.some((e) => e.path === focus)) continue;
-            candidates.push(...list);
-        }
-        bySize = null;
-        let done = 0;
-        progress('sample', 0, candidates.length);
-        await App.util.pool(candidates, 4, async (e) => {
-            check();
-            const r = rec(e);
-            if (!r.s) {
-                try {
-                    const s = await kit.sampleHash(await App.fs.getFile(e.path));
-                    r.s = s.hash;
-                    if (s.full) r.f = s.hash;
-                    mark(e);
-                } catch (err) {
-                    r.s = null;
-                }
-            }
-            progress('sample', ++done, candidates.length);
-        });
-        check();
-        const bySample = kit.groupBy(candidates.filter((e) => rec(e).s), (e) => `${e.size}|${rec(e).s}`);
-        const needFull = [];
-        for (const list of bySample.values()) if (list.length > 1) for (const e of list) if (!rec(e).f) needFull.push(e);
-        done = 0;
-        progress('full', 0, needFull.length);
-        await App.util.pool(needFull, 2, async (e) => {
-            check();
-            try {
-                rec(e).f = await kit.fullHash(await App.fs.getFile(e.path), { isCancelled });
-                mark(e);
-            } catch (err) {
-                if (err.cancelled) throw err;
-            }
-            progress('full', ++done, needFull.length);
-        });
-        check();
-        for (const list of bySample.values()) {
-            if (list.length < 2) continue;
-            for (const e of list) if (rec(e).f) exactKey.set(e.path, `${e.size}|${rec(e).f}`);
-        }
-        await flush();
-
-        // ---- similar images: pHash + BK-tree ----
-        const simEdges = [];
-        const images = mode === 'similar' ? files.filter((e) => e.type === 'image' && App.util.browserCanDecode(e.name)) : [];
-        if (images.length) {
-            const need = images.filter((e) => !rec(e).p || (rec(e).p !== '-' && !rec(e).c));
-            done = 0;
-            progress('phash', 0, need.length);
-            const pool = new HashPool(Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 4) / 2))));
-            try {
-                let lastFlush = Date.now();
-                await App.util.pool(need, 8, async (e) => {
-                    check();
-                    let res = null;
-                    try {
-                        res = await pool.hash(await App.fs.getFile(e.path));
-                    } catch (err) {
-                        res = null;
-                    }
-                    const r = rec(e);
-                    r.p = res ? hashHex(res.hl) : '-';
-                    r.c = res && res.color ? colorHex(res.color) : null;
-                    mark(e);
-                    progress('phash', ++done, need.length);
-                    if (Date.now() - lastFlush > 4000) {
-                        lastFlush = Date.now();
-                        flush();
-                    }
+    async function mutateNow(label, fn, { reason = 'data', undoable = true } = {}) {
+        await store.ready();
+        const ws = store.ws;
+        const part = (d) => clone({ excludedFiles: d.excludedFiles, excludedFolders: d.excludedFolders, notDuplicates: d.notDuplicates, rules: d.rules });
+        const before = part(store.data);
+        fn(store.data);
+        store.data = normalize({ ...store.data });
+        const after = part(store.data);
+        if (JSON.stringify(before) === JSON.stringify(after)) return false;
+        store.reindex();
+        await store.save();
+        emit(reason);
+        if (undoable) {
+            const rec = { before, after };
+            undoSnaps.add(rec);
+            if (undoSnaps.size > 300) undoSnaps.delete(undoSnaps.values().next().value);
+            const put = (key) => {
+                const run = mutateChain.then(async () => {
+                    if ((App.state.workspace?.id || null) !== ws) throw new Error('다른 작업 폴더라서 되돌릴 수 없어요');
+                    await store.ready();
+                    Object.assign(store.data, clone(rec[key]));
+                    store.data = normalize(store.data);
+                    store.reindex();
+                    await store.save();
+                    emit(reason, { undo: true });
                 });
-            } finally {
-                pool.destroy();
-            }
-            await flush();
-            check();
-            progress('compare', 0, images.length);
-            const hashed = images.filter((e) => rec(e).p && rec(e).p !== '-');
-            const tree = new BKTree();
-            const hashes = hashed.map((e) => hexHash(rec(e).p));
-            const colors = hashed.map((e) => hexColor(rec(e).c));
-            const colorTol = 18 + threshold * 2;
-            const close = (i, j) => colorDistance(colors[i], colors[j]) <= colorTol;
-            hashes.forEach((hl, i) => tree.add(hl, i));
-            if (focus) {
-                const fi = hashed.findIndex((e) => e.path === focus);
-                if (fi >= 0) tree.query(hashes[fi], threshold, (j, d) => j !== fi && close(fi, j) && simEdges.push([hashed[fi].path, hashed[j].path, d]));
-            } else {
-                for (let i = 0; i < hashed.length; i++) {
-                    if (i % 500 === 0) {
-                        check();
-                        progress('compare', i, hashed.length);
-                        await App.util.sleep(0);
-                    }
-                    tree.query(hashes[i], threshold, (j, d) => {
-                        if (j > i && close(i, j)) simEdges.push([hashed[i].path, hashed[j].path, d]);
-                    });
-                }
-            }
+                mutateChain = run.catch(() => {});
+                return run;
+            };
+            App.undo.push({ label, undo: () => put('before'), redo: () => put('after') });
         }
+        return true;
+    }
 
-        // ---- groups: union exact keys + similar edges ----
-        const paths = [];
-        const index = new Map();
-        const idOf = (p) => {
-            if (!index.has(p)) {
-                index.set(p, paths.length);
-                paths.push(p);
+    // ---- public data operations ----
+    const uniq = (a) => [...new Set(a)];
+
+    function excludeFiles(paths, on = true) {
+        paths = uniq(paths.filter(Boolean));
+        if (!paths.length) return Promise.resolve(false);
+        const label = on ? `중복검사에서 ${paths.length > 1 ? `파일 ${formatCount(paths.length)}개` : `‘${P.base(paths[0])}’`} 빼기` : '중복검사에 다시 넣기';
+        return mutate(label, (d) => {
+            const set = new Set(d.excludedFiles);
+            for (const p of paths) (on ? set.add(p) : set.delete(p));
+            d.excludedFiles = [...set];
+        }, { reason: 'exclude' });
+    }
+
+    function excludeFolders(paths, on = true) {
+        paths = uniq(paths.filter((p) => typeof p === 'string' && p !== ''));
+        if (!paths.length) return Promise.resolve(false);
+        const label = on ? `중복검사에서 ‘${kit.folderLabel(paths[0]) || paths[0]}’ 폴더 빼기` : '중복검사에 폴더 다시 넣기';
+        return mutate(label, (d) => {
+            const set = new Set(d.excludedFolders);
+            for (const p of paths) (on ? set.add(p) : set.delete(p));
+            d.excludedFolders = [...set];
+        }, { reason: 'exclude' });
+    }
+
+    /** "중복 아님": every pair among `paths` (or [a, b] pairs) is remembered and never grouped again. */
+    function markNotDuplicate(pairsOrPaths, on = true) {
+        let pairs = [];
+        if (pairsOrPaths.length && Array.isArray(pairsOrPaths[0])) pairs = pairsOrPaths;
+        else for (let i = 0; i < pairsOrPaths.length; i++) for (let j = i + 1; j < pairsOrPaths.length; j++) pairs.push([pairsOrPaths[i], pairsOrPaths[j]]);
+        if (!pairs.length) return Promise.resolve(false);
+        return mutate(on ? '중복 아님으로 표시' : '‘중복 아님’ 표시 지우기', (d) => {
+            const map = new Map(d.notDuplicates.map(([a, b]) => [pairKey(a, b), [a, b]]));
+            for (const [a, b] of pairs) {
+                if (on) map.set(pairKey(a, b), [a, b]);
+                else map.delete(pairKey(a, b));
             }
-            return index.get(p);
+            d.notDuplicates = [...map.values()];
+        }, { reason: 'pairs' });
+    }
+
+    function setFolderRole(path, role) {
+        if (typeof path !== 'string') return Promise.resolve(false);
+        const label = role ? `‘${kit.folderLabel(path)}’ 폴더를 ${ROLE_LABEL[role]}로 지정` : `‘${kit.folderLabel(path)}’ 폴더 역할 지우기`;
+        return mutate(label, (d) => {
+            const list = d.rules.folderPriority.filter((x) => x.path !== path);
+            if (role === 'keep' || role === 'remove') list.push({ path, role });
+            d.rules.folderPriority = list;
+        }, { reason: 'roles' });
+    }
+
+    function setRules(patch, { label = '중복검사 규칙 바꾸기' } = {}) {
+        return mutate(label, (d) => {
+            const fp = d.rules.folderPriority;
+            d.rules = { ...d.rules, ...patch, folderPriority: patch.folderPriority || fp };
+        }, { reason: 'rules' });
+    }
+
+    function resetRules() {
+        return mutate('중복검사 규칙 기본값으로', (d) => {
+            d.rules = { folderPriority: d.rules.folderPriority };
+        }, { reason: 'rules' });
+    }
+
+    // ---- review progress (not undoable: it is where you are, not a change to your library) ----
+    /**
+     * Start a new review: decisions (and keeper choices) carry over for groups that are still exactly the same.
+     * Synchronous on purpose (the store is loaded before any scan starts) so the panel reads the result right away.
+     */
+    function setLastScan(meta) {
+        const prev = store.data.lastScan;
+        const reviewed = {};
+        const choices = {};
+        if (prev && meta.groupIds) {
+            const ids = new Set(meta.groupIds);
+            for (const [gid, v] of Object.entries(prev.reviewed || {})) if (ids.has(gid) && v !== 'applied') reviewed[gid] = v;
+            for (const [gid, v] of Object.entries(prev.choices || {})) if (ids.has(gid)) choices[gid] = v;
+        }
+        const { groupIds, ...rest } = meta;
+        store.data.lastScan = { ...rest, reviewed, choices };
+        store.saveSoon();
+        return store.data.lastScan;
+    }
+
+    function setReviewed(scanId, gid, decision, choice) {
+        const ls = store.data.lastScan;
+        if (!ls || ls.id !== scanId) return;
+        if (decision) ls.reviewed[gid] = decision;
+        else delete ls.reviewed[gid];
+        if (choice !== undefined) {
+            if (!ls.choices) ls.choices = {};
+            if (choice && (choice.keep || (choice.leave && choice.leave.length))) ls.choices[gid] = choice;
+            else delete ls.choices[gid];
+        }
+        store.saveSoon();
+        App.bus.emit('dupes:reviewed', { scanId, gid, decision });
+    }
+
+    // ---- follow renames / moves ----
+    /** Applies every (from → to) in order, so A→B then B→C ends at C. */
+    function rebaser(pairs) {
+        const state = { changed: false };
+        state.fix = (p) => {
+            if (typeof p !== 'string') return p;
+            let cur = p;
+            for (const [from, to] of pairs) {
+                const r = P.rebase(cur, from, to);
+                if (r != null && r !== cur) cur = r;
+            }
+            if (cur !== p) state.changed = true;
+            return cur;
         };
-        const byKey = kit.groupBy([...exactKey.entries()], ([, k]) => k);
-        const pairs = [];
-        for (const list of byKey.values()) if (list.length > 1) for (let i = 1; i < list.length; i++) pairs.push([list[0][0], list[i][0]]);
-        for (const [a, b] of simEdges) pairs.push([a, b]);
-        for (const [a, b] of pairs) {
-            idOf(a);
-            idOf(b);
-        }
-        const uf = new UnionFind(paths.length);
-        for (const [a, b] of pairs) uf.union(index.get(a), index.get(b));
-        const entryByPath = new Map(files.map((e) => [e.path, e]));
-        const buckets = kit.groupBy(paths, (p) => uf.find(index.get(p)));
-        let groups = [];
-        let gid = 0;
-        for (const members of buckets.values()) {
-            if (members.length < 2) continue;
-            if (focus && !members.includes(focus)) continue;
-            const items = members.map((p) => {
-                const e = entryByPath.get(p);
-                const r = rec(e);
-                return { entry: e, path: p, size: e.size, mtime: e.mtime, hash: r.f || r.s || null, phash: r.p && r.p !== '-' ? r.p : null, contentKey: exactKey.get(p) || null };
-            });
-            const keys = new Set(items.map((i) => i.contentKey));
-            const kind = keys.size === 1 && !keys.has(null) ? 'exact' : 'similar';
-            groups.push({ id: `g${++gid}`, kind, items });
-        }
-        if (focus && groups.length > 1) {
-            // focus search: one group around the focused file
-            const items = [];
-            const seen = new Set();
-            for (const g of groups) for (const it of g.items) if (!seen.has(it.path)) {
-                seen.add(it.path);
-                items.push(it);
+        return state;
+    }
+
+    function rebaseData(d, pairs) {
+        const rb = rebaser(pairs);
+        d.excludedFiles = d.excludedFiles.map(rb.fix);
+        d.excludedFolders = d.excludedFolders.map(rb.fix);
+        d.notDuplicates = d.notDuplicates.map(([a, b]) => [rb.fix(a), rb.fix(b)]);
+        d.rules.folderPriority = d.rules.folderPriority.map((x) => ({ ...x, path: rb.fix(x.path) }));
+        return rb.changed;
+    }
+
+    function rebaseScope(sc, fix) {
+        if (!sc || typeof sc !== 'object') return sc;
+        const out = { ...sc };
+        if (typeof out.path === 'string') out.path = fix(out.path);
+        for (const k of ['paths', 'a', 'b']) if (Array.isArray(out[k])) out[k] = out[k].map(fix);
+        return out;
+    }
+
+    /**
+     * Rebase a saved scan result in place: raw items/sets/edges, scope, focus and the group snapshot. Group ids are made
+     * from member paths, so they change too -> returns { changed, idMap: Map(oldId → newId) }.
+     */
+    function rebaseResult(result, pairs) {
+        const idMap = new Map();
+        if (!result || !result.raw) return { changed: false, idMap };
+        const rb = rebaser(pairs);
+        for (const m of result.raw.items) {
+            if (m.root) continue;
+            const n = rb.fix(m.path);
+            if (n !== m.path) {
+                m.path = n;
+                m.name = P.base(n);
             }
-            groups = [{ id: 'g1', kind: 'similar', items }];
         }
-        return { groups, scanned: files.length, engine: 'browser' };
-    }
-
-    /** Fill w/h/duration for the items of groups (cheap header probes, cached in the catalog). */
-    async function enrich(groups, { onProgress, isCancelled } = {}) {
-        const all = groups.flatMap((g) => g.items).filter((it) => !it.w);
-        let done = 0;
-        await App.util.pool(all, 6, async (it) => {
-            if (isCancelled && isCancelled()) return;
-            const info = await kit.mediaInfo(it.entry);
-            if (info) {
-                it.w = info.w;
-                it.h = info.h;
-                if (info.duration) it.duration = info.duration;
-            }
-            onProgress && onProgress(++done, all.length);
-        });
-    }
-
-    // =====================================================================
-    // Scan (server engine)
-    // =====================================================================
-    function serverAvailable() {
-        return !!(App.server && App.server.available && App.server.dupes && typeof App.server.dupes.scan === 'function');
-    }
-
-    async function scanServer({ dirs, mode, threshold, onProgress, isCancelled }) {
-        const body = { mode: mode === 'exact' ? 'exact' : 'both', threshold, videos: true };
-        if (dirs) body.dirs = dirs;
-        const relay = (p, msg) => onProgress && onProgress('server', typeof p === 'number' ? Math.round(p * 1000) : 0, 1000, msg);
-        let res = await App.server.dupes.scan(body, { onProgress: relay });
-        if (isCancelled && isCancelled()) throw cancelledError();
-        if (res && !Array.isArray(res.groups)) {
-            const id = res.id || res.jobId || (res.job && res.job.id);
-            if (id && typeof App.server.waitJob === 'function') res = await App.server.waitJob(id, relay);
-            if (res && res.result) res = res.result;
+        result.raw.exactSets = result.raw.exactSets.map((s) => s.map(rb.fix));
+        for (const e of result.raw.edges) {
+            e.a = rb.fix(e.a);
+            e.b = rb.fix(e.b);
         }
-        if (isCancelled && isCancelled()) throw cancelledError();
-        const groups = [];
-        let gid = 0;
-        for (const g of (res && res.groups) || []) {
-            const items = [];
-            for (const it of g.items || []) {
-                const p = it.path;
-                const e = App.index?.get(p) || { path: p, name: P.base(p), kind: 'file', type: App.util.mediaType(p), ext: P.ext(p), size: it.size, mtime: it.mtime };
-                items.push({ entry: e, path: p, size: it.size ?? e.size, mtime: it.mtime ?? e.mtime, w: it.width, h: it.height, duration: it.duration, distance: it.distance, hash: null, phash: null, contentKey: g.kind === 'exact' ? `x${gid}` : null });
-            }
-            if (items.length > 1) groups.push({ id: `s${++gid}`, kind: g.kind === 'exact' ? 'exact' : 'similar', items });
-        }
-        return { groups, scanned: (res && res.stats && (res.stats.files || res.stats.scanned)) || null, engine: 'server' };
-    }
-
-    // =====================================================================
-    // Keep-best & strategies
-    // =====================================================================
-    function bestFirst(a, b) {
-        return ((b.w || 0) * (b.h || 0) - (a.w || 0) * (a.h || 0)) ||
-            ((b.size || 0) - (a.size || 0)) ||
-            ((a.mtime || Infinity) - (b.mtime || Infinity)) ||
-            (a.path.length - b.path.length) ||
-            compareNames(a.path, b.path);
-    }
-
-    const STRATEGIES = {
-        best: { label: '가장 좋은 것 남기기', why: '해상도 → 용량 → 오래된 순으로 골랐어요', cmp: bestFirst },
-        oldest: { label: '가장 오래된 것 남기기', why: '가장 먼저 만들어진 파일을 남겨요', cmp: (a, b) => (a.mtime || Infinity) - (b.mtime || Infinity) || bestFirst(a, b) },
-        newest: { label: '가장 최근 것 남기기', why: '가장 최근에 수정된 파일을 남겨요', cmp: (a, b) => (b.mtime || 0) - (a.mtime || 0) || bestFirst(a, b) },
-        shortest: { label: '경로가 짧은 것 남기기', why: '얕은 폴더에 있는 파일을 남겨요', cmp: (a, b) => a.path.split('/').length - b.path.split('/').length || bestFirst(a, b) },
-    };
-
-    function applyStrategy(groups, key, preferDir) {
-        const s = STRATEGIES[key] || STRATEGIES.best;
-        for (const g of groups) {
-            const sorted = g.items.slice().sort((a, b) => {
-                if (preferDir != null) {
-                    const ia = P.isInside(a.path, preferDir) && a.path !== preferDir ? 0 : 1;
-                    const ib = P.isInside(b.path, preferDir) && b.path !== preferDir ? 0 : 1;
-                    if (ia !== ib) return ia - ib;
+        result.scope = rebaseScope(result.scope, rb.fix);
+        if (result.focus) result.focus = rb.fix(result.focus);
+        if (Array.isArray(result.snapshot)) {
+            for (const g of result.snapshot) {
+                let moved = false;
+                for (const m of g.members) {
+                    if (m.root) continue;
+                    const n = rb.fix(m.path);
+                    if (n !== m.path) {
+                        m.path = n;
+                        m.name = P.base(n);
+                        moved = true;
+                    }
                 }
-                return s.cmp(a, b);
-            });
-            g.keep = sorted[0].path;
-            g.remove = new Set(g.items.filter((i) => i.path !== g.keep).map((i) => i.path));
+                if (g.keep) g.keep = rb.fix(g.keep);
+                if (!moved || !App.dupes.engine) continue;
+                const id = App.dupes.engine.groupIdOf(g.members.map((m) => m.path));
+                if (id !== g.id) {
+                    idMap.set(g.id, id);
+                    g.id = id;
+                }
+            }
         }
+        return { changed: rb.changed, idMap };
     }
 
-    // =====================================================================
-    // Metadata merge (copies → keeper), part of the same undo entry as the trash
-    // =====================================================================
+    /** Review progress follows renamed groups (ids are derived from member paths). */
+    function remapReviewed(idMap) {
+        const ls = store.data.lastScan;
+        if (!ls || !idMap.size) return;
+        for (const key of ['reviewed', 'choices']) {
+            const obj = ls[key];
+            if (!obj) continue;
+            for (const [from, to] of idMap) {
+                if (from in obj) {
+                    obj[to] = obj[from];
+                    delete obj[from];
+                }
+            }
+        }
+        store.saveSoon();
+    }
+
+    const pendingRebase = [];
+    const flushRebase = App.util.debounce(async () => {
+        const pairs = pendingRebase.splice(0);
+        if (!pairs.length || !App.dupes.engine) return;
+        try {
+            const r = await App.dupes.engine.cache.getResult();
+            if (!r || (App.dupes.ui?.active?.rv?.result?.id === r.id)) return; // the open review rebases (and saves) its own copy
+            const { changed, idMap } = rebaseResult(r, pairs);
+            if (changed) {
+                await App.dupes.engine.cache.putResult(r);
+                if (store.data.lastScan && store.data.lastScan.id === r.id) remapReviewed(idMap);
+            }
+        } catch (e) {
+            /* best effort */
+        }
+    }, 500);
+
+    App.bus.on('fs:changed', (c) => {
+        if (!c.from || !c.to || (c.type !== 'move' && c.type !== 'rename') || !App.state.workspace) return;
+        const pairs = c.from.map((f, i) => [f, c.to[i]]).filter(([f, t]) => f != null && t != null && f !== t);
+        if (!pairs.length) return;
+        pendingRebase.push(...pairs);
+        flushRebase();
+        for (const rec of undoSnaps) {
+            rebaseData(rec.before, pairs);
+            rebaseData(rec.after, pairs);
+        }
+        store.ready().then(() => {
+            let changed = rebaseData(store.data, pairs);
+            const ls = store.data.lastScan;
+            if (ls && ls.scope) {
+                const rb = rebaser(pairs);
+                ls.scope = rebaseScope(ls.scope, rb.fix);
+                changed = changed || rb.changed;
+            }
+            if (changed) {
+                store.data = normalize(store.data);
+                store.reindex();
+                store.saveSoon();
+                emit('rebase', { pairs });
+            }
+        });
+    });
+    App.bus.on('workspace:opened', () => {
+        store.loading = null;
+        store.backedUp = false;
+        store.ready().then(() => emit('load'));
+    });
+    App.bus.on('workspace:closed', () => {
+        store.loading = null;
+        store.ws = null;
+        store.data = blank();
+        store.reindex();
+    });
+
+    // =================================================================================================
+    // Metadata merge (copies → keeper), part of the clean-up's undo step
+    // =================================================================================================
     const MERGE_KEYS = ['chips', 'rating', 'memo', 'markers', 'label', 'legacyTags', 'legacyImported'];
 
-    function mergedPatch(keeper, donors) {
-        const k = App.catalog.peek(keeper) || {};
-        const ds = donors.map((p) => App.catalog.peek(p)).filter(Boolean);
+    /** Pure: the patch that merges donor catalog entries into the keeper's entry (null when nothing changes). */
+    function mergedPatchFrom(k, ds) {
+        k = k || {};
+        ds = ds.filter(Boolean);
         if (!ds.length) return null;
         const patch = {};
         const chips = [...(k.chips || [])];
@@ -644,11 +500,15 @@
         return Object.keys(patch).length ? patch : null;
     }
 
+    function mergedPatch(keeper, donors) {
+        return mergedPatchFrom(App.catalog.peek(keeper), donors.map((p) => App.catalog.peek(p)));
+    }
+
     function snapshot(p) {
         const e = App.catalog.peek(p);
         if (!e) return null;
         const out = {};
-        for (const key of MERGE_KEYS) if (e[key] !== undefined) out[key] = JSON.parse(JSON.stringify(e[key]));
+        for (const key of MERGE_KEYS) if (e[key] !== undefined) out[key] = clone(e[key]);
         return out;
     }
 
@@ -661,940 +521,549 @@
         }, { undoable: false });
     }
 
-    async function withJob(title, total, fn) {
-        const job = App.jobs.start({ title, total, cancellable: false });
+    // =================================================================================================
+    // Clean-up: verify → trash / quarantine → merge → (move into the keep folder) → ONE undo step → dupes-log.json
+    // =================================================================================================
+    const REASONS = {
+        keeperMissing: '보관할 파일이 없어서 건너뛰었어요',
+        keeperChanged: '보관할 파일이 바뀌어서 건너뛰었어요',
+        keeperDisconnected: '보관할 파일이 있는 드라이브가 연결돼 있지 않아서 건너뛰었어요',
+        unverifiable: '다른 드라이브 파일을 다시 확인할 수 없어서 건너뛰었어요',
+        changed: '파일이 바뀌어서 건너뛰었어요',
+        clips: '보관함에 잘라 둔 구간이 있어서 건너뛰었어요',
+        edit: '편집해 둔 기록이 있어서 건너뛰었어요',
+        disconnected: '로컬 서버가 꺼져 있어서 다른 드라이브 파일은 건너뛰었어요',
+        all: '묶음의 파일을 모두 지울 수는 없어서 건너뛰었어요',
+        overlap: '다른 묶음에서 남기기로 한 파일이라 건너뛰었어요',
+        indirect: '남길 파일과 직접 맞춰 보지 않은 파일이라 건너뛰었어요',
+        workspace: '작업 폴더가 바뀌어서 멈췄어요',
+    };
+
+    const serverDupes = () => (App.server?.available && App.server.dupes) || null;
+    const canQuarantine = () => typeof serverDupes()?.quarantine === 'function';
+    const wsNow = () => App.state.workspace?.id || null;
+
+    /** { size, mtime } | null (gone) | undefined (can't be checked: external file without server stat → fail closed) */
+    async function statOf(m) {
+        if (m.root) {
+            const sd = serverDupes();
+            if (!sd || typeof sd.stat !== 'function') return undefined;
+            try {
+                const s = await sd.stat(m.path);
+                return s && s.kind !== 'dir' ? s : null;
+            } catch (e) {
+                return e && (e.code === 'ENOENT' || e.status === 404) ? null : undefined;
+            }
+        }
         try {
-            return await fn(job);
-        } finally {
-            job.finish();
+            const s = await App.fs.stat(m.path);
+            return s && s.kind !== 'dir' ? s : null;
+        } catch (e) {
+            return null;
         }
     }
 
-    async function runCleanup(plan, { merge, job }) {
+    /** Clips in the 보관함 for a path; when the clips module can't answer, assume there are (fail closed). */
+    function hasClips(p) {
+        const cl = App.clips;
+        if (!cl || typeof cl.forPath !== 'function') return 0;
+        try {
+            const c = cl.forPath(p);
+            return Array.isArray(c) ? c.length : 0;
+        } catch (e) {
+            return 1;
+        }
+    }
+
+    /** Any video edit state (viewer team's meta.edit) that isn't empty. */
+    function hasEdit(p) {
+        const e = App.catalog.peek(p)?.meta?.edit;
+        if (!e || typeof e !== 'object') return false;
+        for (const [k, v] of Object.entries(e)) {
+            if (k === 'updatedAt' || v == null || v === false) continue;
+            if (Array.isArray(v) ? v.length : typeof v === 'object' ? Object.keys(v).length : true) return true;
+        }
+        return false;
+    }
+
+    const changedSince = (s, m) => s.size !== m.size || (m.mtime && s.mtime && s.mtime !== m.mtime);
+
+    /**
+     * Re-check everything right before removing. plans: [{ group, keep, remove: [path], moveTo? }]
+     * -> { ok: [{ group, keep, keeper, remove: [member], moveTo }], skipped: [{ path, reason, group }] }
+     */
+    async function verify(plans, { bulk = false } = {}) {
+        const ok = [];
+        const skipped = [];
+        const keepers = new Set(plans.map((p) => p.keep));
+        const taken = new Set();
+        for (const plan of plans) {
+            const g = plan.group;
+            const byPath = new Map(g.members.map((m) => [m.path, m]));
+            const keeper = byPath.get(plan.keep);
+            const want = uniq(plan.remove.filter((p) => p !== plan.keep && byPath.has(p)));
+            const skipAll = (reason) => {
+                for (const p of want) skipped.push({ path: p, reason, group: g.id });
+            };
+            if (!keeper || !want.length) continue;
+            if (keeper.root && !serverDupes()) {
+                skipAll(REASONS.keeperDisconnected);
+                continue;
+            }
+            const ks = await statOf(keeper);
+            if (ks === undefined) {
+                skipAll(REASONS.unverifiable);
+                continue;
+            }
+            if (ks === null) {
+                skipAll(REASONS.keeperMissing);
+                continue;
+            }
+            if (changedSince(ks, keeper)) {
+                skipAll(REASONS.keeperChanged);
+                continue;
+            }
+            if (g.kind === 'exact' && keeper.q && !keeper.root) {
+                try {
+                    const q = (await App.dupes.engine.quickHash(await App.fs.getFile(keeper.path))).q;
+                    if (q !== keeper.q) {
+                        skipAll(REASONS.keeperChanged);
+                        continue;
+                    }
+                } catch (e) {
+                    skipAll(REASONS.keeperMissing);
+                    continue;
+                }
+            }
+            const remove = [];
+            for (const p of want) {
+                const m = byPath.get(p);
+                if (keepers.has(p) || taken.has(p)) {
+                    skipped.push({ path: p, reason: REASONS.overlap, group: g.id });
+                    continue;
+                }
+                if (m.root && !canQuarantine()) {
+                    skipped.push({ path: p, reason: REASONS.disconnected, group: g.id });
+                    continue;
+                }
+                if (bulk && !m.root && hasClips(p)) {
+                    skipped.push({ path: p, reason: REASONS.clips, group: g.id });
+                    continue;
+                }
+                if (bulk && !m.root && hasEdit(p)) {
+                    skipped.push({ path: p, reason: REASONS.edit, group: g.id });
+                    continue;
+                }
+                const s = await statOf(m);
+                if (s === undefined) {
+                    skipped.push({ path: p, reason: REASONS.unverifiable, group: g.id });
+                    continue;
+                }
+                if (s === null) continue; // already gone: nothing to do
+                if (changedSince(s, m)) {
+                    skipped.push({ path: p, reason: REASONS.changed, group: g.id });
+                    continue;
+                }
+                remove.push(m);
+            }
+            // Never remove every member of a group
+            const staying = g.members.filter((m) => !remove.includes(m));
+            if (!staying.length || !staying.includes(keeper)) {
+                for (const m of remove) skipped.push({ path: m.path, reason: REASONS.all, group: g.id });
+                continue;
+            }
+            for (const m of remove) taken.add(m.path);
+            const moveTo = !keeper.root && typeof plan.moveTo === 'string' && plan.moveTo !== P.parent(keeper.path) ? plan.moveTo : null;
+            if (remove.length) ok.push({ group: g, keep: keeper.path, keeper, remove, moveTo });
+        }
+        return { ok, skipped };
+    }
+
+    /** Runs a verified plan. Donor metadata is read before anything moves and merged only from donors really removed. */
+    async function execute(plan, { merge, job, ws }) {
+        const failed = [];
+        const skipped = [];
+        const donorData = new Map();
+        for (const g of plan) for (const m of g.remove) if (!m.root) donorData.set(m.path, clone(App.catalog.peek(m.path) || null));
+        // last look at the keepers right before the first removal
+        const live = [];
+        for (const g of plan) {
+            if (!g.keeper.root && !(await App.fs.exists(g.keep).catch(() => false))) {
+                for (const m of g.remove) skipped.push({ path: m.path, reason: REASONS.keeperMissing, group: g.group.id });
+                continue;
+            }
+            live.push(g);
+        }
+        const local = [];
+        const external = [];
+        for (const g of live) for (const m of g.remove) (m.root ? external : local).push(m.path);
+        if (wsNow() !== ws) return { snaps: new Map(), merged: 0, ids: [], paths: [], qids: [], quarantined: [], moves: [], failed, skipped: [...skipped, ...local.concat(external).map((p) => ({ path: p, reason: REASONS.workspace }))], cancelled: true, plan: [] };
+        const res = await kit.trashPaths(local, { job, onProgress: (n, t) => job?.update(n, { total: t + external.length, detail: `${formatCount(n)} / ${formatCount(t + external.length)}` }) });
+        failed.push(...res.failed);
+        const cancelled = !!res.cancelled || !!(job && job.cancelled) || wsNow() !== ws;
+        let qids = [];
+        let quarantined = [];
+        if (external.length && !cancelled) {
+            try {
+                const r = await serverDupes().quarantine(external);
+                qids = (r && (r.ids || (r.items || []).map((i) => i.id))) || [];
+                quarantined = (r && r.items && r.items.map((i) => i.path || i.from)) || (qids.length === external.length ? external : []);
+            } catch (e) {
+                for (const p of external) failed.push({ path: p, error: e.message || String(e) });
+            }
+        }
+        const gone = new Set([...res.paths, ...quarantined]);
+        // merge what really left into the keeper (same undo step)
         const snaps = new Map();
         let merged = 0;
         if (merge) {
-            for (const g of plan) {
-                const patch = mergedPatch(g.keep, g.remove);
+            for (const g of live) {
+                if (g.keeper.root) continue;
+                const donors = g.remove.filter((m) => !m.root && gone.has(m.path)).map((m) => donorData.get(m.path));
+                const patch = mergedPatchFrom(App.catalog.peek(g.keep), donors);
                 if (!patch) continue;
                 if (!snaps.has(g.keep)) snaps.set(g.keep, snapshot(g.keep));
                 App.catalog.update(g.keep, (e) => Object.assign(e, patch), { undoable: false });
                 merged++;
             }
         }
-        const paths = [];
-        for (const g of plan) for (const p of g.remove) if (await App.fs.exists(p)) paths.push(p);
-        const res = await kit.trashPaths(paths, { job, onProgress: (n, t) => job?.update(n, { total: t, detail: `${formatCount(n)} / ${formatCount(t)}` }) });
-        return { snaps, merged, ids: res.ids, paths: res.paths, failed: res.failed, cancelled: res.cancelled };
+        // owner's rule B: the better copy goes into the keep folder (the worse copy there is already in the trash)
+        const moves = [];
+        for (const g of live) {
+            if (!g.moveTo || cancelled || !g.remove.some((m) => gone.has(m.path))) continue;
+            try {
+                const r = await App.fs.move([g.keep], g.moveTo, { undoable: false });
+                const to = r && r[0] && r[0].to;
+                if (to && to !== g.keep) {
+                    moves.push({ from: g.keep, to, group: g.group.id });
+                    if (snaps.has(g.keep)) {
+                        snaps.set(to, snaps.get(g.keep));
+                        snaps.delete(g.keep);
+                    }
+                    g.keep = to;
+                    g.keeper.path = to;
+                }
+            } catch (e) {
+                failed.push({ path: g.keep, error: `보관 폴더로 옮기지 못했어요 (${e.message || e})` });
+            }
+        }
+        return { snaps, merged, ids: res.ids, paths: res.paths, qids, quarantined, moves, failed, skipped, cancelled, plan: live };
+    }
+
+    let logChain = Promise.resolve();
+    function appendLog(entry) {
+        const ws = App.state.workspace?.id;
+        logChain = logChain.then(async () => {
+            if (!App.fs.ready || App.state.workspace?.id !== ws) return;
+            const log = await App.wsdata.read('dupes-log', null);
+            const data = log && Array.isArray(log.entries) ? log : { version: 1, entries: [] };
+            data.entries.push(entry);
+            await App.wsdata.write('dupes-log', data);
+        }).catch((e) => console.warn('[dupes] log append failed', e));
+        return logChain;
+    }
+
+    /** After an undo the restored files may carry new timestamps: refresh what verify() compares against. */
+    async function refreshMembers(members) {
+        await App.util.pool(members.filter((m) => !m.root), 8, async (m) => {
+            try {
+                const s = await App.fs.stat(m.path);
+                if (s && s.kind !== 'dir') {
+                    m.size = s.size;
+                    m.mtime = s.mtime;
+                }
+            } catch (e) {
+                /* gone: verify() will skip it */
+            }
+        });
     }
 
     /**
-     * Soft-delete the chosen copies as ONE undo entry; their chips/rating/memo/markers are merged into the keeper
-     * inside the same entry (one Ctrl+Z brings back the files AND the keeper's previous metadata).
-     * plan: [{ keep, remove: [paths] }]  -> { trashed, ids, merged, failed, cancelled }
+     * Verified clean-up. plans: [{ group, keep, remove: [path], moveTo? }]; bulk = '확실한 묶음 한 번에 정리'.
+     * -> { removed: [{ path, size, root }], bytes, skipped: [{ path, reason }], merged, moved, groups: [groupId], failed }
      */
-    async function trashDuplicates(plan, { merge = true } = {}) {
-        const total = plan.reduce((s, g) => s + g.remove.length, 0);
-        const job = App.jobs.start({ title: '복제본 정리 중', total, cancellable: true });
-        let state;
+    async function apply(plans, { merge = true, bulk = false, label, scanId = null } = {}) {
+        const ws = wsNow();
+        const total = plans.reduce((s, p) => s + p.remove.length, 0);
+        const job = App.jobs.start({ title: '중복 정리 중', total, cancellable: true, detail: '지우기 전에 파일을 다시 확인하는 중' });
+        let checked;
+        let state = null;
         try {
-            state = await runCleanup(plan, { merge, job });
+            checked = await verify(plans, { bulk });
+            if (wsNow() !== ws) {
+                for (const g of checked.ok) for (const m of g.remove) checked.skipped.push({ path: m.path, reason: REASONS.workspace, group: g.group.id });
+                checked.ok = [];
+            }
+            if (checked.ok.length) state = await execute(checked.ok, { merge, job, ws });
         } finally {
             job.finish();
         }
-        if (!state.ids.length && !state.merged) return { trashed: 0, ids: [], merged: 0, failed: state.failed, cancelled: state.cancelled };
-        const done = new Set(state.paths);
-        const live = plan.map((g) => ({ keep: g.keep, remove: g.remove.filter((p) => done.has(p)) })).filter((g) => g.remove.length);
-        const first = state;
+        const skipped = [...checked.skipped, ...(state ? state.skipped : [])];
+        if (!state || (!state.ids.length && !state.qids.length && !state.moves.length)) {
+            // nothing left the library; a merge without removals is rolled back so nothing changes silently
+            if (state) for (const [p, snap] of state.snaps) restoreSnapshot(p, snap);
+            return { removed: [], bytes: 0, skipped, merged: 0, moved: [], groups: [], failed: state ? state.failed : [] };
+        }
+        const gone = new Set([...state.paths, ...state.quarantined]);
+        const movedKeep = new Set(state.moves.map((mv) => mv.to));
+        const live = state.plan
+            .map((g) => ({ ...g, remove: g.remove.filter((m) => gone.has(m.path)), moveTo: movedKeep.has(g.keep) ? g.moveTo : null }))
+            .filter((g) => g.remove.length || g.moveTo);
+        const removed = live.flatMap((g) => g.remove.map((m) => ({ path: m.path, size: m.size || 0, root: m.root || null })));
+        const bytes = removed.reduce((s, r) => s + r.size, 0);
+        const at = Date.now();
+        appendLog({
+            at,
+            type: 'apply',
+            bulk,
+            scanId,
+            bytes,
+            groups: live.map((g) => ({
+                id: g.group.id,
+                kind: g.group.kind,
+                sure: !!g.group.sure,
+                kept: g.keep,
+                movedFrom: (state.moves.find((mv) => mv.to === g.keep) || {}).from,
+                removed: g.remove.map((m) => ({ path: m.path, size: m.size, to: m.root ? 'quarantine' : 'trash' })),
+            })),
+            skipped: skipped.map((s) => ({ path: s.path, reason: s.reason })),
+        });
+        let cur = state;
+        const n = removed.length;
         App.undo.push({
-            label: `복제본 ${formatCount(state.ids.length)}개 정리`,
+            label: label || (n ? `중복 ${formatCount(n)}개 정리` : '더 좋은 화질을 보관 폴더로 옮기기'),
             undo: async () => {
-                const back = await kit.restoreIds(state.ids);
-                // keep the plan pointing at wherever the copies came back to, so redo works
-                for (const g of live) g.remove = g.remove.map((p) => back.get(p) || p);
-                for (const [p, snap] of state.snaps) restoreSnapshot(p, snap);
+                if (wsNow() !== ws) throw new Error('다른 작업 폴더라서 되돌릴 수 없어요');
+                // the moved keeper goes back first, so the copy that sat in the keep folder can return under its own name
+                for (const mv of [...(cur.moves || [])].reverse()) {
+                    const r = await App.fs.move([mv.to], P.parent(mv.from), { undoable: false });
+                    let actual = r && r[0] && r[0].to;
+                    if (!actual) throw new Error(`‘${P.base(mv.to)}’ 파일을 원래 폴더로 되돌리지 못했어요`);
+                    if (P.base(actual) !== P.base(mv.from)) {
+                        try {
+                            actual = await App.fs.rename(actual, P.base(mv.from), { undoable: false });
+                        } catch (e) {
+                            /* keep the numbered name; we track where it really is */
+                        }
+                    }
+                    for (const g of live) {
+                        if (g.keep !== mv.to) continue;
+                        g.keep = actual;
+                        g.keeper.path = actual;
+                    }
+                    if (cur.snaps.has(mv.to)) {
+                        cur.snaps.set(actual, cur.snaps.get(mv.to));
+                        cur.snaps.delete(mv.to);
+                    }
+                }
+                const back = await kit.restoreIds(cur.ids);
+                for (const g of live) for (const m of g.remove) if (back.has(m.path)) m.path = back.get(m.path);
+                if (cur.qids.length && typeof serverDupes()?.restore === 'function') await serverDupes().restore(cur.qids);
+                for (const [p, snap] of cur.snaps) restoreSnapshot(p, snap);
+                await refreshMembers(live.flatMap((g) => [g.keeper, ...g.remove]));
+                appendLog({ at: Date.now(), type: 'undo', ref: at });
+                App.bus.emit('dupes:applied', { undo: true, paths: removed.map((r) => r.path) });
             },
             redo: async () => {
-                state = await withJob('복제본 정리 중', live.reduce((s, g) => s + g.remove.length, 0), (j) => runCleanup(live, { merge, job: j }));
+                if (wsNow() !== ws) throw new Error('다른 작업 폴더라서 다시 할 수 없어요');
+                // the same checks as the first time: the library may have changed since the undo
+                const again = await verify(live.map((g) => ({ group: g.group, keep: g.keep, remove: g.remove.map((m) => m.path), moveTo: g.moveTo })), { bulk });
+                const j = App.jobs.start({ title: '중복 정리 중', total: n, cancellable: false });
+                try {
+                    cur = again.ok.length ? await execute(again.ok, { merge, job: j, ws }) : { snaps: new Map(), merged: 0, ids: [], paths: [], qids: [], quarantined: [], moves: [], failed: [], skipped: [] };
+                } finally {
+                    j.finish();
+                }
+                const skippedAgain = [...again.skipped, ...cur.skipped];
+                if (skippedAgain.length) reportApply({ removed: [], bytes: 0, skipped: skippedAgain, failed: [] });
+                appendLog({ at: Date.now(), type: 'redo', ref: at, skipped: skippedAgain.map((s) => ({ path: s.path, reason: s.reason })) });
+                App.bus.emit('dupes:applied', { redo: true, paths: removed.map((r) => r.path) });
             },
         });
-        return { trashed: first.ids.length, ids: first.ids, merged: first.merged, failed: first.failed, cancelled: first.cancelled };
+        App.bus.emit('dupes:applied', { paths: removed.map((r) => r.path), groups: live.map((g) => g.group.id), moves: state.moves });
+        return { removed, bytes, skipped, merged: state.merged, moved: state.moves, groups: live.map((g) => g.group.id), failed: state.failed };
     }
 
-    // =====================================================================
-    // Ignore list ("이건 중복 아님"), workspace-level, undoable
-    // =====================================================================
-    const memberSig = (it) => `${it.size || 0}:${it.hash || it.phash || P.base(it.path)}`;
-    const sigKey = (sigs) => sigs.slice().sort().join('\n');
-
-    async function readIgnore() {
-        const data = await App.wsdata.read('dupes-ignore', null);
-        return data && Array.isArray(data.groups) ? data : { version: 1, groups: [] };
+    /**
+     * Round-1 API (kept for other modules/tests): trash the copies of plain plans [{ keep, remove: [paths] }] as ONE
+     * undo step with metadata merge (verified like any clean-up).
+     */
+    async function trashDuplicates(plan, { merge = true } = {}) {
+        const groups = [];
+        for (const p of plan) {
+            const members = [];
+            for (const path of [p.keep, ...p.remove]) {
+                let s = null;
+                try {
+                    s = await App.fs.stat(path);
+                } catch (e) {
+                    s = null;
+                }
+                if (s) members.push({ path, size: s.size, mtime: s.mtime });
+            }
+            groups.push({ group: { id: 'legacy', kind: 'exact', members }, keep: p.keep, remove: p.remove });
+        }
+        const total = plan.reduce((s, g) => s + g.remove.length, 0);
+        const res = await apply(groups, { merge, label: `복제본 ${formatCount(total)}개 정리` });
+        return { trashed: res.removed.length, ids: [], merged: res.merged, failed: res.failed, cancelled: false };
     }
 
-    async function loadIgnored() {
-        return (await readIgnore()).groups.map((g) => new Set(g));
-    }
-
-    async function setIgnored(sigs, hide) {
-        const data = await readIgnore();
-        const key = sigKey(sigs);
-        if (hide) {
-            data.groups = data.groups.filter((g) => sigKey(g) !== key);
-            data.groups.push(sigs);
-            if (data.groups.length > 5000) data.groups = data.groups.slice(-5000);
-        } else {
-            // drop every entry that covers this group, otherwise it would stay hidden
-            data.groups = data.groups.filter((g) => {
-                const s = new Set(g);
-                return !sigs.every((x) => s.has(x));
+    /** Honest result toast: '휴지통으로 옮겼어요 · 비우면 n GB 확보' (+ what was skipped and why). */
+    function reportApply(res) {
+        const n = res.removed.length;
+        const ext = res.removed.filter((r) => r.root).length;
+        const movedN = (res.moved || []).length;
+        if (n) {
+            const where = ext && ext === n ? '_중복정리 폴더로 옮겼어요' : ext ? '휴지통과 _중복정리 폴더로 옮겼어요' : '휴지통으로 옮겼어요';
+            const moved = movedN ? ` · 더 좋은 화질 ${formatCount(movedN)}개는 보관 폴더로 옮겼어요` : '';
+            ui.toast(`중복 ${formatCount(n)}개를 ${where} · 비우면 ${formatBytes(res.bytes)} 확보${moved}${res.merged ? ` · ${formatCount(res.merged)}개에 칩·메모를 합쳤어요` : ''}`, {
+                type: 'success',
+                duration: 7000,
+                action: { label: '실행 취소', run: () => App.undo.undo() },
             });
         }
-        await App.wsdata.write('dupes-ignore', data);
-        App.bus.emit('dupes:ignore', { sigs, hidden: hide });
-    }
-
-    function isIgnored(group, ignored) {
-        const sigs = group.sigs || group.items.map(memberSig);
-        return ignored.some((set) => sigs.every((s) => set.has(s)));
-    }
-
-    /** Hide (or show again) a group in future scans — one undo entry. */
-    async function ignoreGroup(group, hide = true) {
-        const sigs = group.sigs || group.items.map(memberSig);
-        await setIgnored(sigs, hide);
-        App.undo.push({
-            label: hide ? '중복 아님으로 표시' : '숨긴 중복 다시 보기',
-            undo: () => setIgnored(sigs, !hide),
-            redo: () => setIgnored(sigs, hide),
-        });
-    }
-
-    // =====================================================================
-    // Collect entries for a scope
-    // =====================================================================
-    async function collect(scope, { includeSub = true, paths = null, waitIndex } = {}) {
-        const needIndex = async () => {
-            if (!App.index.ready) {
-                waitIndex && waitIndex();
-                await App.index.whenReady();
-            }
-        };
-        if (paths) return kit.entriesFor(paths);
-        if (scope === 'selection') {
-            const sel = App.select.entries();
-            const files = sel.filter((e) => e.kind === 'file');
-            const dirs = sel.filter((e) => e.kind === 'dir');
-            if (dirs.length) {
-                await needIndex();
-                const seen = new Set(files.map((e) => e.path));
-                for (const d of dirs) for (const e of App.index.under(d.path)) if (!seen.has(e.path)) {
-                    seen.add(e.path);
-                    files.push(e);
-                }
-            }
-            return files;
+        if (res.skipped.length) {
+            const by = new Map();
+            for (const s of res.skipped) by.set(s.reason, (by.get(s.reason) || 0) + 1);
+            const [reason, count] = [...by].sort((a, b) => b[1] - a[1])[0];
+            ui.toast(`${formatCount(res.skipped.length)}개는 그대로 뒀어요 — ${reason}${by.size > 1 ? ` (그 밖의 이유 ${by.size - 1}가지)` : count > 1 ? '' : ''}`, {
+                type: 'warning',
+                duration: 8000,
+                action: { label: '자세히', run: () => showSkipped(res.skipped) },
+            });
         }
-        if (scope === 'folder') {
-            const cwd = App.state.cwd ?? '';
-            if (includeSub) {
-                await needIndex();
-                return App.index.under(cwd, { recursive: true });
-            }
-            return (await App.fs.list(cwd)).filter((e) => e.kind === 'file');
-        }
-        await needIndex();
-        return App.index.items;
+        const failed = (res.failed || []).filter((f) => !f.reported);
+        if (failed.length) ui.toast(`${formatCount(failed.length)}개는 옮기지 못했어요 (${failed[0].error})`, { type: 'warning', duration: 7000 });
     }
 
-    // =====================================================================
-    // Panel
-    // =====================================================================
-    const PHASES = {
-        wait: '라이브러리 색인이 끝나기를 기다리는 중',
-        prepare: '파일 목록을 준비하는 중',
-        sample: '크기가 같은 파일을 비교하는 중',
-        full: '내용이 같은지 끝까지 확인하는 중',
-        phash: '사진의 생김새를 분석하는 중',
-        compare: '비슷한 사진을 짝짓는 중',
-        enrich: '해상도를 확인하는 중',
-        server: '로컬 서버에서 찾는 중',
-    };
-
-    function thresholdLabel(t) {
-        if (t <= 3) return '거의 같은 것만';
-        if (t <= 7) return '조금 엄격하게';
-        if (t <= 11) return '보통';
-        if (t <= 15) return '느슨하게';
-        return '아주 느슨하게';
+    function showSkipped(skipped) {
+        const { h } = App.util;
+        const body = h('div', { class: 'dup-skipped' },
+            ...skipped.slice(0, 200).map((s) => h('div', { class: 'dup-skipped-row' },
+                h('span', { class: 'dup-skipped-name truncate', text: P.base(s.path), title: s.path }),
+                h('span', { class: 'dup-skipped-why', text: s.reason }))));
+        return ui.dialog({ title: `건너뛴 파일 ${formatCount(skipped.length)}개`, body, width: 560, actions: [{ label: '닫기', value: null, kind: 'primary', autofocus: true }] });
     }
 
-    /** true if p or one of its ancestor folders is in set */
-    function hitsAny(p, set) {
-        for (let q = p; ; q = P.parent(q)) {
-            if (set.has(q)) return true;
-            if (!q) return false;
-        }
-    }
-
-    function open(args = {}) {
-        if (!App.fs.ready) return null;
-        const saved = App.settings.get('dupes.options', {});
-        const opts = {
-            scope: args.scope || (App.select.count > 1 ? 'selection' : saved.scope && saved.scope !== 'selection' ? saved.scope : 'folder'),
-            includeSub: args.includeSub ?? saved.includeSub ?? true,
-            mode: args.mode || saved.mode || 'exact',
-            threshold: args.threshold ?? saved.threshold ?? 8,
-            useServer: args.useServer ?? saved.useServer ?? true,
-            merge: saved.merge ?? true,
-            focus: args.focus || null,
-            paths: args.paths || null,
-        };
-        if (opts.scope === 'selection' && !App.select.count && !opts.paths) opts.scope = 'folder';
-
-        return kit.panel({
-            title: opts.focus ? '비슷한 항목 찾기' : '중복 찾기',
-            subtitle: opts.focus ? P.base(opts.focus) : '똑같은 파일이나 비슷한 사진을 찾아서 한 번에 정리해요',
-            icon: 'layers',
-            width: 1120,
-            height: 'min(800px, calc(100vh - 48px))',
-            className: 'dup-panel',
-            undoKeys: true,
-            build(ctx) {
-                let job = null;
-                let cancelled = false;
-                let result = null;
-                let groups = []; // every group of the scan; items never leave a group, they are only "gone"
-                let shown = [];
-                let filter = 'all';
-                let sortKey = 'savings';
-                let strategy = 'best';
-                let preferDir = null;
-                let showHidden = false;
-                let acted = false;
-                let view = 'setup'; // setup | scan | list | empty
-                let focusG = 0;
-                let focusI = 0;
-                let compareClose = null;
-                let list = null;
-                let summaryEl;
-                let trashBtn;
-                let footInfo;
-                let filterSeg;
-                let hiddenBtn;
-                const gone = new Set(); // paths trashed/removed since the scan (kept in sync from fs:changed)
-
-                const alive = (g) => g.items.filter((i) => !gone.has(i.path));
-                const active = (g) => !g.hidden && alive(g).length > 1;
-                const isVisible = (g) => alive(g).length > 1 && (!g.hidden || showHidden);
-                const removing = (g) => (g.hidden ? [] : alive(g).filter((i) => i.path !== g.keep && g.remove.has(i.path)));
-                const wasted = (g) => removing(g).reduce((s, i) => s + (i.size || 0), 0);
-                const potential = (g) => {
-                    const a = alive(g);
-                    return a.length < 2 ? 0 : a.reduce((s, i) => s + (i.size || 0), 0) - Math.max(...a.map((i) => i.size || 0));
-                };
-
-                ctx.onClose(() => {
-                    if (job && job.state === 'running') job.cancel();
-                    compareClose?.();
-                    list?.destroy();
-                });
-
-                // ---------------- setup ----------------
-                function showSetup() {
-                    view = 'setup';
-                    list?.destroy();
-                    list = null;
-                    ctx.main.innerHTML = '';
-                    ctx.foot.innerHTML = '';
-                    ctx.setSubtitle(opts.focus ? P.base(opts.focus) : '똑같은 파일이나 비슷한 사진을 찾아서 한 번에 정리해요');
-                    const selCount = App.select.count;
-                    const scopeSeg = kit.seg([
-                        { value: 'selection', label: `선택한 항목${selCount ? ` ${formatCount(selCount)}개` : ''}`, icon: 'check' },
-                        { value: 'folder', label: `${kit.folderLabel(App.state.cwd ?? '')} 폴더`, icon: 'folder' },
-                        { value: 'workspace', label: '작업 폴더 전체', icon: 'home' },
-                    ], opts.scope, (v) => {
-                        opts.scope = v;
-                        subT.el.hidden = v !== 'folder';
-                    }, { size: 'lg' });
-                    scopeSeg.disable('selection', !selCount && !opts.paths);
-                    const subT = kit.toggle('하위 폴더까지 함께 찾기', opts.includeSub, (v) => (opts.includeSub = v));
-                    subT.el.hidden = opts.scope !== 'folder';
-
-                    const modeCard = (value, title, desc, iconName) => {
-                        const b = h('button', { type: 'button', class: `dup-mode${opts.mode === value ? ' on' : ''}`, role: 'radio', 'aria-checked': String(opts.mode === value), dataset: { mode: value } },
-                            h('span', { class: 'dup-mode-ico', html: icon(iconName, 20) }),
-                            h('span', { class: 'dup-mode-text' }, h('span', { class: 'dup-mode-title', text: title }), h('span', { class: 'dup-mode-desc', text: desc })),
-                            h('span', { class: 'dup-mode-radio' }));
-                        b.addEventListener('click', () => {
-                            opts.mode = value;
-                            for (const x of modes.children) {
-                                x.classList.toggle('on', x.dataset.mode === value);
-                                x.setAttribute('aria-checked', String(x.dataset.mode === value));
-                            }
-                            thr.hidden = value !== 'similar';
-                        });
-                        return b;
-                    };
-                    const modes = h('div', { class: 'dup-modes', role: 'radiogroup' },
-                        modeCard('exact', '똑같은 파일', '이름이 달라도 내용이 완전히 같은 사진·영상을 찾아요', 'copy'),
-                        modeCard('similar', '비슷한 사진까지', '크기를 줄였거나 다시 저장한 사진처럼 거의 같은 것도 찾아요', 'sparkles'));
-                    const range = h('input', { type: 'range', min: '0', max: '20', step: '1', value: String(opts.threshold), class: 'dup-range', 'aria-label': '비슷한 정도' });
-                    const rangeLabel = h('span', { class: 'dup-range-label' });
-                    const syncRange = () => {
-                        rangeLabel.textContent = `${thresholdLabel(+range.value)} · ${range.value}`;
-                    };
-                    range.addEventListener('input', () => {
-                        opts.threshold = +range.value;
-                        syncRange();
-                    });
-                    syncRange();
-                    const thr = h('div', { class: 'dup-threshold' }, h('span', { class: 'faint', text: '엄격하게' }), range, h('span', { class: 'faint', text: '느슨하게' }), rangeLabel);
-                    thr.hidden = opts.mode !== 'similar';
-
-                    let serverRow;
-                    if (serverAvailable()) {
-                        const t = kit.toggle('로컬 서버로 찾기 (FAISS)', opts.useServer, (v) => (opts.useServer = v), { hint: '영상의 비슷한 장면까지 빠르게 찾아요' });
-                        serverRow = h('div', { class: 'dup-server on' }, h('span', { class: 'dup-server-ico', html: icon('server', 16) }), t.el);
-                    } else {
-                        serverRow = h('div', { class: 'dup-server' }, h('span', { class: 'dup-server-ico', html: icon('server', 16) }), h('span', { text: '로컬 서버를 켜면 영상의 비슷한 장면까지 찾을 수 있어요. 지금은 브라우저에서 찾아요.' }));
-                    }
-
-                    const tip = (iconName, text) => h('li', null, h('span', { html: icon(iconName, 14) }), h('span', { text }));
-                    ctx.main.append(h('div', { class: 'dup-setup' },
-                        h('div', { class: 'dup-step' }, h('div', { class: 'dup-step-title', text: '어디에서 찾을까요?' }), scopeSeg.el, subT.el),
-                        h('div', { class: 'dup-step' }, h('div', { class: 'dup-step-title', text: '무엇을 찾을까요?' }), modes, thr),
-                        serverRow,
-                        h('ul', { class: 'dup-tips' },
-                            tip('sparkles', '남길 파일은 해상도 → 용량 → 오래된 순으로 알아서 골라 둬요'),
-                            tip('tag', '지우는 복제본의 칩·별점·메모·마커는 남기는 파일로 합쳐요'),
-                            tip('undo', '모두 휴지통을 거치고, Ctrl+Z 한 번으로 전부 되돌릴 수 있어요'),
-                            tip('zap', '한 번 분석한 파일은 기억해 둬서 다음에는 훨씬 빨라요'))));
-                    const start = btn({ label: '찾기 시작', kind: 'primary', icon: 'search', onClick: () => startScan() });
-                    ctx.foot.append(h('div', { class: 'org-foot-info', text: '찾은 결과는 확인한 뒤에 정리해요. 아무것도 자동으로 지우지 않아요.' }), btn({ label: '취소', kind: 'ghost', onClick: () => ctx.close(null) }), start);
-                    start.focus();
-                }
-
-                // ---------------- scanning ----------------
-                function showScanning() {
-                    view = 'scan';
-                    list?.destroy();
-                    list = null;
-                    ctx.main.innerHTML = '';
-                    ctx.foot.innerHTML = '';
-                    const phaseEl = h('div', { class: 'dup-scan-phase', text: '준비하는 중…' });
-                    const countEl = h('div', { class: 'dup-scan-count' });
-                    const bar = h('i', { style: { width: '0%' } });
-                    ctx.main.append(h('div', { class: 'dup-scan' },
-                        h('div', { class: 'dup-scan-ico', html: icon('layers', 26) }),
-                        phaseEl,
-                        h('div', { class: 'progress dup-scan-bar' }, bar),
-                        countEl,
-                        h('div', { class: 'dup-scan-hint', text: '한 번 분석한 파일은 기억해 두니까 다음에는 훨씬 빨라요.' })));
-                    const stop = btn({ label: '그만 찾기', kind: 'ghost', onClick: () => job?.cancel(), tip: '찾기를 멈추고 처음 화면으로 돌아가요', keys: 'Escape' });
-                    ctx.foot.append(h('div', { class: 'grow' }), stop);
-                    return (phase, done, total, msg) => {
-                        phaseEl.textContent = msg || PHASES[phase] || '찾는 중…';
-                        const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
-                        bar.style.width = `${total ? pct : 100}%`;
-                        bar.parentElement.classList.toggle('indeterminate', !total);
-                        countEl.textContent = total && phase !== 'server' ? `${formatCount(done)} / ${formatCount(total)}` : '';
-                        job?.update(done, { total, detail: phaseEl.textContent });
-                    };
-                }
-
-                async function startScan() {
-                    App.settings.set('dupes.options', { scope: opts.scope, includeSub: opts.includeSub, mode: opts.mode, threshold: opts.threshold, useServer: opts.useServer, merge: opts.merge });
-                    cancelled = false;
-                    const progress = showScanning();
-                    job = App.jobs.start({ title: opts.focus ? '비슷한 항목 찾는 중' : '중복 찾는 중', total: 0, cancellable: true });
-                    job.onCancel(() => (cancelled = true));
-                    const isCancelled = () => cancelled;
-                    try {
-                        const useServer = opts.useServer && serverAvailable() && opts.scope !== 'selection' && !opts.focus && !opts.paths;
-                        if (useServer) {
-                            const dirs = opts.scope === 'folder' ? [App.state.cwd ?? ''] : undefined;
-                            result = await scanServer({ dirs, mode: opts.mode, threshold: opts.threshold, onProgress: progress, isCancelled });
-                            if (opts.scope === 'folder' && !opts.includeSub) {
-                                const cwd = App.state.cwd ?? '';
-                                for (const g of result.groups) g.items = g.items.filter((it) => P.parent(it.path) === cwd);
-                                result.groups = result.groups.filter((g) => g.items.length > 1);
-                            }
-                        } else {
-                            const entries = await collect(opts.scope, { includeSub: opts.includeSub, paths: opts.paths, waitIndex: () => progress('wait', 0, 0) });
-                            if (cancelled) throw cancelledError();
-                            result = await scanBrowser(entries, { mode: opts.focus ? (App.util.mediaType(opts.focus) === 'image' ? 'similar' : 'exact') : opts.mode, threshold: opts.threshold, focus: opts.focus, onProgress: progress, isCancelled });
-                        }
-                        progress('enrich', 0, 0);
-                        await enrich(result.groups, { onProgress: (d, t) => progress('enrich', d, t), isCancelled });
-                        if (cancelled) throw cancelledError();
-                        const ignored = await loadIgnored();
-                        groups = result.groups;
-                        for (const g of groups) {
-                            g.sigs = g.items.map(memberSig);
-                            g.sigKey = sigKey(g.sigs);
-                            g.hidden = isIgnored(g, ignored);
-                        }
-                        applyStrategy(groups, strategy, preferDir);
-                        for (const g of groups) if (g.hidden) g.remove.clear();
-                        gone.clear();
-                        acted = false;
-                        showHidden = false;
-                        focusG = 0;
-                        focusI = 0;
-                        ctx.setSubtitle(`${result.scanned != null ? `${formatCount(result.scanned)}개 파일을 살펴봤어요 · ` : ''}${result.engine === 'server' ? '로컬 서버(FAISS)' : '브라우저'}에서 찾음`);
-                        renderResults(true);
-                    } catch (e) {
-                        if (e.cancelled || cancelled) {
-                            ui.toast('중복 찾기를 멈췄어요', { type: 'info' });
-                        } else {
-                            console.error('[dupes] scan failed', e);
-                            ui.toast(`중복을 찾지 못했어요: ${e.message || e}`, { type: 'error' });
-                        }
-                        showSetup();
-                    } finally {
-                        job?.finish();
-                    }
-                }
-
-                // ---------------- results ----------------
-                function ensureKeeper(g) {
-                    const a = alive(g);
-                    if (!a.length || a.some((i) => i.path === g.keep)) return;
-                    const s = STRATEGIES[strategy] || STRATEGIES.best;
-                    g.keep = a.slice().sort(s.cmp)[0].path;
-                    g.remove.delete(g.keep);
-                }
-
-                function renderResults(force) {
-                    if (groups.some(isVisible)) {
-                        if (force || view !== 'list') buildList();
-                        else refreshShown();
-                    } else {
-                        buildEmpty();
-                    }
-                }
-
-                const syncSoon = App.util.debounce(() => {
-                    if (view === 'list' || view === 'empty') renderResults(false);
-                }, 30);
-
-                function buildEmpty() {
-                    view = 'empty';
-                    list?.destroy();
-                    list = null;
-                    ctx.main.innerHTML = '';
-                    ctx.foot.innerHTML = '';
-                    const hiddenN = groups.filter((g) => g.hidden && alive(g).length > 1).length;
-                    const [title, text] = acted
-                        ? ['모두 정리했어요', '복제본을 휴지통으로 옮겼어요. 휴지통에서 되살리거나 Ctrl+Z로 한 번에 되돌릴 수 있어요.']
-                        : opts.focus
-                            ? ['비슷한 항목이 없어요', '같은 사진이나 비슷한 사진을 찾지 못했어요. "비슷한 정도"를 느슨하게 바꿔 볼 수 있어요.']
-                            : ['중복된 파일이 없어요', '깔끔해요! 다른 범위나 "비슷한 사진까지"로 다시 찾아볼 수 있어요.'];
-                    ctx.main.append(h('div', { class: 'org-empty-state dup-empty' },
-                        h('div', { class: 'org-empty-art good', html: icon('check-circle', 30) }),
-                        h('h4', { text: title }),
-                        h('p', { text }),
-                        hiddenN ? btn({ label: `"중복 아님"으로 숨긴 그룹 ${formatCount(hiddenN)}개 보기`, kind: 'ghost sm', icon: 'eye', onClick: () => { showHidden = true; renderResults(true); } }) : null));
-                    const close = btn({ label: '닫기', kind: 'primary', onClick: () => ctx.close(null) });
-                    ctx.foot.append(h('div', { class: 'grow' }), btn({ label: '다시 찾기', kind: 'ghost', icon: 'refresh', onClick: () => showSetup() }), close);
-                    close.focus();
-                }
-
-                function buildList() {
-                    view = 'list';
-                    list?.destroy();
-                    ctx.main.innerHTML = '';
-                    ctx.foot.innerHTML = '';
-                    summaryEl = h('div', { class: 'dup-summary' });
-                    filterSeg = kit.seg([
-                        { value: 'all', label: '전체' },
-                        { value: 'exact', label: '똑같음' },
-                        { value: 'similar', label: '비슷함' },
-                    ], filter, (v) => {
-                        filter = v;
-                        focusG = 0;
-                        refreshShown();
-                    });
-                    const sortSel = kit.select([
-                        { value: 'savings', label: '확보 용량 큰 순' },
-                        { value: 'count', label: '개수 많은 순' },
-                        { value: 'folder', label: '폴더 순' },
-                    ], sortKey, (v) => {
-                        sortKey = v;
-                        refreshShown();
-                    }, { cls: 'sm' });
-                    const dirCounts = new Map();
-                    for (const g of groups) for (const it of alive(g)) {
-                        const d = P.parent(it.path);
-                        dirCounts.set(d, (dirCounts.get(d) || 0) + 1);
-                    }
-                    const topDirs = [...dirCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40);
-                    const stratSel = kit.select([
-                        ...Object.entries(STRATEGIES).map(([k, s]) => ({ value: k, label: s.label })),
-                        ...topDirs.map(([d, n]) => ({ value: `dir:${d}`, label: `${kit.folderPathLabel(d)} 폴더 것 남기기 (${formatCount(n)})` })),
-                        { value: 'none', label: '선택 모두 해제' },
-                    ], preferDir != null ? `dir:${preferDir}` : strategy, (v) => {
-                        const target = groups.filter((g) => !g.hidden);
-                        if (v === 'none') {
-                            for (const g of target) g.remove.clear();
-                        } else if (v.startsWith('dir:')) {
-                            preferDir = v.slice(4);
-                            applyStrategy(target, strategy, preferDir);
-                        } else {
-                            strategy = v;
-                            preferDir = null;
-                            applyStrategy(target, strategy, null);
-                        }
-                        refreshShown();
-                        list.refresh();
-                    }, { cls: 'sm dup-strategy' });
-                    const toolbar = h('div', { class: 'dup-toolbar' }, summaryEl, h('div', { class: 'grow' }), filterSeg.el, sortSel, h('span', { class: 'dup-tool-label', text: '자동 선택' }), stratSel);
-                    list = kit.virtualList({ rowHeight: GROUP_H, render: renderGroup, className: 'dup-list', label: '중복 그룹' });
-                    ctx.main.append(toolbar, h('div', { class: 'org-picker-body' }, list.el));
-
-                    footInfo = h('div', { class: 'org-foot-info' });
-                    const mergeT = kit.toggle('남기는 파일에 칩·별점·메모 합치기', opts.merge, (v) => {
-                        opts.merge = v;
-                        const s = App.settings.get('dupes.options', {});
-                        App.settings.set('dupes.options', { ...s, merge: v });
-                    }, { tip: '지우는 복제본에 붙어 있던 칩, 가장 높은 별점, 메모, 마커를 남기는 파일로 옮겨요' });
-                    hiddenBtn = btn({ label: '', kind: 'ghost sm', icon: 'eye', onClick: () => {
-                        showHidden = !showHidden;
-                        renderResults(false);
-                    } });
-                    trashBtn = btn({ label: '', kind: 'danger', icon: 'trash', onClick: () => trashSelected(), tip: '고른 복제본을 휴지통으로 옮겨요', keys: 'Delete' });
-                    ctx.foot.append(mergeT.el, footInfo, hiddenBtn, btn({ label: '다시 찾기', kind: 'ghost', icon: 'refresh', onClick: () => showSetup() }), trashBtn);
-                    refreshShown();
-                    list.el.focus({ preventScroll: true });
-                }
-
-                function refreshShown() {
-                    for (const g of groups) ensureKeeper(g);
-                    shown = groups.filter((g) => isVisible(g) && (filter === 'all' || g.kind === filter));
-                    if (sortKey === 'savings') shown.sort((a, b) => (a.hidden ? 1 : 0) - (b.hidden ? 1 : 0) || potential(b) - potential(a));
-                    else if (sortKey === 'count') shown.sort((a, b) => (a.hidden ? 1 : 0) - (b.hidden ? 1 : 0) || alive(b).length - alive(a).length || potential(b) - potential(a));
-                    else shown.sort((a, b) => (a.hidden ? 1 : 0) - (b.hidden ? 1 : 0) || compareNames(P.parent(a.keep), P.parent(b.keep)) || compareNames(a.keep, b.keep));
-                    if (focusG >= shown.length) focusG = Math.max(0, shown.length - 1);
-                    const fg = shown[focusG];
-                    if (fg) focusI = Math.max(0, Math.min(focusI, alive(fg).length - 1));
-                    if (list) list.setCount(shown.length);
-                    updateSummary();
-                }
-
-                function updateSummary() {
-                    if (!summaryEl || view !== 'list') return;
-                    const act = groups.filter(active);
-                    const removeCount = act.reduce((s, g) => s + removing(g).length, 0);
-                    const bytes = act.reduce((s, g) => s + wasted(g), 0);
-                    const exact = act.filter((g) => g.kind === 'exact').length;
-                    summaryEl.innerHTML = '';
-                    summaryEl.append(
-                        h('span', { class: 'dup-sum-main', text: `중복 그룹 ${formatCount(act.length)}개` }),
-                        h('span', { class: 'dup-sum-sub', text: `복제본 ${formatCount(act.reduce((s, g) => s + alive(g).length - 1, 0))}개 · 최대 ${formatBytes(act.reduce((s, g) => s + potential(g), 0))} 확보 가능` }));
-                    const segBtns = filterSeg.el.querySelectorAll('button');
-                    segBtns[0].querySelector('span').textContent = `전체 ${formatCount(act.length)}`;
-                    segBtns[1].querySelector('span').textContent = `똑같음 ${formatCount(exact)}`;
-                    segBtns[2].querySelector('span').textContent = `비슷함 ${formatCount(act.length - exact)}`;
-                    trashBtn.disabled = !removeCount;
-                    kit.setBtnLabel(trashBtn, removeCount ? `복제본 ${formatCount(removeCount)}개 휴지통으로 · ${formatBytes(bytes)} 확보` : '휴지통으로 보낼 항목을 고르세요');
-                    const hiddenN = groups.filter((g) => g.hidden && alive(g).length > 1).length;
-                    hiddenBtn.hidden = !hiddenN;
-                    kit.setBtnLabel(hiddenBtn, showHidden ? '숨긴 그룹 감추기' : `숨긴 그룹 ${formatCount(hiddenN)}개`);
-                    footInfo.textContent = preferDir != null ? `${kit.folderPathLabel(preferDir)} 폴더에 있는 파일을 먼저 남겨요` : STRATEGIES[strategy].why;
-                }
-
-                const GROUP_H = 286;
-                const CARD_W = 176;
-
-                function renderGroup(gi) {
-                    const g = shown[gi];
-                    const items = alive(g);
-                    const removeN = removing(g).length;
-                    const head = h('div', { class: 'dup-ghead' },
-                        h('span', { class: `dup-kind ${g.kind}`, text: g.kind === 'exact' ? '똑같음' : '비슷함' }),
-                        g.hidden ? h('span', { class: 'dup-kind hidden', text: '숨김' }) : null,
-                        h('span', { class: 'dup-gtitle', text: `${formatCount(items.length)}개` }),
-                        h('span', { class: 'dup-gsave', text: g.hidden ? '"중복 아님"으로 표시한 그룹이에요' : removeN ? `${formatCount(removeN)}개 지우면 ${formatBytes(wasted(g))} 확보` : '지울 항목 없음' }),
-                        h('div', { class: 'grow' }),
-                        btn({ label: '비교', icon: 'eye', kind: 'ghost sm', tip: '나란히 크게 비교', keys: 'C', onClick: () => openCompare(g, items.find((i) => i.path !== g.keep)?.path) }),
-                        g.hidden
-                            ? btn({ label: '다시 보이기', icon: 'eye', kind: 'ghost sm', tip: '다음 찾기부터 다시 보여 줘요', onClick: () => ignoreGroup(g, false) })
-                            : btn({ label: '중복 아님', icon: 'eye-off', kind: 'ghost sm', tip: '이 그룹을 다음부터 보여 주지 않아요 (되돌릴 수 있어요)', onClick: () => ignoreGroup(g, true).then(() => ui.toast('이 그룹은 다음부터 보여 주지 않을게요', { type: 'info', action: { label: '실행 취소', run: () => App.undo.undo() } })) }));
-                    const cards = h('div', { class: 'dup-cards' });
-                    items.forEach((it, ii) => cards.append(renderCard(g, it, gi, ii)));
-                    const el = h('div', { class: `dup-group${gi === focusG ? ' focused' : ''}${g.hidden ? ' is-hidden' : ''}`, role: 'group', 'aria-label': `중복 그룹 ${gi + 1}` }, head, cards);
-                    return h('div', { class: 'dup-group-wrap' }, el);
-                }
-
-                function renderCard(g, it, gi, ii) {
-                    const keep = it.path === g.keep;
-                    const rm = !g.hidden && !keep && g.remove.has(it.path);
-                    const e = it.entry;
-                    const keeper = g.items.find((x) => x.path === g.keep);
-                    const res = it.w && it.h ? `${it.w}×${it.h}` : '';
-                    const better = !keep && keeper && it.w && keeper.w && it.w * it.h > keeper.w * keeper.h;
-                    let likeness = null;
-                    if (!keep && keeper && g.kind === 'similar') {
-                        if (it.contentKey && it.contentKey === keeper.contentKey) likeness = '똑같음';
-                        else if (it.phash && keeper.phash) likeness = `${Math.round((1 - hamming(hexHash(it.phash), hexHash(keeper.phash)) / 64) * 100)}% 비슷`;
-                        else if (it.distance != null) likeness = `차이 ${it.distance}`;
-                    }
-                    const flag = g.hidden
-                        ? h('span', { class: 'dup-flag skip', html: '<span>그대로</span>' })
-                        : keep
-                            ? h('span', { class: 'dup-flag keep', html: `${icon('check', 11)}<span>남김</span>` })
-                            : h('span', { class: `dup-flag ${rm ? 'rm' : 'skip'}`, html: rm ? `${icon('trash', 11)}<span>지움</span>` : '<span>그대로</span>' });
-                    const card = h('div', { class: `dup-card${keep && !g.hidden ? ' keep' : ''}${rm ? ' remove' : ''}${gi === focusG && ii === focusI ? ' focused' : ''}`, style: { width: CARD_W + 'px' }, title: it.path, dataset: { path: it.path } },
-                        h('div', { class: 'dup-card-media' },
-                            kit.thumb(e, { cls: 'dup-thumb' }),
-                            flag,
-                            e.type === 'video' && it.duration ? h('span', { class: 'dup-dur', text: App.util.formatDuration(it.duration) }) : null,
-                            !keep && !g.hidden ? h('button', { type: 'button', class: 'dup-keepbtn', text: '이걸 남기기', onclick: (ev) => { ev.stopPropagation(); setKeep(g, it.path); } }) : null),
-                        h('div', { class: 'dup-card-meta' },
-                            h('div', { class: 'dup-card-name truncate', text: e.name }),
-                            h('div', { class: 'dup-card-line' }, res ? h('span', { class: better ? 'dup-better' : '', text: res }) : null, h('span', { text: formatBytes(it.size) })),
-                            h('div', { class: 'dup-card-line faint' }, h('span', { text: formatDate(it.mtime) }), likeness ? h('span', { class: 'dup-like', text: likeness }) : null),
-                            h('div', { class: 'dup-card-path truncate', text: kit.folderPathLabel(P.parent(it.path)) })));
-                    card.addEventListener('click', () => {
-                        const prev = focusG;
-                        focusG = gi;
-                        focusI = ii;
-                        if (prev !== gi && list.rowAt(prev)) list.update(prev);
-                        if (keep || g.hidden) {
-                            list.update(gi);
-                            return;
-                        }
-                        toggleRemove(g, it.path);
-                    });
-                    card.addEventListener('dblclick', () => openCompare(g, it.path));
-                    return card;
-                }
-
-                function toggleRemove(g, p) {
-                    if (p === g.keep || g.hidden) return;
-                    if (g.remove.has(p)) g.remove.delete(p);
-                    else g.remove.add(p);
-                    redrawGroup(g);
-                }
-
-                function setKeep(g, p) {
-                    if (g.hidden) return;
-                    const old = g.keep;
-                    g.keep = p;
-                    g.remove.delete(p);
-                    if (old && old !== p) g.remove.add(old);
-                    redrawGroup(g);
-                }
-
-                function redrawGroup(g) {
-                    const i = shown.indexOf(g);
-                    if (i >= 0 && list) list.update(i);
-                    updateSummary();
-                }
-
-                async function trashSelected() {
-                    const act = groups.filter(active);
-                    const plan = act.map((g) => ({ keep: g.keep, remove: removing(g).map((i) => i.path) })).filter((p) => p.remove.length);
-                    const count = plan.reduce((s, p) => s + p.remove.length, 0);
-                    if (!count) return;
-                    const bytes = act.reduce((s, g) => s + wasted(g), 0);
-                    const ok = await kit.sheet(ctx.box, {
-                        title: `복제본 ${formatCount(count)}개를 휴지통으로 옮길까요?`,
-                        message: `${formatBytes(bytes)}를 확보해요.${opts.merge ? ' 지우는 파일의 칩·별점·메모·마커는 남기는 파일로 합쳐요.' : ''} 휴지통에서 되살리거나 Ctrl+Z로 한 번에 되돌릴 수 있어요.`,
-                        okLabel: '휴지통으로',
-                        icon: 'trash',
-                    });
-                    if (!ok) return;
-                    const busy = kit.busy(ctx.box, '휴지통으로 옮기는 중…');
-                    let res;
-                    try {
-                        res = await trashDuplicates(plan, { merge: opts.merge });
-                    } finally {
-                        busy.close();
-                    }
-                    acted = true;
-                    // the fs:changed events of the trash already marked the copies as gone
-                    syncSoon.flush();
-                    if (res.trashed) {
-                        ui.toast(`복제본 ${formatCount(res.trashed)}개를 휴지통으로 옮겼어요 · ${formatBytes(bytes)} 확보${res.merged ? ` · ${formatCount(res.merged)}개에 정보를 합쳤어요` : ''}`, {
-                            type: 'success',
-                            duration: 6000,
-                            action: { label: '실행 취소', run: () => App.undo.undo() },
-                        });
-                    }
-                    const unreported = (res.failed || []).filter((f) => !f.reported);
-                    if (unreported.length) ui.toast(`${formatCount(unreported.length)}개는 휴지통으로 옮기지 못했어요 (${unreported[0].error})`, { type: 'warning', duration: 6000 });
-                }
-
-                // ---------------- keep in sync with the file system (undo/redo, other changes) ----------------
-                function rebaseItem(g, it, to) {
-                    const from = it.path;
-                    it.path = to;
-                    it.entry = { ...it.entry, path: to, name: P.base(to) };
-                    if (g.keep === from) g.keep = to;
-                    if (g.remove.has(from)) {
-                        g.remove.delete(from);
-                        g.remove.add(to);
-                    }
-                    if (gone.has(from)) {
-                        gone.delete(from);
-                        gone.add(to);
-                    }
-                }
-
-                const offFs = App.bus.on('fs:changed', (c) => {
-                    if (!groups.length) return;
-                    let changed = false;
-                    const paths = new Set(c.paths || []);
-                    if (c.type === 'trash' || c.type === 'delete') {
-                        for (const g of groups) for (const it of g.items) {
-                            if (!gone.has(it.path) && hitsAny(it.path, paths)) {
-                                gone.add(it.path);
-                                changed = true;
-                            }
-                        }
-                    } else if (c.from && c.to && (c.type === 'move' || c.type === 'rename')) {
-                        const prefixes = new Set();
-                        for (const g of groups) for (const it of g.items) for (let q = it.path; q; q = P.parent(q)) prefixes.add(q);
-                        for (let k = 0; k < c.from.length; k++) {
-                            if (!prefixes.has(c.from[k])) continue;
-                            for (const g of groups) for (const it of g.items) {
-                                const r = P.rebase(it.path, c.from[k], c.to[k]);
-                                if (r != null && r !== it.path) {
-                                    rebaseItem(g, it, r);
-                                    changed = true;
-                                }
-                            }
-                        }
-                    } else if (c.type === 'restore' || c.type === 'create' || c.type === 'copy') {
-                        for (const g of groups) for (const it of g.items) {
-                            if (gone.has(it.path) && hitsAny(it.path, paths)) {
-                                gone.delete(it.path);
-                                changed = true;
-                            }
-                        }
-                    }
-                    if (changed) {
-                        compareClose?.();
-                        syncSoon();
-                    }
-                });
-                const offIgnore = App.bus.on('dupes:ignore', ({ sigs, hidden }) => {
-                    const key = sigKey(sigs);
-                    let changed = false;
-                    for (const g of groups) {
-                        if (g.sigKey !== key || !!g.hidden === hidden) continue;
-                        g.hidden = hidden;
-                        if (hidden) g.remove.clear();
-                        else applyStrategy([g], strategy, preferDir);
-                        changed = true;
-                    }
-                    if (changed) {
-                        compareClose?.();
-                        syncSoon();
-                    }
-                });
-                ctx.onClose(offFs);
-                ctx.onClose(offIgnore);
-
-                // ---------------- compare overlay ----------------
-                function openCompare(g, otherPath) {
-                    if (!g || alive(g).length < 2) return;
-                    compareClose?.();
-                    let other = otherPath && otherPath !== g.keep ? otherPath : alive(g).find((i) => i.path !== g.keep)?.path;
-                    const overlay = h('div', { class: 'dup-compare', role: 'dialog', 'aria-label': '나란히 비교' });
-                    const releases = [];
-                    const flagFor = (it) => {
-                        if (it.path === g.keep && !g.hidden) return h('span', { class: 'dup-flag keep', html: `${icon('check', 11)}<span>남김</span>` });
-                        const rm = !g.hidden && g.remove.has(it.path);
-                        return h('span', { class: `dup-flag ${rm ? 'rm' : 'skip'}`, html: rm ? `${icon('trash', 11)}<span>지움</span>` : '<span>그대로</span>' });
-                    };
-                    const pane = (it, side, keeper, candidate) => {
-                        const isKeep = it.path === g.keep;
-                        const media = h('div', { class: 'dup-cmp-media' }, h('span', { class: 'spinner' }));
-                        const e = it.entry;
-                        App.fs.url(it.path).then((src) => {
-                            if (!overlay.isConnected) return src.release();
-                            releases.push(src.release);
-                            media.innerHTML = '';
-                            if (e.type === 'video') media.append(h('video', { src: src.url, controls: true, muted: true, preload: 'metadata' }));
-                            else if (App.util.browserCanDecode(e.name)) media.append(h('img', { src: src.url, alt: e.name }));
-                            else media.append(h('div', { class: 'faint', text: '미리보기를 지원하지 않는 형식이에요' }));
-                        }).catch(() => (media.textContent = '열 수 없어요'));
-                        const versus = side === 'left' ? candidate : keeper;
-                        const tag = (cond, text) => (cond ? h('span', { class: 'badge org-badge success', text }) : null);
-                        return h('div', { class: `dup-cmp-pane ${isKeep && !g.hidden ? 'keep' : ''}` },
-                            h('div', { class: 'dup-cmp-head' },
-                                flagFor(it),
-                                h('span', { class: 'dup-cmp-name truncate', text: e.name }),
-                                !isKeep && !g.hidden ? btn({ label: '이걸 남기기', kind: 'sm', onClick: () => { setKeep(g, it.path); other = keeper.path; render(); } }) : null),
-                            media,
-                            h('div', { class: 'dup-cmp-info' },
-                                h('div', null, h('span', { class: 'k', text: '해상도' }), h('span', { text: it.w ? `${it.w} × ${it.h}` : '—' }), tag(versus && it.w && versus.w && it.w * it.h > versus.w * versus.h, '더 큼')),
-                                h('div', null, h('span', { class: 'k', text: '크기' }), h('span', { text: formatBytes(it.size) }), tag(versus && it.size > versus.size, '더 큼')),
-                                h('div', null, h('span', { class: 'k', text: '수정한 날짜' }), h('span', { text: formatDate(it.mtime, true) }), tag(versus && it.mtime && versus.mtime && it.mtime < versus.mtime - 1000, '더 오래됨')),
-                                h('div', null, h('span', { class: 'k', text: '위치' }), h('span', { class: 'truncate', text: kit.folderPathLabel(P.parent(it.path)) }))));
-                    };
-                    function render() {
-                        for (const r of releases.splice(0)) r();
-                        overlay.innerHTML = '';
-                        const items = alive(g);
-                        const keeper = items.find((x) => x.path === g.keep) || items[0];
-                        const others = items.filter((x) => x !== keeper);
-                        const candidate = others.find((x) => x.path === other) || others[0];
-                        if (!candidate) return close();
-                        other = candidate.path;
-                        const idx = others.indexOf(candidate);
-                        overlay.append(
-                            h('div', { class: 'dup-cmp-bar' },
-                                h('span', { class: 'dup-cmp-title', text: '나란히 비교' }),
-                                others.length > 1 ? h('span', { class: 'faint', text: `${idx + 1} / ${others.length}` }) : null,
-                                h('div', { class: 'grow' }),
-                                others.length > 1 ? btn({ icon: 'chevron-left', kind: 'ghost sm icon', tip: '이전', keys: 'ArrowLeft', onClick: () => step(-1) }) : null,
-                                others.length > 1 ? btn({ icon: 'chevron-right', kind: 'ghost sm icon', tip: '다음', keys: 'ArrowRight', onClick: () => step(1) }) : null,
-                                !g.hidden ? btn({ label: g.remove.has(candidate.path) ? '지우지 않기' : '지울 항목에 넣기', kind: 'sm', tip: '지울 항목에 넣거나 빼요', keys: 'Space', onClick: () => { toggleRemove(g, candidate.path); render(); } }) : null,
-                                btn({ icon: 'x', kind: 'ghost sm icon', tip: '비교 닫기', keys: 'Escape', onClick: () => close() })),
-                            h('div', { class: 'dup-cmp-panes' }, pane(keeper, 'left', keeper, candidate), pane(candidate, 'right', keeper, candidate)));
-                    }
-                    function step(d) {
-                        const items = alive(g);
-                        const others = items.filter((x) => x.path !== g.keep);
-                        if (!others.length) return;
-                        const i = others.findIndex((x) => x.path === other);
-                        other = others[(i + d + others.length) % others.length].path;
-                        render();
-                    }
-                    const release = kit.keyScope((e) => {
-                        if (e.ctrlKey || e.metaKey || e.altKey) return false; // let Ctrl+Z etc. reach the panel
-                        if (e.key === 'Escape' || e.key === 'c' || e.key === 'C') {
-                            close();
-                            return true;
-                        }
-                        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-                            step(e.key === 'ArrowLeft' ? -1 : 1);
-                            return true;
-                        }
-                        if (e.key === ' ') {
-                            toggleRemove(g, other);
-                            render();
-                            return true;
-                        }
-                        return e.key === 'Enter';
-                    });
-                    function close() {
-                        release();
-                        for (const r of releases.splice(0)) r();
-                        overlay.remove();
-                        compareClose = null;
-                        list?.el.focus({ preventScroll: true });
-                    }
-                    compareClose = close;
-                    render();
-                    if (compareClose) ctx.box.append(overlay);
-                }
-
-                // ---------------- keyboard ----------------
-                ctx.onKey((e) => {
-                    if (view === 'scan' && e.key === 'Escape') {
-                        job?.cancel();
-                        return true;
-                    }
-                    if (view !== 'list' || !list || !shown.length || compareClose) return false;
-                    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || e.ctrlKey || e.metaKey || e.altKey) return false;
-                    const g = shown[focusG];
-                    const items = alive(g);
-                    const k = e.key;
-                    const redraw = (prevG) => {
-                        if (prevG !== focusG) list.update(prevG);
-                        list.update(focusG);
-                        list.scrollToIndex(focusG);
-                    };
-                    if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'j' || k === 'k') {
-                        const prev = focusG;
-                        focusG = Math.max(0, Math.min(shown.length - 1, focusG + (k === 'ArrowDown' || k === 'j' ? 1 : -1)));
-                        focusI = Math.min(focusI, alive(shown[focusG]).length - 1);
-                        redraw(prev);
-                        return true;
-                    }
-                    if (k === 'ArrowRight' || k === 'ArrowLeft') {
-                        focusI = Math.max(0, Math.min(items.length - 1, focusI + (k === 'ArrowRight' ? 1 : -1)));
-                        redraw(focusG);
-                        const card = list.rowAt(focusG)?.querySelectorAll('.dup-card')[focusI];
-                        card?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-                        return true;
-                    }
-                    if (e.target.tagName === 'BUTTON' && (k === ' ' || k === 'Enter')) return false;
-                    const it = items[focusI];
-                    if (!it) return false;
-                    if (k === ' ') {
-                        toggleRemove(g, it.path);
-                        return true;
-                    }
-                    if (k === 'Enter') {
-                        setKeep(g, it.path);
-                        return true;
-                    }
-                    if (k === 'c' || k === 'C') {
-                        openCompare(g, it.path);
-                        return true;
-                    }
-                    if (k === 'Delete') {
-                        trashSelected();
-                        return true;
-                    }
-                    return false;
-                });
-
-                if (args.autostart || opts.focus) startScan();
-                else showSetup();
-            },
-        });
-    }
-
+    // =================================================================================================
+    // Commands (UI lives in dupes-review.js / dupes-tools.js, resolved at run time)
+    // =================================================================================================
     function cleanArgs(a) {
         if (!a || typeof a !== 'object') return {};
         const { event, ...rest } = a;
         return rest;
     }
+    const ready = () => App.fs.ready;
+    const uiApi = () => App.dupes.ui;
+    const tools = () => App.dupes.tools;
 
-    App.commands.register({ id: 'dupes.open', title: '중복 찾기…', group: '정리', icon: 'layers', keys: 'Mod+Alt+D', when: () => App.fs.ready, run: (a) => open(cleanArgs(a)) });
-    App.commands.register({
+    /** The file a command should act on: args.path, the open viewer's file, else the single selected file. */
+    function targetFile(args) {
+        if (args && args.path) return args.path;
+        if (App.viewer?.isOpen && App.viewer.current?.path) return App.viewer.current.path;
+        const one = App.select.count === 1 ? App.select.entries()[0] : null;
+        return one && one.kind === 'file' ? one.path : null;
+    }
+    function targetFolder(args) {
+        if (args && typeof args.path === 'string') return args.path;
+        const one = App.select.count === 1 ? App.select.entries()[0] : null;
+        if (one && one.kind === 'dir') return one.path;
+        return App.state.cwd ?? null;
+    }
+
+    const reg = (c) => App.commands.register({ group: '중복', icon: 'layers', when: ready, ...c });
+    reg({ id: 'dupes.open', title: '중복 정리…', keys: 'Mod+Alt+D', run: (a) => uiApi()?.open(cleanArgs(a)) });
+    reg({ id: 'dupes.scanHere', title: '지금 보는 폴더에서 중복 찾기', icon: 'folder', keys: 'Mod+Alt+Shift+D', run: (a) => uiApi()?.open({ scope: { type: 'folder', path: targetFolder(a) ?? '', sub: cleanArgs(a).sub ?? true }, autostart: true }) });
+    reg({ id: 'dupes.pickFolders', title: '폴더 골라서 중복 찾기…', icon: 'folder-plus', run: (a) => uiApi()?.open({ setup: 'folders', paths: cleanArgs(a).paths }) });
+    reg({ id: 'dupes.compare', title: '두 쪽 비교해서 중복 찾기…', icon: 'merge', run: (a) => uiApi()?.open({ setup: 'compare', a: cleanArgs(a).a, b: cleanArgs(a).b }) });
+    reg({
         id: 'dupes.findSimilar',
-        title: '이 사진과 비슷한 항목 찾기',
-        group: '정리',
+        title: '이 파일과 같은 것 찾기',
         icon: 'search',
-        when: () => App.fs.ready && App.select.count === 1 && App.select.entries()[0]?.kind === 'file',
+        when: () => ready() && !!targetFile(),
         run: (a) => {
-            const args = cleanArgs(a);
-            const p = args.path || App.select.list()[0];
-            if (!p) return null;
-            return open({ focus: p, scope: 'workspace', autostart: true, threshold: args.threshold });
+            const p = targetFile(cleanArgs(a));
+            return p ? uiApi()?.open({ focus: p, autostart: true }) : null;
         },
     });
-
-    App.dupes = {
-        open,
-        scan: scanBrowser,
-        scanServer,
-        enrich,
-        applyStrategy,
-        trashDuplicates,
-        mergedPatch,
-        ignoreGroup,
-        loadIgnored,
-        phash: async (file) => hashHex(phashFromGray((await analyzeBlob(file)).gray)),
-        hamming: (a, b) => hamming(hexHash(a), hexHash(b)),
-        collect,
-        clearCache: async () => {
-            const d = await db();
-            if (!d) return;
-            await new Promise((r) => {
-                const tx = d.transaction(STORE, 'readwrite');
-                tx.objectStore(STORE).clear();
-                tx.oncomplete = r;
-                tx.onerror = r;
-            });
+    reg({
+        id: 'dupes.excludeFile',
+        title: '이 파일은 중복검사에서 빼기',
+        icon: 'eye-off',
+        when: () => ready() && !!targetFile(),
+        run: async (a) => {
+            const p = targetFile(cleanArgs(a));
+            if (!p) return;
+            await store.ready();
+            const on = !store.files.has(p);
+            await excludeFiles([p], on);
+            ui.toast(on ? `‘${P.base(p)}’ 파일은 이제 중복검사에서 빼요` : `‘${P.base(p)}’ 파일을 다시 중복검사에 넣었어요`, { type: 'success', action: { label: '실행 취소', run: () => App.undo.undo() } });
         },
-    };
+    });
+    reg({
+        id: 'dupes.excludeFolder',
+        title: '이 폴더는 중복검사에서 빼기',
+        icon: 'eye-off',
+        when: () => ready() && !!targetFolder(),
+        run: async (a) => {
+            const p = targetFolder(cleanArgs(a));
+            if (!p) {
+                ui.toast('작업 폴더 전체는 뺄 수 없어요. 하위 폴더를 골라 주세요', { type: 'info' });
+                return;
+            }
+            await store.ready();
+            const on = !store.data.excludedFolders.includes(p);
+            await excludeFolders([p], on);
+            ui.toast(on ? `‘${kit.folderLabel(p)}’ 폴더는 이제 중복검사에서 빼요` : `‘${kit.folderLabel(p)}’ 폴더를 다시 중복검사에 넣었어요`, { type: 'success', action: { label: '실행 취소', run: () => App.undo.undo() } });
+        },
+    });
+    reg({ id: 'dupes.exclusions', title: '중복검사 제외 목록…', icon: 'eye-off', run: () => tools()?.openExclusions() });
+    reg({ id: 'dupes.rules', title: '중복검사 규칙…', icon: 'sliders', run: () => tools()?.openRules() });
+    reg({ id: 'dupes.prebuild', title: '중복검사 지문 미리 만들기', icon: 'zap', run: () => App.dupes.engine?.prebuild({ quiet: false }) });
+    for (const role of ['keep', 'remove']) {
+        reg({
+            id: `dupes.role.${role}`,
+            title: role === 'keep' ? '이 폴더를 보관 폴더로 (중복검사)' : '이 폴더를 정리 폴더로 (중복검사)',
+            icon: role === 'keep' ? 'shield-check' : 'trash',
+            when: () => ready() && targetFolder() != null,
+            run: async (a) => {
+                const p = targetFolder(cleanArgs(a));
+                if (p == null) return;
+                await store.ready();
+                const cur = store.data.rules.folderPriority.find((x) => x.path === p)?.role || null;
+                const next = cur === role ? null : role;
+                await setFolderRole(p, next);
+                ui.toast(next ? `‘${kit.folderLabel(p)}’ 폴더를 ${ROLE_LABEL[next]}로 정했어요 · ${next === 'keep' ? '중복이면 이 폴더 것을 남겨요' : '중복이면 이 폴더 것을 먼저 지워요'}` : `‘${kit.folderLabel(p)}’ 폴더의 역할을 지웠어요`, { type: 'success', action: { label: '실행 취소', run: () => App.undo.undo() } });
+            },
+        });
+    }
+
+    App.dupes = Object.assign(App.dupes || {}, {
+        store,
+        inside,
+        isAbs,
+        ROLE_LABEL,
+        REASONS,
+        excludeFiles,
+        excludeFolders,
+        markNotDuplicate,
+        setFolderRole,
+        setRules,
+        resetRules,
+        setLastScan,
+        setReviewed,
+        rebaseResult,
+        remapReviewed,
+        mergedPatch,
+        verify,
+        apply,
+        reportApply,
+        showSkipped,
+        trashDuplicates,
+        open: (args) => App.dupes.ui?.open(args || {}),
+        /** Round-1 helpers kept for callers/tests */
+        phash: (file) => App.dupes.engine.phashFile(file),
+        hamming: (a, b) => App.dupes.engine.hamHex(a, b),
+        clearCache: () => App.dupes.engine.cache.clear(),
+    });
 })();
