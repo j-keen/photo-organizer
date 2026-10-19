@@ -124,6 +124,7 @@
     display: flex;
     align-items: center;
     flex-shrink: 0;
+    gap: 2px;
 }
 
 .vw-top-right {
@@ -131,10 +132,6 @@
 }
 
 .vw-tools,
-.vw-actions {
-    gap: 2px;
-}
-
 .vw-tools:empty {
     display: none;
 }
@@ -201,13 +198,11 @@
     overflow: hidden;
 }
 
+/* Full-bleed: breathing room at "fit" comes from the view transform (photos keep the side arrows clear) */
 .vw-stage {
     position: absolute;
-    inset: 16px 76px;
-}
-
-#viewer[data-kind="video"] .vw-stage {
     inset: 0;
+    overflow: hidden;
 }
 
 .vw-slot {
@@ -267,15 +262,28 @@
     box-shadow: var(--sh-2);
 }
 
-.vw-image-slot {
+/* Shared view transform (viewer-transform.js): photos and videos, JS sets width/height/transform every frame */
+.vw-xf {
+    position: absolute;
+    inset: auto;
+    left: 50%;
+    top: 50%;
+    max-width: none;
+    max-height: none;
+    transform-origin: center center;
+    transition: none;
+    will-change: transform;
+}
+
+.vw-xf-slot {
     touch-action: none;
 }
 
-.vw-image-slot.vw-pannable {
+.vw-xf-slot.vw-pannable {
     cursor: grab;
 }
 
-.vw-image-slot.vw-panning {
+.vw-xf-slot.vw-panning {
     cursor: grabbing;
 }
 
@@ -601,10 +609,6 @@
     background: var(--bg-1);
 }
 
-.vw-flash.soft {
-    animation-duration: 0.35s;
-}
-
 @keyframes vw-flash {
     from {
         opacity: 0.55;
@@ -617,6 +621,7 @@
 
 .vw-flash.soft {
     animation-name: vw-flash-soft;
+    animation-duration: 0.35s;
 }
 
 @keyframes vw-flash-soft {
@@ -706,25 +711,18 @@
     opacity: 1;
 }
 
-.vw-cell.vw-rot-180 img {
-    transform: rotate(180deg);
+/* Rotated / flipped cells (App.viewer.applyTransformVars sets --vw-rot / --vw-sx / --vw-sy) */
+.vw-cell.vw-xf-on img {
+    transform: rotate(var(--vw-rot, 0deg)) scale(var(--vw-sx, 1), var(--vw-sy, 1));
 }
 
-.vw-cell.vw-rot-90 img,
-.vw-cell.vw-rot-270 img {
+.vw-cell.vw-xf-swap img {
     position: absolute;
     left: 50%;
     top: 50%;
     width: 52px;
     height: 76px;
-}
-
-.vw-cell.vw-rot-90 img {
-    transform: translate(-50%, -50%) rotate(90deg);
-}
-
-.vw-cell.vw-rot-270 img {
-    transform: translate(-50%, -50%) rotate(270deg);
+    transform: translate(-50%, -50%) rotate(var(--vw-rot, 0deg)) scale(var(--vw-sx, 1), var(--vw-sy, 1));
 }
 
 .vw-cell-badge {
@@ -1007,38 +1005,25 @@
     font-weight: 600;
 }
 
-/* ---------- Rotated thumbnails in the gallery (card decorator from viewer.js) ---------- */
-.card.vw-rot-180 .card-img {
-    transform: rotate(180deg);
+/* ---------- Rotated / flipped thumbnails in the gallery (card decorator from viewer.js) ---------- */
+.card.vw-xf-on .card-img {
+    transform: rotate(var(--vw-rot, 0deg)) scale(var(--vw-sx, 1), var(--vw-sy, 1));
 }
 
-.card.vw-rot-90 .card-media,
-.card.vw-rot-270 .card-media {
+.card.vw-xf-swap .card-media {
     container-type: size;
 }
 
-.card.vw-rot-90 .card-img,
-.card.vw-rot-270 .card-img {
+.card.vw-xf-swap .card-img {
     inset: auto;
     left: 50%;
     top: 50%;
     width: 100cqh;
     height: 100cqw;
-}
-
-.card.vw-rot-90 .card-img {
-    transform: translate(-50%, -50%) rotate(90deg);
-}
-
-.card.vw-rot-270 .card-img {
-    transform: translate(-50%, -50%) rotate(270deg);
+    transform: translate(-50%, -50%) rotate(var(--vw-rot, 0deg)) scale(var(--vw-sx, 1), var(--vw-sy, 1));
 }
 
 @media (max-width: 900px) {
-    .vw-stage {
-        inset: 10px 12px;
-    }
-
     .vw-info {
         width: min(300px, calc(100% - 32px));
     }

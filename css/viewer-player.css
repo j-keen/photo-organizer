@@ -14,14 +14,12 @@
     outline: none;
 }
 
-.vw-video.is-sized {
+/* Sized by the shared view transform (fit / zoom / rotation / flip) */
+.vw-video.vw-xf {
     inset: auto;
     left: 50%;
     top: 50%;
-    max-width: none;
-    max-height: none;
     object-fit: fill;
-    transition: transform var(--dur-slow) var(--ease), width var(--dur-slow) var(--ease), height var(--dur-slow) var(--ease);
 }
 
 /* Center state: spinner / play / replay */

@@ -57,10 +57,14 @@
         });
     }
 
+    function describeOrientation(p) {
+        const t = V.orientationOf(p);
+        return V.isIdentityTransform(t) ? null : `${V.describeTransform(t)} (보기만, 파일은 그대로)`;
+    }
+
     function buildCell(entry) {
         const cell = h('div', { class: 'vw-cell', role: 'option', dataset: { path: entry.path }, title: entry.name });
-        const rot = V.rotationOf(entry.path);
-        if (rot) cell.classList.add(`vw-rot-${rot}`);
+        V.applyTransformVars(cell, V.orientationOf(entry.path)); // rotated/flipped like in the viewer
         const img = h('img', { alt: '', draggable: 'false' });
         cell.append(img);
         if (entry.type === 'video') cell.append(h('span', { class: 'vw-cell-badge', html: ui.icon('play', { size: 8 }) }));
@@ -171,8 +175,9 @@
         const meta = cat.meta || {};
         const video = entry.type === 'video';
         const player = video ? V.player : null;
-        const w = meta.w || player?.video?.videoWidth || (V.image?.nat && !V.image.nat.guess ? V.image.nat.w : null);
-        const hh = meta.h || player?.video?.videoHeight || (V.image?.nat && !V.image.nat.guess ? V.image.nat.h : null);
+        const nat = V.image?.full && V.image.entry.path === entry.path ? V.image.view.nat : null; // decoded photo size
+        const w = meta.w || player?.video?.videoWidth || nat?.w || null;
+        const hh = meta.h || player?.video?.videoHeight || nat?.h || null;
         const exposure = [meta.fnumber ? `f/${Math.round(meta.fnumber * 10) / 10}` : null, fmtExposure(meta.exposure), meta.iso ? `ISO ${meta.iso}` : null, meta.focal ? `${Math.round(meta.focal)}mm` : null].filter(Boolean).join(' · ');
         const duration = meta.duration && isFinite(meta.duration) ? meta.duration : player?.duration;
         const rows = [
@@ -187,7 +192,7 @@
             ['카메라', meta.camera || null],
             ['렌즈', meta.lens || null],
             ['노출', exposure || null],
-            ['회전', V.rotationOf(entry.path) ? `${V.rotationOf(entry.path)}° (보기만)` : null],
+            ['방향', describeOrientation(entry.path)],
             ['별점', stars(cat.rating)],
             ['마커', video && cat.markers.length ? `${formatCount(cat.markers.length)}개` : null],
             ['대표 장면', video && meta.posterT != null ? formatDuration(meta.posterT) : null],

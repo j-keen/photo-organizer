@@ -6,7 +6,10 @@
  *     잘라내기 (trim: fast = stream copy, accurate = re-encode), 구간 합치기 (concat), 회전/뒤집기 (transform).
  *   Without the server the actions stay disabled and the panel explains how to start it.
  *
- *   App.videoEditor — { isOpen, segments, marksFor(path), markIn(), markOut(), addSegment(), trim(), concat(), transform() }
+ *   Every file the server makes is ONE undo step (Ctrl+Z moves it to the app trash, Ctrl+Y brings it back).
+ *
+ *   App.videoEditor — { isOpen, segments, marksFor(path), markIn(), markOut(), addSegment(), trim(), concat(), transform(),
+ *                       canApplyViewTransform(entry), applyViewTransform(entry) — bake the viewer's rotation/flip }
  */
 (() => {
     'use strict';
@@ -95,7 +98,24 @@
         }
     }
 
-    async function runAction(label, op, payload, doneText) {
+    // A file the server just wrote: tell the app and make it ONE undo step (undo = to the app trash, redo = back).
+    function adoptServerOutput(out, label) {
+        if (typeof App.fs.emitChange === 'function') App.fs.emitChange({ type: 'create', paths: [out], dirs: [P.parent(out)] });
+        else App.nav?.reload?.();
+        let ids = null;
+        App.undo.push({
+            label: `${label} · ${P.base(out)}`,
+            undo: async () => {
+                ids = await App.fs.trash([out], { undoable: false });
+            },
+            redo: async () => {
+                if (ids) await App.fs.restore(ids);
+            },
+        });
+    }
+
+    /** steps: [{ op, payload }] — later steps get { path: <previous output>, inPlace: true } */
+    async function runSteps(label, steps, doneText) {
         if (busy) return null;
         const st = serverState();
         if (!st.ready) {
@@ -106,15 +126,20 @@
         render();
         const t = ui.toast(`${label} 중…`, { type: 'loading' });
         try {
-            const out = await callServer(op, payload, label);
-            t.close();
-            if (!out) {
-                ui.toast(`${label}을(를) 취소했어요`, { type: 'info' });
-                return null;
+            let out = null;
+            for (const [i, s] of steps.entries()) {
+                const payload = i === 0 ? s.payload : { ...s.payload, path: out, inPlace: true };
+                const next = await callServer(s.op, payload, label);
+                if (!next) {
+                    t.close();
+                    ui.toast(`${label}을(를) 취소했어요`, { type: 'info' });
+                    if (out) adoptServerOutput(out, label);
+                    return null;
+                }
+                out = next;
             }
-            // The server wrote the file directly — tell the app so the gallery/tree/index pick it up
-            if (typeof App.fs.emitChange === 'function') App.fs.emitChange({ type: 'create', paths: [out], dirs: [P.parent(out)] });
-            else App.nav?.reload?.();
+            t.close();
+            adoptServerOutput(out, label);
             ui.toast(`${doneText} · ${P.base(out)}`, { type: 'success', duration: 6000, action: { label: '보기', run: () => V.open(out) } });
             return out;
         } catch (e) {
@@ -125,6 +150,10 @@
             busy = null;
             render();
         }
+    }
+
+    async function runAction(label, op, payload, doneText) {
+        return runSteps(label, [{ op, payload }], doneText);
     }
 
     // ---------- Model ----------
@@ -356,6 +385,49 @@
             const m = op.startsWith('rotate') ? mode : 'reencode';
             return runAction('회전·뒤집기', 'transform', { path: e.path, op, mode: m }, '회전한 영상을 저장했어요');
         },
+
+        /** Server ops that bake a view orientation: the flip first (re-encode), then the rotation (lossless). */
+        viewTransformSteps(path, t = V.orientationOf(path)) {
+            const steps = [];
+            if (t.flipH || t.flipV) steps.push({ op: 'transform', payload: { path, op: t.flipH ? 'hflip' : 'vflip', mode: 'reencode' } });
+            if (t.rot) steps.push({ op: 'transform', payload: { path, op: `rotate${t.rot}`, mode: 'metadata' } });
+            return steps;
+        },
+
+        canApplyViewTransform(entry) {
+            return !!entry && entry.type === 'video' && serverState().ready;
+        },
+
+        /** "회전·반전을 파일에 적용" for videos: a new file that looks like the viewer shows it (one undo step). */
+        async applyViewTransform(entry, { ask = true } = {}) {
+            if (!entry || entry.type !== 'video') return null;
+            if (!serverState().ready) {
+                ui.toast('영상 방향을 파일에 적용하려면 로컬 서버가 켜져 있어야 해요', { type: 'warning' });
+                return null;
+            }
+            const t = V.orientationOf(entry.path);
+            if (V.isIdentityTransform(t)) {
+                ui.toast('먼저 R(회전)이나 H·V(반전)로 방향을 바꿔 주세요', { type: 'info' });
+                return null;
+            }
+            const desc = V.describeTransform(t);
+            if (ask) {
+                const flips = t.flipH || t.flipV;
+                const ok = await ui.dialog({
+                    title: `${desc} 방향으로 새 영상을 만들까요?`,
+                    body: h('div', { class: 'vw-apply-body' },
+                        h('p', { text: flips ? '반전은 영상을 다시 인코딩해서 만들어요. 길이에 따라 시간이 걸릴 수 있어요.' : '회전은 화질 손실 없이 방향 정보만 바꿔서 만들어요.' }),
+                        h('div', { class: 'vw-apply-note', html: `${ui.icon('check-circle', { size: 15 })}<span>원본은 그대로 두고 <b>${escapeHtml(P.stem(entry.name))}_rot</b> 같은 새 파일로 저장해요. 실행 취소(${escapeHtml(V.dk('Mod+Z'))})로 새 파일을 지울 수 있어요.</span>` })),
+                    dismissValue: false,
+                    actions: [
+                        { label: '취소', value: false, kind: 'ghost' },
+                        { label: '새 파일로 저장', value: true, kind: 'primary', autofocus: true },
+                    ],
+                });
+                if (!ok) return null;
+            }
+            return runSteps('방향 적용', editor.viewTransformSteps(entry.path, t), `${desc} 방향으로 저장했어요`);
+        },
     };
 
     function round3(t) {
@@ -482,11 +554,19 @@
         body.append(exp);
 
         // Rotate / flip
-        const viewRot = V.rotationOf(e.path);
-        if (!transformOp && viewRot) transformOp = `rotate${viewRot}`;
+        const viewT = V.orientationOf(e.path);
+        const viewOriented = !V.isIdentityTransform(viewT);
         const tf = h('section', { class: 've-sec' },
             h('div', { class: 've-sec-title', html: '<span>회전·뒤집기</span>' }),
-            viewRot ? h('p', { class: 've-help', text: `지금 보기 회전(${viewRot}°)을 실제 파일로 만들 수 있어요.` }) : null,
+            viewOriented ? h('div', { class: 've-row ve-view-orient' },
+                h('p', { class: 've-help', text: `지금 보기 방향(${V.describeTransform(viewT)})을 그대로 새 파일로 만들 수 있어요.` }),
+                h('button', {
+                    class: 'btn sm primary',
+                    html: `${ui.icon('check', { size: 13 })}<span>보기 방향 적용</span>`,
+                    disabled: disabled,
+                    onmousedown: (ev) => ev.preventDefault(),
+                    onclick: () => editor.applyViewTransform(e),
+                })) : null,
             h('div', { class: 've-ops', role: 'radiogroup', 'aria-label': '회전·뒤집기' },
                 ...TRANSFORMS.map((t) => h('button', {
                     class: `ve-op${transformOp === t.op ? ' on' : ''}`,

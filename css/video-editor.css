@@ -364,9 +364,26 @@
 .ve-server-text b {
     color: var(--text);
     font-weight: 600;
-    word-break: break-all;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
 }
 
 .ve-server-body .btn:only-of-type {
     margin-top: 2px;
+}
+
+/* "보기 방향 적용" row: the viewer's rotation/flip baked into a new file */
+.ve-view-orient {
+    align-items: flex-start;
+    margin-top: 6px;
+    margin-bottom: 4px;
+}
+
+.ve-view-orient .ve-help {
+    flex: 1;
+    margin: 2px 2px 0;
+}
+
+.ve-view-orient .btn {
+    flex-shrink: 0;
 }

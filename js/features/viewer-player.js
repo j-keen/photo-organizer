@@ -76,7 +76,6 @@
             this.meta = App.catalog.peek(this.path)?.meta || {};
             this.fps = this.meta.fps || null;
             this.fpsSamples = [];
-            this.angle = V.rotationOf(this.path);
             this.metaReady = false;
             this.failed = false;
 
@@ -92,8 +91,24 @@
             this.stateEl = h('div', { class: 'vw-vstate' });
             this.slot.classList.add('vw-video-slot');
             this.slot.append(v, this.stateEl);
+            // Zoom / pan / rotation / flip shared with photos (viewer-transform.js)
+            this.view = new V.ViewTransform({
+                ctx,
+                slot: this.slot,
+                path: this.path,
+                upscale: true,
+                pad: 0,
+                // click = play/pause, double-click = back to fit when zoomed in, else fullscreen
+                onTap: () => {
+                    if (!this.failed) this.toggle();
+                },
+                onDoubleTap: () => (this.view.zoomed ? this.view.fitToScreen(true) : V.toggleFullscreen()),
+                onPlainWheel: (e) => this.onWheel(e),
+            });
+            this.view.setElements([v]);
+            // Before metadata arrives use the cached size so a rotated poster already sits right
+            if (this.meta.w && this.meta.h) this.view.setNatural(this.meta.w, this.meta.h);
             this.bindVideo();
-            this.bindSlot();
 
             // Poster from the grid thumbnail so the frame appears instantly
             const thumb = App.thumbs?.peek?.(this.entry);
@@ -302,17 +317,22 @@
             });
         }
 
-        bindSlot() {
-            // Click toggles playback, double-click toggles fullscreen (like most players)
-            this.slot.addEventListener('click', (e) => {
-                if (e.target.closest('.vw-card, button')) return;
-                if (this.failed) return;
-                this.toggle();
-            });
-            this.slot.addEventListener('dblclick', (e) => {
-                if (e.target.closest('.vw-card, button')) return;
-                V.toggleFullscreen();
-            });
+        // Plain wheel over the picture: volume (setting "viewer.videoWheel"); Ctrl+wheel zooms (ViewTransform)
+        onWheel(e) {
+            if (this.failed || App.settings.get('viewer.videoWheel', 'volume') !== 'volume') return;
+            e.preventDefault();
+            const now = performance.now();
+            if (e.deltaMode === 0 && Math.abs(e.deltaY) < 40) {
+                // trackpads: accumulate small deltas
+                this.wheelAcc = (now - (this.wheelAt || 0) > 200 ? 0 : this.wheelAcc || 0) + e.deltaY;
+                this.wheelAt = now;
+                if (Math.abs(this.wheelAcc) < 60) return;
+                this.volumeBy(this.wheelAcc < 0 ? 0.05 : -0.05);
+                this.wheelAcc = 0;
+                return;
+            }
+            if (!e.deltaY) return;
+            this.volumeBy(e.deltaY < 0 ? 0.05 : -0.05);
         }
 
         onMeta() {
@@ -390,42 +410,30 @@
             v.requestVideoFrameCallback(cb);
         }
 
-        // ----- layout (rotation aware, fills the stage) -----
+        // ----- layout (fit / zoom / orientation live in this.view) -----
         layout() {
             const v = this.video;
-            // Before metadata arrives use the cached size so a rotated poster already sits right
-            const vw = v.videoWidth || this.meta.w;
-            const vh = v.videoHeight || this.meta.h;
-            if (!vw || !vh) return;
-            const { w: SW, h: SH } = this.ctx.stageSize();
-            const swap = ((this.angle % 360) + 360) % 180 !== 0;
-            const rw = swap ? vh : vw;
-            const rh = swap ? vw : vh;
-            const s = Math.min(SW / rw, SH / rh);
-            v.classList.add('is-sized');
-            v.style.width = `${vw * s}px`;
-            v.style.height = `${vh * s}px`;
-            v.style.transform = `translate(-50%, -50%) rotate(${this.angle}deg)`;
+            if (v.videoWidth && v.videoHeight) this.view.setNatural(v.videoWidth, v.videoHeight, { keepScreenSize: true });
+            else this.view.layout();
         }
 
         resize() {
-            this.layout();
+            this.view.resize();
         }
 
-        onRotate(rot, delta) {
-            this.angle += delta;
-            this.layout();
+        get frozen() {
+            return this.view.frozen;
+        }
+
+        set frozen(v) {
+            this.view.frozen = !!v;
         }
 
         onCatalog() {
-            const r = V.rotationOf(this.path);
-            const cur = ((this.angle % 360) + 360) % 360;
-            if (r !== cur) {
-                let d = r - cur;
-                if (d > 180) d -= 360;
-                if (d < -180) d += 360;
-                this.onRotate(r, d);
-            }
+            const meta = App.catalog.peek(this.path)?.meta || {};
+            this.meta = { ...this.meta, ...meta };
+            if (meta.posterT == null) delete this.meta.posterT;
+            this.view.follow();
             if (V.player === this) bar.renderMarks();
         }
 
@@ -686,12 +694,12 @@
             const marker = { id: App.util.uid('m'), t, title: '', memo: '', color: null };
             const path = this.path;
             putMarker(path, marker);
-            App.undo.push({ label: `마커 ${fmt(t)}`, undo: () => deleteMarker(path, marker.id), redo: () => putMarker(path, marker) });
+            const entry = App.undo.push({ label: `마커 ${fmt(t)} 추가`, undo: () => deleteMarker(path, marker.id), redo: () => putMarker(path, entry.marker || marker) });
             V.osd(`마커 ${fmt(t)}`, { icon: 'bookmark' });
             if (V.player === this) {
                 bar.renderMarks();
                 const el = bar.markEl(marker.id);
-                if (el && App.settings.get('viewer.markerPopover', true) !== false) editMarker(path, marker.id, el);
+                if (el && App.settings.get('viewer.markerPopover', true) !== false) editMarker(path, marker.id, el, { addEntry: entry });
             }
             return marker;
         }
@@ -720,8 +728,8 @@
                 return null;
             }
             const t = this.time;
-            const rot = V.rotationOf(this.path);
-            const swap = rot % 180 !== 0;
+            const o = V.orientationOf(this.path); // the capture looks like what you see (rotation + flips)
+            const swap = o.rot % 180 !== 0;
             const w = swap ? v.videoHeight : v.videoWidth;
             const hh = swap ? v.videoWidth : v.videoHeight;
             const canvas = document.createElement('canvas');
@@ -729,7 +737,8 @@
             canvas.height = hh;
             const g = canvas.getContext('2d');
             g.translate(w / 2, hh / 2);
-            g.rotate((rot * Math.PI) / 180);
+            g.rotate((o.rot * Math.PI) / 180);
+            g.scale(o.flipH ? -1 : 1, o.flipV ? -1 : 1);
             g.drawImage(v, -v.videoWidth / 2, -v.videoHeight / 2, v.videoWidth, v.videoHeight);
             const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.92));
             if (!blob) {
@@ -743,7 +752,8 @@
             const dir = P.parent(this.path);
             let p;
             try {
-                p = await App.fs.createFile(dir, name, blob);
+                // one undo step: Ctrl+Z moves the captured file to the app trash
+                p = await App.fs.createFile(dir, name, blob, { label: `장면 캡처 ${fmt(t)}` });
             } catch (e) {
                 ui.toast(`장면을 저장하지 못했어요: ${e.message}`, { type: 'error' });
                 return null;
@@ -757,7 +767,7 @@
             const t = Math.round(this.time * 1000) / 1000;
             App.catalog.update(this.path, (e) => {
                 e.meta = { ...(e.meta || {}), posterT: t };
-            });
+            }, { label: `대표 장면 ${fmt(t)}` });
             this.meta = { ...this.meta, posterT: t };
             flash(true);
             ui.toast('대표 장면으로 정했어요', { type: 'success', duration: 2600 });
@@ -776,12 +786,15 @@
                 { keys: ['B'], label: '마커' },
                 { keys: ['A'], label: '구간 반복' },
                 { keys: ['C'], label: '캡처' },
+                { keys: [dk('Mod')], mouse: true, label: '확대' },
+                { keys: ['R', 'H'], label: '회전·반전' },
                 { keys: ['E'], label: '편집' },
                 { keys: ['M'], label: '음소거' },
             ];
         }
 
         deactivate() {
+            this.view.finish();
             this.stopReverse();
             this.stopAt = null;
             try {
@@ -794,6 +807,7 @@
         destroy() {
             this.destroyed = true;
             this.deactivate();
+            this.view.destroy();
             cancelAnimationFrame(this.raf);
             clearTimeout(this.stateTimer);
             if (this.ts) {
@@ -831,25 +845,36 @@
     }
 
     // ---------- Marker storage ----------
+    // Raw writes skip the catalog's own undo entry: every user action below pushes exactly ONE entry itself.
     function putMarker(path, marker) {
         App.catalog.update(path, (e) => {
             const list = (e.markers || []).filter((m) => m.id !== marker.id);
             list.push({ ...marker });
             list.sort((a, b) => a.t - b.t);
             e.markers = list;
-        });
-    }
-
-    function patchMarker(path, id, patch) {
-        App.catalog.update(path, (e) => {
-            e.markers = (e.markers || []).map((m) => (m.id === id ? { ...m, ...patch } : m));
-        });
+        }, { undoable: false });
     }
 
     function deleteMarker(path, id) {
         App.catalog.update(path, (e) => {
             e.markers = (e.markers || []).filter((m) => m.id !== id);
-        });
+        }, { undoable: false });
+    }
+
+    /**
+     * Edit title/memo/color as one undo step. addEntry: the "marker added" undo entry when the popover was opened right
+     * after adding — naming a new marker then stays part of that ONE step (Ctrl+Z removes the named marker).
+     */
+    function patchMarkerUndoable(path, id, patch, addEntry = null) {
+        const before = App.catalog.get(path).markers.find((x) => x.id === id);
+        if (!before) return;
+        const after = { ...before, ...patch };
+        putMarker(path, after);
+        if (addEntry && App.undo.peek() === addEntry) {
+            addEntry.marker = after;
+            return;
+        }
+        App.undo.push({ label: `마커 ${fmt(before.t)} 편집`, undo: () => putMarker(path, before), redo: () => putMarker(path, after) });
     }
 
     function removeMarkerUndoable(path, id) {
@@ -862,7 +887,7 @@
 
     let markerPop = null;
 
-    function editMarker(path, id, anchor) {
+    function editMarker(path, id, anchor, { addEntry = null } = {}) {
         const m = App.catalog.get(path).markers.find((x) => x.id === id);
         if (!m || !anchor) return;
         markerPop?.close();
@@ -909,7 +934,7 @@
                 if (removed) return;
                 const patch = { title: title.value.trim(), memo: memo.value.trim(), color: color === 'accent' ? null : color };
                 const cur = App.catalog.get(path).markers.find((x) => x.id === id);
-                if (cur && (cur.title !== patch.title || (cur.memo || '') !== patch.memo || (cur.color || null) !== patch.color)) patchMarker(path, id, patch);
+                if (cur && (cur.title !== patch.title || (cur.memo || '') !== patch.memo || (cur.color || null) !== patch.color)) patchMarkerUndoable(path, id, patch, addEntry);
             },
         });
         markerPop = pop;
@@ -965,7 +990,8 @@
             const c = this.canvas;
             this.busy = false;
             if (!c || !v.videoWidth) return;
-            const rot = this.owner ? V.rotationOf(this.owner.path) : 0;
+            const o = this.owner ? V.orientationOf(this.owner.path) : { rot: 0 };
+            const rot = o.rot;
             const swap = rot % 180 !== 0;
             const vw = swap ? v.videoHeight : v.videoWidth;
             const vh = swap ? v.videoWidth : v.videoHeight;
@@ -980,6 +1006,7 @@
             g.save();
             g.translate(c.width / 2, c.height / 2);
             g.rotate((rot * Math.PI) / 180);
+            g.scale(o.flipH ? -1 : 1, o.flipV ? -1 : 1);
             const dw = swap ? c.height : c.width;
             const dh = swap ? c.width : c.height;
             g.drawImage(v, -dw / 2, -dh / 2, dw, dh);
@@ -1503,7 +1530,7 @@
     document.addEventListener('fullscreenchange', () => bar.player && bar.update());
 
     // ---------- Commands ----------
-    const hasPlayer = () => V.isOpen && V.kind === 'video' && !!V.player;
+    const hasPlayer = () => V.isOpen && V.kind === 'video' && !!V.player && !V.player.failed;
     const reg = (cmd) => App.commands.register({ group: '영상', scope: 'viewer', when: hasPlayer, ...cmd });
     reg({ id: 'video.playPause', title: '재생/일시정지', icon: 'play', keys: ['K'], run: () => V.player.toggle() });
     reg({ id: 'video.seekBack', title: '뒤로 건너뛰기', icon: 'vw-seek-back', keys: ['ArrowLeft'], run: () => V.player.seekStep(-1) });

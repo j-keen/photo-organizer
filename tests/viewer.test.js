@@ -30,52 +30,70 @@ const near = (a, b, eps = 0.12) => Math.abs(a - b) <= eps;
 
 module.exports = [
     {
-        name: 'photo zoom: keys, + fallback, wheel, double-click and drag to pan',
+        name: 'photo zoom: keys, + fallback, Ctrl+wheel at the cursor, double-click and drag to pan',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: PHOTOS });
             await openPhoto(page, 'a-photo.png');
-            const fit = await page.evaluate(() => App.viewer.image.fitScale);
+            const fit = await page.evaluate(() => App.viewer.view.fitScale);
             assert.ok(fit < 1, `a 2400px photo is fitted below 100% (${fit})`);
-            assert.ok(await page.evaluate(() => App.viewer.image.fit));
+            assert.ok(await page.evaluate(() => App.viewer.view.fit));
             await page.keyboard.press('z');
-            await page.waitForFunction(() => Math.abs(App.viewer.image.scale - 1) < 0.001);
+            await page.waitForFunction(() => Math.abs(App.viewer.view.scale - 1) < 0.001);
             assert.ok(await page.isVisible('.vw-zoom'), 'zoom control shows in the top bar');
             assert.equal(await page.textContent('.vw-zoom-label'), '100%');
             await page.keyboard.press('0');
-            await page.waitForFunction(() => App.viewer.image.fit && Math.abs(App.viewer.image.scale - App.viewer.image.fitScale) < 0.001);
+            await page.waitForFunction(() => App.viewer.view.fit && Math.abs(App.viewer.view.scale - App.viewer.view.fitScale) < 0.001);
             await page.keyboard.press('=');
-            await page.waitForFunction((f) => App.viewer.image.scale > f * 1.05, fit);
+            await page.waitForFunction((f) => App.viewer.view.scale > f * 1.05, fit);
             await page.keyboard.press('0');
-            await page.waitForFunction(() => App.viewer.image.fit);
+            await page.waitForFunction(() => App.viewer.view.fit);
             await page.keyboard.press('+'); // Shift+= : handled even though the core parser can't register "+"
-            await page.waitForFunction((f) => App.viewer.image.scale > f * 1.05, fit);
+            await page.waitForFunction((f) => App.viewer.view.scale > f * 1.05, fit);
             await page.keyboard.press('-');
             await page.keyboard.press('0');
             await page.waitForTimeout(260);
 
-            // Wheel zooms around the cursor
+            // Ctrl+wheel zooms around the cursor: the photo point under the mouse stays put
             const box = await page.locator('.vw-stage').boundingBox();
-            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-            await page.mouse.wheel(0, -400);
-            await page.waitForFunction((f) => App.viewer.image.scale > f * 1.3, fit);
+            const px = box.x + box.width / 2 + 150;
+            const py = box.y + box.height / 2 + 60;
+            await page.mouse.move(px, py);
+            const imgPoint = () => page.evaluate(([x, y]) => {
+                const r = document.querySelector('#viewer img.vw-media').getBoundingClientRect();
+                return [(x - r.left) / r.width, (y - r.top) / r.height];
+            }, [px, py]);
+            await page.keyboard.down('Control');
+            for (let i = 0; i < 4; i++) await page.mouse.wheel(0, -100);
+            await page.waitForFunction((f) => App.viewer.view.scale > f * 1.3, fit);
+            // once the photo overflows the stage, the point under the cursor stays put
+            const p0 = await imgPoint();
+            await page.mouse.wheel(0, -100);
+            await page.mouse.wheel(0, -100);
+            await page.keyboard.up('Control');
+            const p1 = await imgPoint();
+            assert.ok(near(p0[0], p1[0], 0.01) && near(p0[1], p1[1], 0.01), `zoom is anchored at the cursor (${p0} -> ${p1})`);
+            assert.equal(await page.evaluate(() => App.viewer.current.path), 'a-photo.png', 'Ctrl+wheel did not change the file');
+            // a plain wheel while zoomed in pans instead of changing the file
+            await page.mouse.wheel(0, 200);
+            assert.equal(await page.evaluate(() => App.viewer.current.path), 'a-photo.png');
 
             // Double-click toggles fit <-> 100%
             await page.keyboard.press('0');
             await page.waitForTimeout(260);
             await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
-            await page.waitForFunction(() => Math.abs(App.viewer.image.scale - 1) < 0.001);
-            assert.ok(await page.evaluate(() => App.viewer.image.pannable));
+            await page.waitForFunction(() => Math.abs(App.viewer.view.scale - 1) < 0.001);
+            assert.ok(await page.evaluate(() => App.viewer.view.pannable));
 
             // Drag pans (and stays clamped inside the photo)
-            const before = await page.evaluate(() => ({ tx: App.viewer.image.tx, ty: App.viewer.image.ty }));
+            const before = await page.evaluate(() => ({ tx: App.viewer.view.tx, ty: App.viewer.view.ty }));
             await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
             await page.mouse.down();
             await page.mouse.move(box.x + box.width / 2 + 160, box.y + box.height / 2 + 60, { steps: 6 });
             await page.mouse.up();
-            const after = await page.evaluate(() => ({ tx: App.viewer.image.tx, ty: App.viewer.image.ty }));
+            const after = await page.evaluate(() => ({ tx: App.viewer.view.tx, ty: App.viewer.view.ty }));
             assert.ok(after.tx > before.tx + 100, `dragging right pans (${before.tx} -> ${after.tx})`);
             await page.mouse.dblclick(box.x + box.width / 2, box.y + box.height / 2);
-            await page.waitForFunction(() => App.viewer.image.fit && App.viewer.image.tx === 0);
+            await page.waitForFunction(() => App.viewer.view.fit && App.viewer.view.tx === 0);
         },
     },
     {
@@ -94,7 +112,7 @@ module.exports = [
             await page.keyboard.press('Home');
             await page.waitForFunction(() => App.viewer.current.path === 'a-photo.png' && App.viewer.image?.entry.path === 'a-photo.png' && App.viewer.image.full);
             await page.keyboard.press('Space');
-            await page.waitForFunction(() => Math.abs(App.viewer.image.scale - 1) < 0.001);
+            await page.waitForFunction(() => Math.abs(App.viewer.view.scale - 1) < 0.001);
             assert.equal(await page.textContent('.vw-counter'), '1 / 3');
             await page.mouse.move(700, 450);
             await page.mouse.down({ button: 'back' }).catch(() => {});
@@ -112,18 +130,21 @@ module.exports = [
             await page.waitForFunction(() => App.catalog.get('b-photo.jpg').meta.rot === 90);
             assert.equal(await page.evaluate(() => App.viewer.rotationOf('b-photo.jpg')), 90);
             await page.waitForTimeout(320);
-            assert.ok((await page.evaluate(() => document.querySelector('#viewer img.vw-media').style.transform)).includes('rotate(90deg)'));
+            assert.match(await page.evaluate(() => document.querySelector('#viewer img.vw-media').style.transform), /rotate\(90(\.0+)?deg\)/);
+            assert.equal(await page.evaluate(() => App.viewer.transformOf('b-photo.jpg')), 'rotate(90deg)', 'transformOf -> CSS transform string');
             assert.ok(await page.isVisible('.vw-apply-rot'), '"파일에 적용" appears for a rotated JPEG');
             await page.keyboard.press('Shift+R');
             await page.keyboard.press('Shift+R');
             await page.waitForFunction(() => App.catalog.get('b-photo.jpg').meta.rot === 270);
-            await page.waitForSelector('.vw-cell.vw-rot-270[data-path="b-photo.jpg"]'); // filmstrip cell follows the rotation
+            await page.waitForSelector('.vw-cell.vw-xf-swap[data-path="b-photo.jpg"]'); // filmstrip cell follows the rotation
+            assert.equal(await page.evaluate(() => document.querySelector('.vw-cell[data-path="b-photo.jpg"]').style.getPropertyValue('--vw-rot')), '270deg');
             await page.keyboard.press('r');
             await page.keyboard.press('r');
             await page.waitForFunction(() => App.catalog.get('b-photo.jpg').meta.rot === 90);
             await page.keyboard.press('Escape');
             await page.waitForSelector('#viewer', { state: 'hidden' });
-            await page.waitForSelector('.card.vw-rot-90[data-path="b-photo.jpg"]');
+            await page.waitForSelector('.card.vw-xf-swap[data-path="b-photo.jpg"]');
+            assert.match(await page.evaluate(() => getComputedStyle(document.querySelector('.card[data-path="b-photo.jpg"] .card-img')).transform), /^matrix\(/, 'card thumbnail is rotated');
             // Batch rotation from the gallery context menu/command
             await page.evaluate(() => App.select.set(['a-photo.png', 'c-photo.png']));
             await page.evaluate(() => App.commands.run('viewer.rotateSelectedCCW'));
@@ -170,12 +191,15 @@ module.exports = [
             assert.equal(await orientation('b-photo.jpg'), 3);
             assert.deepEqual(await dims('b-photo.jpg'), [640, 480]);
 
-            // Undo (inside the viewer) restores the previous bytes and the view rotation
+            // Undo (inside the viewer) restores the previous bytes and the view rotation — one Ctrl+Z per action
             await page.keyboard.press('Control+z');
             await page.waitForFunction(() => App.viewer.rotationOf('b-photo.jpg') === 90);
             assert.equal(await orientation('b-photo.jpg'), 6);
-            await page.keyboard.press('Control+z');
-            await page.waitForFunction(() => App.viewer.rotationOf('b-photo.jpg') === 90 && App.fs.listTrash().then((t) => t.length === 0));
+            await page.keyboard.press('Control+z'); // the second setRotation(90)
+            await page.waitForFunction(() => App.viewer.rotationOf('b-photo.jpg') === 0);
+            assert.equal(await orientation('b-photo.jpg'), 6);
+            await page.keyboard.press('Control+z'); // the first "apply"
+            await page.waitForFunction(() => App.viewer.rotationOf('b-photo.jpg') === 90);
             await page.waitForFunction(async () => (await App.fs.listTrash()).length === 0);
             assert.equal(await orientation('b-photo.jpg'), 1);
             assert.equal(await page.evaluate(async () => (await App.fs.getFile('b-photo.jpg')).size), before);
@@ -203,7 +227,7 @@ module.exports = [
                 withExif.set(jpg.subarray(0, 2), 0);
                 withExif.set(seg, 2);
                 withExif.set(jpg.subarray(2), 2 + seg.length);
-                const out = App.viewer.rotateFile._jpegRotate(withExif, 90);
+                const out = App.viewer.rotateFile._jpegReorient(withExif, { rot: 90 });
                 const x = await window.exifr.parse(new Blob([out], { type: 'image/jpeg' }), { tiff: true, translateValues: false });
                 const b2 = await createImageBitmap(new Blob([out], { type: 'image/jpeg' }), { imageOrientation: 'from-image' });
                 const r = { make: x && x.Make, orientation: x && x.Orientation, w: b2.width, h: b2.height };
@@ -653,6 +677,220 @@ module.exports = [
                 assert.ok(cmds.some((c) => c[0] === id && /[가-힣]/.test(c[1])), `${id} is registered`);
             }
             assert.deepEqual(cmds.filter((c) => c[2]).map((c) => c[0]), [], 'no empty key combos');
+        },
+    },
+    {
+        name: 'flip H/V for photos and videos: catalog meta, composed with rotation, toolbar, card, filmstrip; video Ctrl+wheel zoom',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: { ...PHOTOS, 'd-clip.webm': { video: { seconds: 2 } } } });
+            await openPhoto(page, 'b-photo.jpg');
+            const o = (p) => page.evaluate((q) => App.viewer.orientationOf(q), p);
+            await page.keyboard.press('h');
+            assert.deepEqual(await o('b-photo.jpg'), { rot: 0, flipH: true, flipV: false });
+            assert.equal(await page.evaluate(() => App.catalog.get('b-photo.jpg').meta.flipH), true);
+            assert.equal(await page.evaluate(() => App.viewer.transformOf('b-photo.jpg')), 'scale(-1, 1)');
+            await page.waitForFunction(() => /scale\(-1(\.0+)?, 1(\.0+)?\)/.test(document.querySelector('#viewer img.vw-media').style.transform));
+            assert.ok(await page.isVisible('.vw-actions [data-act="flip-h"].active'), 'toolbar shows the flip state');
+            // V flips on screen too; both flips == 180° turn (kept normalized)
+            await page.click('.vw-actions [data-act="flip-v"]');
+            assert.deepEqual(await o('b-photo.jpg'), { rot: 180, flipH: false, flipV: false });
+            await page.keyboard.press('v');
+            assert.deepEqual(await o('b-photo.jpg'), { rot: 180, flipH: false, flipV: true });
+            // a screen-horizontal flip of a 90°-turned photo flips its own vertical axis
+            await page.evaluate(() => App.viewer.changeTransform(['b-photo.jpg'], () => ({ rot: 90 }), 't'));
+            await page.keyboard.press('h');
+            assert.deepEqual(await o('b-photo.jpg'), { rot: 90, flipH: false, flipV: true });
+            assert.equal(await page.evaluate(() => App.viewer.transformOf('b-photo.jpg')), 'rotate(90deg) scale(1, -1)');
+            await page.waitForFunction(() => {
+                const s = document.querySelector('.vw-cell[data-path="b-photo.jpg"]')?.style;
+                return s && s.getPropertyValue('--vw-rot') === '90deg' && s.getPropertyValue('--vw-sy') === '-1';
+            });
+            // right-click menu has the orientation items
+            const box = await page.locator('.vw-stage').boundingBox();
+            await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: 'right' });
+            await page.waitForSelector('.menu');
+            for (const t of ['오른쪽으로 회전', '좌우 반전', '상하 반전', '회전·반전 되돌리기']) assert.ok(await page.locator(`.menu :text("${t}")`).count(), t);
+            await page.keyboard.press('Escape');
+            await page.waitForSelector('.menu', { state: 'detached' });
+
+            // videos: same keys, same transform, Ctrl+wheel zooms at the cursor, plain wheel = volume
+            await openVideo(page, 'd-clip.webm');
+            await page.keyboard.press('h');
+            await page.keyboard.press('r');
+            assert.deepEqual(await o('d-clip.webm'), { rot: 90, flipH: true, flipV: false });
+            await page.waitForFunction(() => {
+                const t = document.querySelector('#viewer video.vw-media').style.transform;
+                return /rotate\(90(\.0+)?deg\)/.test(t) && /scale\(-1(\.0+)?, 1(\.0+)?\)/.test(t);
+            });
+            const fit = await page.evaluate(() => App.viewer.view.fitScale);
+            await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2 + 20);
+            const vol = await page.evaluate(() => App.viewer.player.video.volume);
+            await page.keyboard.down('Control');
+            await page.mouse.wheel(0, -100);
+            await page.mouse.wheel(0, -100);
+            await page.keyboard.up('Control');
+            await page.waitForFunction((f) => App.viewer.view.scale > f * 1.3, fit);
+            assert.equal(await page.evaluate(() => App.viewer.player.video.volume), vol, 'Ctrl+wheel does not touch the volume');
+            assert.ok(await page.isVisible('.vw-zoom'), 'zoom control shows for videos too');
+            await page.keyboard.press('0');
+            await page.waitForFunction(() => App.viewer.view.fit && !App.viewer.view.raf);
+            await page.evaluate(() => App.viewer.player.setVolume(0.5));
+            await page.mouse.wheel(0, 100);
+            await page.waitForFunction(() => App.viewer.player.video.volume < 0.5);
+            // the capture looks like the screen (rotated: 240 × 320)
+            await page.keyboard.press('c');
+            await page.waitForSelector('.toast:has-text("장면을 저장했어요")');
+            const size = await page.evaluate(async () => {
+                const b = await createImageBitmap(await App.fs.getFile('d-clip_frame_00m00s.jpg'));
+                return [b.width, b.height];
+            });
+            assert.deepEqual(size, [240, 320]);
+            await page.keyboard.press('Escape');
+            await page.waitForSelector('.card.vw-xf-swap[data-path="d-clip.webm"]');
+            assert.equal(await page.evaluate(() => document.querySelector('.card[data-path="d-clip.webm"]').style.getPropertyValue('--vw-sx')), '-1');
+        },
+    },
+    {
+        name: 'Ctrl+Z undoes every viewer action in ONE press (Ctrl+Y redoes): orientation, markers, poster, capture, apply',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: { ...PHOTOS, 'clip.webm': { video: { seconds: 3 } } } });
+            const depth = () => page.evaluate(() => App.undo.list().length);
+            const idle = () => page.waitForTimeout(80);
+            // run `act`, check exactly one new entry, Ctrl+Z reverts (check `undone`), Ctrl+Y redoes (check `done`)
+            async function oneStep(label, act, done, undone) {
+                const d0 = await depth();
+                await act();
+                await page.waitForFunction(done);
+                await idle();
+                assert.equal(await depth(), d0 + 1, `${label}: one undo entry`);
+                await page.keyboard.press('Control+z');
+                await page.waitForFunction(undone);
+                await idle();
+                assert.equal(await depth(), d0, `${label}: one Ctrl+Z`);
+                await page.keyboard.press('Control+y');
+                await page.waitForFunction(done);
+                await idle();
+                assert.equal(await depth(), d0 + 1, `${label}: Ctrl+Y redoes`);
+                assert.ok(await page.evaluate(() => App.viewer.isOpen), `${label}: still in the viewer`);
+            }
+            const meta = (k) => `App.catalog.get('b-photo.jpg').meta.${k}`;
+
+            await openPhoto(page, 'b-photo.jpg');
+            await oneStep('rotate', () => page.keyboard.press('r'), `${meta('rot')} === 90`, `!${meta('rot')}`);
+            await oneStep('flip H', () => page.keyboard.press('h'), `${meta('flipV')} === true`, `!${meta('flipV')}`);
+            // a second flip on the other axis == a 180° turn: stored normalized as rot 270 without flips
+            await oneStep('flip V', () => page.keyboard.press('v'), `${meta('rot')} === 270 && !${meta('flipV')}`, `${meta('rot')} === 90 && ${meta('flipV')} === true`);
+            await oneStep('flip back', () => page.keyboard.press('h'), `${meta('rot')} === 270 && ${meta('flipV')} === true`, `${meta('rot')} === 270 && !${meta('flipV')}`);
+            await oneStep('apply to file', async () => {
+                await page.click('.vw-apply-rot');
+                await page.click('.dialog .btn.primary');
+            }, `!${meta('rot')} && !${meta('flipV')}`, `${meta('rot')} === 270 && ${meta('flipV')} === true`);
+            // the bytes follow too: undo once more puts the file back as it was before "apply"
+            const orient = () => page.evaluate(async () => (await window.exifr.orientation(await App.fs.getFile('b-photo.jpg'))) || 1);
+            assert.notEqual(await orient(), 1);
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(`${meta('rot')} === 270`);
+            await page.waitForFunction(async () => ((await window.exifr.orientation(await App.fs.getFile('b-photo.jpg'))) || 1) === 1);
+
+            await openVideo(page, 'clip.webm');
+            const markers = () => 'App.catalog.get(\'clip.webm\').markers';
+            await page.evaluate(() => App.viewer.player.seek(1));
+            await oneStep('marker add + name', async () => {
+                await page.keyboard.press('b');
+                await page.waitForFunction(() => document.activeElement?.classList.contains('vw-mk-title'));
+                await page.keyboard.type('시작');
+                await page.keyboard.press('Enter');
+            }, `${markers()}.length === 1 && ${markers()}[0].title === '시작'`, `${markers()}.length === 0`);
+            await oneStep('marker edit', async () => {
+                await page.dblclick('.vw-mark');
+                await page.waitForFunction(() => document.activeElement?.classList.contains('vw-mk-title'));
+                await page.keyboard.press('Control+a');
+                await page.keyboard.type('끝');
+                await page.keyboard.press('Enter');
+            }, `${markers()}[0]?.title === '끝'`, `${markers()}[0]?.title === '시작'`);
+            await oneStep('marker delete', async () => {
+                await page.click('.vw-mark', { button: 'right' });
+                await page.click('.menu :text("마커 삭제")');
+            }, `${markers()}.length === 0`, `${markers()}.length === 1`);
+            await page.evaluate(() => App.viewer.player.seek(2));
+            await page.waitForTimeout(100);
+            await oneStep('poster frame', () => page.keyboard.press('Shift+C'), 'App.catalog.get(\'clip.webm\').meta.posterT > 1.5', 'App.catalog.get(\'clip.webm\').meta.posterT == null');
+            await oneStep('rotate video', () => page.keyboard.press('Shift+R'), 'App.viewer.rotationOf(\'clip.webm\') === 270', 'App.viewer.rotationOf(\'clip.webm\') === 0');
+            await oneStep('frame capture', () => page.keyboard.press('c'),
+                () => window.__opfs.exists('clip_frame_00m02s.jpg'),
+                () => window.__opfs.exists('clip_frame_00m02s.jpg').then((x) => !x));
+            assert.equal(await page.evaluate(() => App.viewer.current.path), 'clip.webm');
+        },
+    },
+    {
+        name: 'apply flips to files: JPEG EXIF orientation 2/4/5/7, PNG pixels mirrored, video via server (flip, then rotate)',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: { ...PHOTOS, 'clip.webm': { video: { seconds: 2 } } } });
+            const co = (cur, t) => page.evaluate(([c, x]) => App.viewer.rotateFile._composeOrientation(c, x), [cur, t]);
+            assert.equal(await co(1, { rot: 0, flipH: true }), 2);
+            assert.equal(await co(1, { rot: 0, flipV: true }), 4);
+            assert.equal(await co(1, { rot: 270, flipH: true }), 5);
+            assert.equal(await co(1, { rot: 90, flipH: true }), 7);
+            assert.equal(await co(2, { rot: 0, flipH: true }), 1);
+            // pixels on screen (EXIF applied) after "apply" == mirrored pixels before
+            const pixels = (p, mirror) => page.evaluate(async ([q, m]) => {
+                const b = await createImageBitmap(await App.fs.getFile(q), { imageOrientation: 'from-image' });
+                const c = new OffscreenCanvas(b.width, b.height);
+                const g = c.getContext('2d');
+                if (m === 'h') g.setTransform(-1, 0, 0, 1, b.width, 0);
+                if (m === 'v') g.setTransform(1, 0, 0, -1, 0, b.height);
+                g.drawImage(b, 0, 0);
+                const d = g.getImageData(0, 0, b.width, b.height).data;
+                const out = [];
+                for (let i = 0; i < d.length; i += 4 * 997) out.push(d[i], d[i + 1], d[i + 2]);
+                return out;
+            }, [p, mirror]);
+            const close = (a, b) => a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) <= 3);
+            const jpgMirrored = await pixels('b-photo.jpg', 'h');
+            await page.evaluate(() => App.viewer.changeTransform(['b-photo.jpg'], () => ({ rot: 0, flipH: true }), 't'));
+            assert.ok(await page.evaluate(() => App.viewer.rotateFile.apply(App.view.get('b-photo.jpg'), { ask: false })));
+            assert.equal(await page.evaluate(async () => window.exifr.orientation(await App.fs.getFile('b-photo.jpg'))), 2);
+            assert.ok(close(await pixels('b-photo.jpg'), jpgMirrored), 'JPEG shows mirrored');
+            const pngMirrored = await pixels('c-photo.png', 'v');
+            await page.evaluate(() => App.viewer.changeTransform(['c-photo.png'], () => ({ rot: 0, flipV: true }), 't'));
+            assert.ok(await page.evaluate(() => App.viewer.rotateFile.apply(App.view.get('c-photo.png'), { ask: false })));
+            assert.ok(close(await pixels('c-photo.png'), pngMirrored), 'PNG pixels are mirrored');
+
+            // video: server bakes the flip first (re-encode), then the rotation (lossless, in place)
+            await openVideo(page, 'clip.webm');
+            await page.evaluate(() => {
+                window.__calls = [];
+                App.server = {
+                    available: true,
+                    capabilities: { ffmpeg: true },
+                    video: {
+                        transform: async (b) => {
+                            window.__calls.push(b);
+                            if (!b.inPlace) await App.fs.backend.copy(b.path, '', 'clip_rot.webm');
+                            return { path: 'clip_rot.webm' };
+                        },
+                    },
+                };
+                App.fs.backend.kind = 'server';
+                App.viewer.changeTransform(['clip.webm'], () => ({ rot: 90, flipH: true }), 't');
+            });
+            await page.click('.vw-apply-rot');
+            await page.waitForSelector('.dialog:has-text("새 영상을 만들까요")');
+            await page.click('.dialog .btn.primary');
+            await page.waitForSelector('.toast:has-text("방향으로 저장했어요")');
+            assert.deepEqual(await page.evaluate(() => window.__calls), [
+                { path: 'clip.webm', op: 'hflip', mode: 'reencode' },
+                { path: 'clip_rot.webm', op: 'rotate90', mode: 'metadata', inPlace: true },
+            ]);
+            assert.ok(await page.evaluate(() => window.__opfs.exists('clip_rot.webm')));
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => window.__opfs.exists('clip_rot.webm').then((x) => !x));
+            await page.keyboard.press('Control+y');
+            await page.waitForFunction(() => window.__opfs.exists('clip_rot.webm'));
+            await page.evaluate(() => {
+                App.fs.backend.kind = 'browser';
+                delete App.server;
+            });
         },
     },
 ];

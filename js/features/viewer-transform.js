@@ -1,8 +1,8 @@
 /*
  * Viewer — shared view transform for photos AND videos: fit / zoom / pan plus the non-destructive orientation
  * (catalog meta.rot / flipH / flipV, see viewer.js), re-applied whenever the file is shown.
- *   Mouse: Ctrl+wheel (or trackpad pinch) zooms anchored at the cursor. A plain wheel never zooms: when zoomed in
- *          it pans, otherwise it is handed to onPlainWheel (photos: previous/next file, videos: volume).
+ *   Mouse: Ctrl+wheel (or trackpad pinch) zooms anchored at the cursor. A plain wheel pans when zoomed in, otherwise
+ *          it is handed to onPlainWheel (photos: previous/next file or zoom — a setting; videos: volume).
  *          Drag pans when zoomed in; double-click = onDoubleTap; a click without dragging = onTap.
  *   Keys:  = / + zoom in, - zoom out, 0 fit, Z 100%.
  *
@@ -34,7 +34,7 @@
             this.onTap = onTap;
             this.onDoubleTap = onDoubleTap;
             this.onPlainWheel = onPlainWheel;
-            const t = V.transformOf(path);
+            const t = V.orientationOf(path);
             this.angle = t.rot;
             this.sx = t.flipH ? -1 : 1;
             this.sy = t.flipV ? -1 : 1;
@@ -272,7 +272,7 @@
         follow(animate = true) {
             if (this.frozen) return;
             this.finish();
-            const t = V.transformOf(this.path);
+            const t = V.orientationOf(this.path);
             const cur = { rot: norm(this.angle), sx: this.sx < 0 ? -1 : 1, sy: this.sy < 0 ? -1 : 1 };
             // flipping both axes is the same picture as turning 180°: pick whichever is closer to what's on screen
             const cands = [
@@ -303,6 +303,19 @@
             }
         }
 
+        /** Zoom by one wheel event, keeping the point under the cursor still. */
+        wheelZoom(e) {
+            e.preventDefault();
+            if (!this.nat) return;
+            const notch = e.deltaMode !== 0 || Math.abs(e.deltaY) >= 50;
+            const factor = notch ? Math.pow(1.2, -Math.sign(e.deltaY)) : Math.exp(-e.deltaY * 0.01);
+            const next = this.scale * factor;
+            // snap back to "fit" when zooming out past it
+            if (factor < 1 && next <= this.fitScale * 1.0001 && this.scale > this.fitScale * 1.0001) this.zoomTo(this.fitScale, { x: e.clientX, y: e.clientY });
+            else this.zoomTo(next, { x: e.clientX, y: e.clientY });
+            V.poke();
+        }
+
         // ----- input -----
         bind() {
             const slot = this.slot;
@@ -312,12 +325,7 @@
                 if (ignore(e)) return;
                 if (e.ctrlKey || e.metaKey) {
                     // Ctrl+wheel (Chrome also reports trackpad pinch this way)
-                    e.preventDefault();
-                    if (!this.nat) return;
-                    const notch = e.deltaMode !== 0 || Math.abs(e.deltaY) >= 50;
-                    const factor = notch ? Math.pow(1.2, -Math.sign(e.deltaY)) : Math.exp(-e.deltaY * 0.01);
-                    this.zoomTo(this.scale * factor, { x: e.clientX, y: e.clientY });
-                    V.poke();
+                    this.wheelZoom(e);
                     return;
                 }
                 if (this.pannable) {

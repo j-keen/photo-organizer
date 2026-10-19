@@ -10,9 +10,10 @@
  *   toolbarItems.push((entry) => [Element...])      — add buttons to the viewer top bar
  *   contextItems.push((entry, kind) => menuItems)   — add items to the viewer's "더 보기"/right-click menu
  *   hintProviders.push((kind) => [{keys, label}])   — add items to the shortcut hint row
- *   transformOf(path) -> {rot, flipH, flipV}; rotationOf(path) -> 0|90|180|270; describeTransform(t)
+ *   transformOf(path) -> CSS transform string ('' = none); orientationOf(path) -> {rot, flipH, flipV};
+ *   rotationOf(path) -> 0|90|180|270; cssTransform(t); describeTransform(t)
  *   changeTransform(paths, (t) => t', label)         — undoable orientation change (one Ctrl+Z)
- *   rotate(±90), flip('h'|'v'), resetTransform(), applyTransformVars(el, t) (CSS vars for thumbnails)
+ *   setRotation(path, rot), rotate(±90), flip('h'|'v'), resetTransform(), applyTransformVars(el, t) (thumbnails)
  *   registerRenderer(type, { mount(ctx) -> instance }), registerPanel({ id, title, icon, keys, render, ... })
  *   togglePanel(id, force), isPanelOpen(id), osd(text, {icon}), refreshChrome(), freeze(path)
  * Events: 'viewer:entry' {entry, index, count} (current file changed, before it loads),
@@ -84,9 +85,17 @@
         return { rot, flipH, flipV };
     }
 
-    function transformOf(p) {
+    function orientationOf(p) {
         const m = App.catalog?.peek?.(p)?.meta;
         return normalizeTransform({ rot: m?.rot, flipH: m?.flipH, flipV: m?.flipV });
+    }
+
+    /** CSS transform for an orientation (flip first, then rotate — the order the viewer uses). '' = none. */
+    function cssTransform(t) {
+        const parts = [];
+        if (t.rot) parts.push(`rotate(${t.rot}deg)`);
+        if (t.flipH || t.flipV) parts.push(`scale(${t.flipH ? -1 : 1}, ${t.flipV ? -1 : 1})`);
+        return parts.join(' ');
     }
 
     function isIdentity(t) {
@@ -114,7 +123,7 @@
 
     /** Change the orientation of paths as ONE undo step. fn(currentTransform, path) -> next transform. */
     function changeTransform(paths, fn, label) {
-        const before = new Map(paths.map((p) => [p, transformOf(p)]));
+        const before = new Map(paths.map((p) => [p, orientationOf(p)]));
         const after = new Map(paths.map((p) => [p, normalizeTransform(fn(before.get(p), p))]));
         const changed = paths.filter((p) => !sameTransform(before.get(p), after.get(p)));
         if (!changed.length) return false;
@@ -333,8 +342,15 @@
         },
 
         // ----- orientation -----
-        transformOf,
-        rotationOf: (p) => transformOf(p).rot,
+        /** CSS transform string of the stored view orientation ('' when none), e.g. 'rotate(90deg) scale(-1, 1)' */
+        transformOf: (p) => cssTransform(orientationOf(p)),
+        orientationOf,
+        cssTransform,
+        rotationOf: (p) => orientationOf(p).rot,
+        /** Set the view rotation of one file (one undo step). */
+        setRotation(p, rot) {
+            return changeTransform([p], (t) => ({ ...t, rot }), '회전');
+        },
         describeTransform,
         normalizeTransform,
         isIdentityTransform: isIdentity,
@@ -345,7 +361,7 @@
             const cur = viewer.current;
             if (!cur || (cur.type !== 'image' && cur.type !== 'video')) return;
             changeTransform([cur.path], (t) => ({ ...t, rot: t.rot + delta }), delta > 0 ? '오른쪽으로 회전' : '왼쪽으로 회전');
-            const t = transformOf(cur.path);
+            const t = orientationOf(cur.path);
             osd(t.rot ? `${t.rot}° 회전` : '원래 방향', { icon: delta > 0 ? 'rotate-cw' : 'rotate-ccw' });
             refreshChrome();
         },
@@ -619,7 +635,7 @@
     function canApplyToFile(entry) {
         if (!entry) return false;
         if (entry.type === 'image') return !!viewer.rotateFile?.canApply?.(entry);
-        if (entry.type === 'video') return !!App.videoEditor?.applyViewTransform;
+        if (entry.type === 'video') return !!App.videoEditor?.canApplyViewTransform?.(entry);
         return false;
     }
 
@@ -629,7 +645,7 @@
         if (!entry) return;
         const kind = entry.type;
         actionsEl.innerHTML = '';
-        const t = transformOf(entry.path);
+        const t = orientationOf(entry.path);
         const media = kind === 'image' || kind === 'video';
 
         if (media && !isIdentity(t) && canApplyToFile(entry)) {
@@ -645,7 +661,8 @@
             actionsEl.append(
                 btn('rotate-ccw', '왼쪽으로 회전', cmdKey('viewer.rotateCCW'), () => App.commands.run('viewer.rotateCCW')),
                 btn('rotate-cw', '오른쪽으로 회전', cmdKey('viewer.rotateCW'), () => App.commands.run('viewer.rotateCW')),
-                btn('flip-h', '좌우 반전', cmdKey('viewer.flipH'), () => App.commands.run('viewer.flipH'), { class: t.flipH || t.flipV ? 'active' : '', id: 'flip' }),
+                btn('flip-h', '좌우 반전', cmdKey('viewer.flipH'), () => App.commands.run('viewer.flipH'), { class: (t.rot % 180 ? t.flipV : t.flipH) ? 'active' : '', id: 'flip-h' }),
+                btn('flip-v', '상하 반전', cmdKey('viewer.flipV'), () => App.commands.run('viewer.flipV'), { class: (t.rot % 180 ? t.flipH : t.flipV) ? 'active' : '', id: 'flip-v' }),
                 h('span', { class: 'vw-sep' }));
         }
         const infoOn = App.settings.get('viewer.info', false);
@@ -693,7 +710,7 @@
             }
         }
         if (kind === 'image' || kind === 'video') {
-            const t = transformOf(entry.path);
+            const t = orientationOf(entry.path);
             items.push(
                 { label: '오른쪽으로 회전', icon: 'rotate-cw', command: 'viewer.rotateCW' },
                 { label: '왼쪽으로 회전', icon: 'rotate-ccw', command: 'viewer.rotateCCW' },
@@ -715,7 +732,7 @@
                 checked: false,
                 submenu: () => [
                     { header: `확대·축소는 ${dk('Mod')}+휠` },
-                    { label: '사진: 이전/다음 파일로', checked: photoWheel, action: () => App.settings.set('viewer.wheelNav', !photoWheel) },
+                    { label: photoWheel ? '사진: 이전/다음 파일로' : '사진: 이전/다음 파일로 (지금은 확대)', checked: photoWheel, action: () => App.settings.set('viewer.wheelNav', !photoWheel) },
                     { label: '영상: 소리 크기', checked: videoWheel, action: () => App.settings.set('viewer.videoWheel', videoWheel ? 'none' : 'volume') },
                 ],
             },
@@ -926,7 +943,7 @@
     // ←/→ change file for photos; for videos they seek (viewer-player.js), Ctrl+←/→ and PageUp/PageDown always change file.
     function arrowStep(delta, event) {
         const plainArrow = event && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !event.ctrlKey && !event.metaKey;
-        if (plainArrow && isVideo() && viewer.player) {
+        if (plainArrow && isVideo() && viewer.player && !viewer.player.failed) {
             viewer.player.seekStep(delta);
             return;
         }
@@ -1017,7 +1034,7 @@
         group: '보기',
         icon: 'vw-reset-orient',
         scope: 'viewer',
-        when: () => isMedia() && !isIdentity(transformOf(viewer.current.path)),
+        when: () => isMedia() && !isIdentity(orientationOf(viewer.current.path)),
         run: () => viewer.resetTransform(),
     });
     App.commands.register({
@@ -1026,7 +1043,7 @@
         group: '보기',
         icon: 'vw-save',
         scope: 'viewer',
-        when: () => isMedia() && canApplyToFile(viewer.current) && !isIdentity(transformOf(viewer.current.path)),
+        when: () => isMedia() && canApplyToFile(viewer.current) && !isIdentity(orientationOf(viewer.current.path)),
         run: () => (isVideo() ? App.videoEditor.applyViewTransform(viewer.current) : viewer.rotateFile.apply(viewer.current)),
     });
     App.commands.register({
@@ -1054,12 +1071,7 @@
             resizeAll();
         },
     });
-    // Undo/redo inside the viewer. Core is making edit.undo/edit.redo 'global' — then those handle it and these stay out of the way.
-    const coreUndoIsGlobal = () => App.commands.get('edit.undo')?.scope === 'global';
-    if (!coreUndoIsGlobal()) {
-        App.commands.register({ id: 'viewer.undo', title: '실행 취소', group: '편집', icon: 'undo', scope: 'viewer', keys: ['Mod+Z'], when: () => !coreUndoIsGlobal() && App.undo.canUndo(), run: () => App.undo.undo() });
-        App.commands.register({ id: 'viewer.redo', title: '다시 실행', group: '편집', icon: 'redo', scope: 'viewer', keys: ['Mod+Shift+Z', 'Mod+Y'], when: () => !coreUndoIsGlobal() && App.undo.canRedo(), run: () => App.undo.redo() });
-    }
+    // Undo/redo in the viewer: core edit.undo / edit.redo are global commands (Mod+Z, Mod+Shift+Z / Mod+Y).
     App.commands.register({
         id: 'viewer.menu',
         title: '보기 메뉴',
@@ -1079,7 +1091,7 @@
         const paths = selectedMedia();
         if (!paths.length) return;
         if (!changeTransform(paths, fn, label)) return;
-        ui.toast(paths.length === 1 ? done : `${App.util.formatCount(paths.length)}개를 ${done.replace(/했어요$/, '')}했어요`, {
+        ui.toast(paths.length === 1 ? done : `${App.util.formatCount(paths.length)}개 파일을 ${done}`, {
             type: 'success',
             duration: 2600,
             action: { label: '실행 취소', run: () => App.undo.undo() },
@@ -1089,6 +1101,8 @@
     App.commands.register({ id: 'viewer.rotateSelectedCW', title: '선택한 파일 오른쪽으로 회전', group: '보기', icon: 'rotate-cw', when: hasMediaSelection, run: () => orientSelected((t) => ({ ...t, rot: t.rot + 90 }), '오른쪽으로 회전', '회전했어요') });
     App.commands.register({ id: 'viewer.rotateSelectedCCW', title: '선택한 파일 왼쪽으로 회전', group: '보기', icon: 'rotate-ccw', when: hasMediaSelection, run: () => orientSelected((t) => ({ ...t, rot: t.rot - 90 }), '왼쪽으로 회전', '회전했어요') });
     App.commands.register({ id: 'viewer.flipSelected', title: '선택한 파일 좌우 반전', group: '보기', icon: 'flip-h', when: hasMediaSelection, run: () => orientSelected((t) => screenFlip(t, 'h'), '좌우 반전', '좌우 반전했어요') });
+    App.commands.register({ id: 'viewer.flipSelectedV', title: '선택한 파일 상하 반전', group: '보기', icon: 'flip-v', when: hasMediaSelection, run: () => orientSelected((t) => screenFlip(t, 'v'), '상하 반전', '상하 반전했어요') });
+    App.commands.register({ id: 'viewer.resetSelected', title: '선택한 파일 회전·반전 되돌리기', group: '보기', icon: 'vw-reset-orient', when: () => hasMediaSelection() && selectedMedia().some((p) => !isIdentity(orientationOf(p))), run: () => orientSelected(() => ({ rot: 0 }), '회전·반전 되돌리기', '원래 방향으로 되돌렸어요') });
 
     // ---------- Init ----------
     const reloadSoon = App.util.debounce(() => viewer.reload(), 60);
@@ -1237,7 +1251,7 @@
             if (App.gallery && Array.isArray(App.gallery.cardDecorators)) {
                 App.gallery.cardDecorators.push((card, entry) => {
                     if (!entry || entry.kind !== 'file') return;
-                    applyTransformVars(card, transformOf(entry.path));
+                    applyTransformVars(card, orientationOf(entry.path));
                 });
             }
             if (App.gallery && Array.isArray(App.gallery.contextMenuItems)) {
@@ -1248,6 +1262,8 @@
                         { label: '오른쪽으로 회전', icon: 'rotate-cw', command: 'viewer.rotateSelectedCW' },
                         { label: '왼쪽으로 회전', icon: 'rotate-ccw', command: 'viewer.rotateSelectedCCW' },
                         { label: '좌우 반전', icon: 'flip-h', command: 'viewer.flipSelected' },
+                        { label: '상하 반전', icon: 'flip-v', command: 'viewer.flipSelectedV' },
+                        ...(media.some((e) => !isIdentity(orientationOf(e.path))) ? [{ label: '회전·반전 되돌리기', icon: 'vw-reset-orient', command: 'viewer.resetSelected' }] : []),
                     ];
                 });
             }
