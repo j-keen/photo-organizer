@@ -1,0 +1,95 @@
+/* First-run coach marks — shell team */
+
+.ob-spot {
+    position: fixed;
+    z-index: 1500;
+    border-radius: 14px;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.66), 0 0 0 2px var(--accent), 0 0 24px 2px rgba(255, 107, 44, 0.35);
+    pointer-events: none;
+    transition: left 300ms var(--ease), top 300ms var(--ease), width 300ms var(--ease), height 300ms var(--ease);
+    animation: fade-in var(--dur-slow) var(--ease);
+}
+
+:root[data-theme="light"] .ob-spot {
+    box-shadow: 0 0 0 9999px rgba(20, 22, 26, 0.4), 0 0 0 2px var(--accent), 0 0 24px 2px rgba(242, 92, 20, 0.3);
+}
+
+.ob-card {
+    position: fixed;
+    z-index: 1501;
+    width: min(330px, calc(100vw - 16px));
+    padding: 16px 16px 12px;
+    border-radius: 16px;
+    border: 1px solid var(--line-2);
+    background: var(--bg-1);
+    box-shadow: var(--sh-3);
+    outline: none;
+    transition: left 300ms var(--ease), top 300ms var(--ease);
+    animation: ob-in var(--dur-slow) var(--ease);
+}
+
+@keyframes ob-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px) scale(0.98);
+    }
+}
+
+.ob-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+.ob-step {
+    color: var(--accent-2);
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.03em;
+}
+
+:root[data-theme="light"] .ob-step {
+    color: var(--accent);
+}
+
+.ob-dots {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.ob-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--bg-4);
+    transition: width var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.ob-dot.on {
+    width: 16px;
+    background: var(--accent);
+}
+
+.ob-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: var(--fs-lg);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+
+.ob-text {
+    margin: 0 0 14px;
+    color: var(--text-2);
+    line-height: 1.6;
+}
+
+.ob-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}

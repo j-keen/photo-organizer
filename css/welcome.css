@@ -1,23 +1,58 @@
-/* Welcome screen (no workspace open) */
+/* Welcome screen (no workspace open) — shell team */
 
 #welcome {
     position: fixed;
     inset: var(--topbar-h) 0 var(--statusbar-h);
     z-index: 50;
-    display: grid;
-    place-items: center;
-    padding: 32px;
-    background:
-        radial-gradient(800px 400px at 50% -10%, var(--accent-soft), transparent 70%),
-        var(--bg);
-}
-
-.welcome-card {
-    width: min(520px, 100%);
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 14px;
+    overflow-y: auto;
+    padding: 40px 24px;
+    background:
+        radial-gradient(900px 420px at 50% -12%, var(--accent-soft), transparent 70%),
+        radial-gradient(640px 320px at 100% 115%, color-mix(in srgb, var(--info) 7%, transparent), transparent 70%),
+        var(--bg);
+}
+
+.welcome-card,
+.wl-opening,
+.wl-boot {
+    margin: auto 0;
+}
+
+/* Korean text breaks between words, never inside one */
+#welcome,
+.ob-card,
+.shs,
+.kb-root,
+.pal-root {
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+}
+
+.welcome-card {
+    width: min(560px, 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 22px;
+    animation: wl-in 360ms var(--ease);
+}
+
+@keyframes wl-in {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+}
+
+/* ----- hero ----- */
+.wl-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
     text-align: center;
 }
 
@@ -29,63 +64,363 @@
     color: var(--on-accent);
     display: grid;
     place-items: center;
-    box-shadow: 0 12px 40px rgba(255, 107, 44, 0.35);
+    box-shadow: 0 12px 40px rgba(255, 107, 44, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    margin-bottom: 4px;
 }
 
-.welcome-card h1 {
-    margin: 4px 0 0;
+.wl-hero h1 {
+    margin: 0;
     font-size: var(--fs-2xl);
     letter-spacing: -0.03em;
 }
 
 .welcome-sub {
-    margin: 0 0 8px;
+    margin: 0;
+    max-width: 440px;
     color: var(--text-2);
     font-size: var(--fs-md);
+    line-height: 1.6;
+    text-wrap: balance;
 }
 
-.welcome-hint {
+/* ----- resume card ----- */
+.wl-resume {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 14px 14px 16px;
+    border-radius: 16px;
+    border: 1px solid var(--accent-line);
+    background:
+        linear-gradient(135deg, var(--accent-soft), transparent 70%),
+        var(--bg-1);
+    box-shadow: var(--sh-2);
+    text-align: left;
+}
+
+.wl-resume-ico {
+    flex-shrink: 0;
+    width: 42px;
+    height: 42px;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    background: var(--accent-soft);
+    color: var(--accent-2);
+}
+
+:root[data-theme="light"] .wl-resume-ico {
+    color: var(--accent);
+}
+
+.wl-resume-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.wl-resume-title {
+    font-size: var(--fs-md);
+    color: var(--text-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wl-resume-title b {
+    color: var(--text);
+    font-weight: 700;
+}
+
+.wl-resume-meta {
+    margin-top: 2px;
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wl-resume-tip {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin-top: 8px;
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    line-height: 1.5;
+}
+
+.wl-resume-tip .ico {
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+
+.wl-resume-btn {
+    flex-shrink: 0;
+    height: 36px;
+    padding: 0 14px;
+}
+
+/* ----- primary actions ----- */
+.wl-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.wl-open {
+    min-width: 200px;
+}
+
+.wl-drop-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     color: var(--text-4);
     font-size: var(--fs-sm);
 }
 
-.welcome-recents {
+/* ----- recents ----- */
+.wl-recents {
     width: 100%;
-    margin-top: 18px;
-    text-align: left;
-    border-top: 1px solid var(--line);
-    padding-top: 16px;
 }
 
-.welcome-recents-title {
-    font-size: var(--fs-xs);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: var(--text-3);
-    margin-bottom: 6px;
-}
-
-.welcome-recent {
+.wl-section-head {
     display: flex;
     align-items: center;
-    gap: 10px;
-    width: 100%;
-    height: 38px;
-    padding: 0 10px;
-    border-radius: var(--r);
+    gap: 8px;
+    padding: 0 4px 8px;
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+.wl-count {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 6px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: var(--r-full);
+    background: var(--bg-3);
+    color: var(--text-3);
+    font-size: 10.5px;
+}
+
+.wl-recent-list {
+    border-radius: 14px;
+    border: 1px solid var(--line);
+    background: color-mix(in srgb, var(--bg-1) 85%, transparent);
+    overflow: hidden;
+}
+
+:root[data-theme="light"] .wl-recent-list {
+    background: var(--bg-1);
+    box-shadow: var(--sh-1);
+}
+
+.wl-recent {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.wl-recent + .wl-recent {
+    border-top: 1px solid var(--line);
+}
+
+.wl-recent-open {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 58px;
+    padding: 0 52px 0 14px;
     border: none;
     background: transparent;
     color: var(--text);
+    text-align: left;
     cursor: pointer;
+    transition: background var(--dur) var(--ease);
+}
+
+.wl-recent-open:hover,
+.wl-recent-open:focus-visible {
+    background: var(--bg-2);
+    outline: none;
+}
+
+:root[data-theme="light"] .wl-recent-open:hover,
+:root[data-theme="light"] .wl-recent-open:focus-visible {
+    background: var(--bg-2);
+}
+
+.wl-recent-open:focus-visible {
+    box-shadow: inset 0 0 0 2px var(--accent-line);
+}
+
+.wl-recent-ico {
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 10px;
+    background: var(--bg-3);
+    color: var(--accent-2);
+}
+
+:root[data-theme="light"] .wl-recent-ico {
+    color: var(--accent);
+}
+
+.wl-recent-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.wl-recent-name {
+    font-size: var(--fs-md);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wl-recent-meta {
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wl-recent-go {
+    display: grid;
+    color: var(--text-4);
+    opacity: 0;
+    transform: translateX(-4px);
+    transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.wl-recent-open:hover .wl-recent-go,
+.wl-recent-open:focus-visible .wl-recent-go {
+    opacity: 1;
+    transform: none;
+}
+
+.wl-recent-remove {
+    position: absolute;
+    right: 12px;
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border: none;
+    border-radius: var(--r-full);
+    background: transparent;
+    color: var(--text-4);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease), background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.wl-recent:hover .wl-recent-remove,
+.wl-recent:focus-within .wl-recent-remove {
+    opacity: 1;
+}
+
+.wl-recent:hover .wl-recent-go {
+    margin-right: 30px;
+}
+
+.wl-recent-remove:hover,
+.wl-recent-remove:focus-visible {
+    background: var(--bg-4);
+    color: var(--text);
+    outline: none;
+    opacity: 1;
+}
+
+/* ----- first-run feature tiles ----- */
+.wl-features {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.wl-feature {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px;
+    border-radius: 14px;
+    border: 1px solid var(--line);
+    background: color-mix(in srgb, var(--bg-1) 85%, transparent);
     text-align: left;
 }
 
-.welcome-recent:hover {
-    background: var(--bg-3);
+:root[data-theme="light"] .wl-feature {
+    background: var(--bg-1);
+    box-shadow: var(--sh-1);
 }
 
-.welcome-recent .ico {
+.wl-feature-ico {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border-radius: 10px;
+    background: var(--accent-soft);
+    color: var(--accent-2);
+}
+
+:root[data-theme="light"] .wl-feature-ico {
     color: var(--accent);
+}
+
+.wl-feature-title {
+    font-weight: 700;
+    font-size: var(--fs);
+    margin-bottom: 2px;
+}
+
+.wl-feature-text {
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+}
+
+/* ----- footer ----- */
+.wl-foot {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 6px 18px;
+    color: var(--text-4);
+    font-size: var(--fs-xs);
+}
+
+.wl-foot-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.wl-foot .kbd {
+    height: 18px;
+    min-width: 18px;
+    font-size: 10px;
 }
 
 .welcome-warn {
@@ -97,4 +432,105 @@
     background: var(--warning-soft);
     color: var(--warning);
     font-size: var(--fs-sm);
+}
+
+/* ----- boot / opening ----- */
+.wl-boot {
+    opacity: 0;
+    animation: wl-fade 300ms 300ms var(--ease) forwards;
+}
+
+@keyframes wl-fade {
+    to {
+        opacity: 0.6;
+    }
+}
+
+.wl-opening {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 22px;
+    animation: wl-in 300ms var(--ease);
+}
+
+.wl-opening-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 16px;
+    border-radius: var(--r-full);
+    border: 1px solid var(--line-2);
+    background: var(--bg-1);
+    color: var(--text-2);
+}
+
+/* ----- drag a folder in ----- */
+.wl-drop {
+    position: fixed;
+    inset: calc(var(--topbar-h) + 14px) 14px calc(var(--statusbar-h) + 14px);
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    border-radius: 22px;
+    border: 2px dashed var(--accent);
+    background:
+        radial-gradient(520px 320px at 50% 45%, var(--accent-soft), transparent 70%),
+        color-mix(in srgb, var(--bg) 94%, var(--accent));
+    box-shadow: 0 0 0 14px var(--bg);
+    opacity: 0;
+    transform: scale(0.99);
+    pointer-events: none;
+    transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+#welcome.wl-dragging .wl-drop {
+    opacity: 1;
+    transform: none;
+}
+
+.wl-drop-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    text-align: center;
+}
+
+.wl-drop-ico {
+    width: 72px;
+    height: 72px;
+    display: grid;
+    place-items: center;
+    border-radius: 22px;
+    background: var(--accent-soft);
+    color: var(--accent-2);
+    margin-bottom: 6px;
+}
+
+.wl-drop-title {
+    font-size: var(--fs-lg);
+    font-weight: 700;
+}
+
+.wl-drop-text {
+    color: var(--text-3);
+}
+
+@media (max-width: 640px) {
+    #welcome {
+        padding: 24px 16px;
+    }
+
+    .wl-features {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .wl-resume {
+        flex-wrap: wrap;
+    }
+
+    .wl-resume-btn {
+        width: 100%;
+    }
 }
