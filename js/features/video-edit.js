@@ -6,6 +6,8 @@
  *   Mod+B    split at the playhead (razor)
  *   click    a piece on the bar selects it → a compact strip right above the bar: memo (#tags), chips, play, 보관함,
  *            join with the previous piece, remove/restore. Drag a cut line to move it.
+ *   # · 1–9  while a piece is selected, the chip picker, the digit hotkeys and the chip drawer tag the PIECE (chipTarget()
+ *            is registered with App.chipset.setPieceProvider); a new chip name creates the chip right here. Esc → the file.
  *   Delete / Backspace   remove the selected piece (on a removed piece: bring it back)
  *   P        편집본 미리보기 on/off — playback jumps over removed parts and stops after the last kept piece
  *   G        보관함에 담기: the selected piece, else [playhead − 15 s, playhead + 5 s] (settings video.clipBefore/After);
@@ -22,7 +24,8 @@
  *   piecesOf(path, duration?) → [{ start, end, removed, memo, chips, number, index }], listFor(path), keptOf(path),
  *   isEdited(path), isStale(path), selected() → {path, start, end, …}|null, select(path, start, {seek, focusMemo}),
  *   deselect() → bool, cutBefore(), cutAfter(), split(), removeSelected() → bool, setPieceInfo(path, start, patch),
- *   reset(path), addClip(), openSaveMenu(anchor), render(bar, player), pointerAt(player, t), hintMode, hints()
+ *   reset(path), addClip(), openSaveMenu(anchor), render(bar, player), pointerAt(player, t), hintMode, hints(),
+ *   chipTarget() → the selected piece as a chip target (see App.chipset.pieceTarget) | null
  * }
  * Events: 'viewer:piece-select' { path, start|null }
  */
@@ -343,6 +346,44 @@
         commit(path, next, label, { coalesceKey });
     }
 
+    // ---------- The selected piece as a chip target (chipset.js: # · 1–9 · the chip drawer tag it) ----------
+    /** The file's meta with one piece's info patched — staged by the chipset so chip + structure stay ONE undo step. */
+    function metaWithPiece(path, start, patch) {
+        const pieces = piecesOf(path);
+        const x = pieces.find((y) => Math.abs(y.start - start) < 0.0005);
+        if (!x) return null;
+        const edit = editFrom(pieces.map((y) => (y === x ? { ...y, ...patch } : y)), rawEdit(path)?.src || srcStamp(path));
+        return edit ? { ...(App.catalog.peek(path)?.meta || {}), edit } : null;
+    }
+
+    /** Piece x of path as a chip target. valid() turns false once the piece is gone (an undone cut, a join …). */
+    function pieceTarget(path, x) {
+        const start = x.start;
+        const precise = x.end - x.start < 10;
+        const kept = piecesOf(path).filter((y) => !y.removed).length;
+        const find = () => piecesOf(path).find((y) => Math.abs(y.start - start) < 0.0005) || null;
+        return {
+            kind: 'piece',
+            path,
+            start,
+            end: x.end,
+            label: x.removed ? '잘라낸 부분' : `조각 ${x.number}/${kept}`,
+            range: `${fmt(x.start, precise)}–${fmt(x.end, precise)}`,
+            valid: () => !!find(),
+            chips: () => [...(find()?.chips || [])],
+            stage(tx, chips) {
+                const meta = metaWithPiece(path, start, { chips });
+                if (meta) tx.patch(path, { meta });
+            },
+            flush: flushStrip,
+        };
+    }
+
+    function chipTarget() {
+        const x = selectedPiece();
+        return x ? pieceTarget(sel.path, x) : null;
+    }
+
     function reset(path = V.player?.path) {
         if (!path || !hasEdit(rawEdit(path))) return;
         setSel(null, { silent: true });
@@ -532,7 +573,10 @@
                 'aria-label': '칩 빼기',
                 html: ui.icon('x', { size: 10 }),
                 onmousedown: (e) => e.preventDefault(),
-                onclick: () => setPieceInfo(path, x.start, { chips: x.chips.filter((c) => c !== id) }, { label: '조각 칩 빼기' }),
+                // through the chipset so its rules hold here too (removing a parent chip takes its sub-chips along)
+                onclick: () => (App.chipset?.applyPiece && App.chipset.info?.(id)
+                    ? App.chipset.applyPiece(pieceTarget(path, x), id, 'remove')
+                    : setPieceInfo(path, x.start, { chips: x.chips.filter((c) => c !== id) }, { label: '조각 칩 빼기' })),
             }));
     }
 
@@ -618,12 +662,14 @@
             }
         });
         s.chips = h('div', { class: 'vw-pstrip-chips' });
-        s.addChip = App.chipset?.list ? h('button', {
+        // The '#' picker: it targets this piece while it's selected, and a name that isn't there yet creates the chip
+        s.addChip = App.chipsPicker ? h('button', {
             class: 'btn ghost sm vw-pstrip-addchip',
             html: `${ui.icon('plus', { size: 12 })}<span>칩</span>`,
-            'data-tip': '이 조각에 칩 붙이기',
+            'data-tip': '이 조각에 칩 붙이기 · 없는 칩은 이름을 쓰고 Enter로 만들어요',
+            'data-tip-keys': '#',
             onmousedown: (e) => e.preventDefault(),
-            onclick: (e) => openChipPicker(e.currentTarget, path, s.start),
+            onclick: () => App.chipsPicker.open('viewer', { returnFocus: V.root }),
         }) : null;
         s.play = stripButton('play', '이 조각만 재생', null, () => {
             const cur = selectedPiece();
@@ -665,80 +711,6 @@
         s.remove.innerHTML = V.icon(x.removed ? 'refresh' : 'trash');
         s.remove.dataset.tip = x.removed ? '되살리기' : '이 조각 빼기';
         s.remove.setAttribute('aria-label', s.remove.dataset.tip);
-    }
-
-    // ---------- chip picker for one piece (feature-detects App.chipset) ----------
-    let chipPop = null;
-
-    function openChipPicker(anchor, path, start) {
-        const C = App.chipset;
-        if (!C?.list) return;
-        chipPop?.close();
-        const all = C.list() || [];
-        const input = h('input', { class: 'input sm', type: 'text', placeholder: '칩 이름 · 초성으로도 찾아요', spellcheck: 'false' });
-        const list = h('div', { class: 'vw-chip-list', role: 'listbox' });
-        let active = 0;
-        let rows = [];
-        const current = () => piecesOf(path).find((y) => Math.abs(y.start - start) < 0.0005);
-        const toggle = (id) => {
-            const x = current();
-            if (!x) return;
-            const has = x.chips.includes(id);
-            setPieceInfo(path, start, { chips: has ? x.chips.filter((c) => c !== id) : [...x.chips, id] }, { label: has ? '조각 칩 빼기' : '조각 칩 붙이기' });
-            draw();
-        };
-        const draw = () => {
-            const q = input.value.trim();
-            const x = current();
-            rows = all
-                .map((c) => ({ c, m: q ? (C.match ? C.match(q, c.label || c.name) : App.util.matchKo(q, c.label || c.name)) : { score: 0 } }))
-                .filter((r) => r.m)
-                .sort((a, b) => (b.m.score || 0) - (a.m.score || 0))
-                .slice(0, 9)
-                .map((r) => r.c);
-            active = clamp(active, 0, Math.max(0, rows.length - 1));
-            list.textContent = '';
-            if (!rows.length) {
-                list.append(h('div', { class: 'vw-chip-empty', text: all.length ? '맞는 칩이 없어요' : '아직 칩이 없어요. 칩 패널에서 먼저 만들어 주세요.' }));
-                return;
-            }
-            rows.forEach((c, i) => {
-                const on = !!x?.chips.includes(c.id);
-                list.append(h('button', {
-                    class: `vw-chip-opt${i === active ? ' is-active' : ''}${on ? ' is-on' : ''}`,
-                    role: 'option',
-                    'aria-selected': on ? 'true' : 'false',
-                    onmousedown: (e) => e.preventDefault(),
-                    onclick: () => toggle(c.id),
-                },
-                    h('span', { class: 'vw-chip-dot', style: `--c:${c.color ? `var(--label-${c.color})` : 'var(--accent)'}` }),
-                    h('span', { class: 'vw-chip-name truncate', text: c.label || c.name }),
-                    on ? h('span', { class: 'vw-chip-check', html: ui.icon('check', { size: 13 }) }) : null));
-            });
-        };
-        input.addEventListener('input', () => {
-            active = 0;
-            draw();
-        });
-        input.addEventListener('keydown', (e) => {
-            if (e.isComposing) return;
-            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                e.preventDefault();
-                active = clamp(active + (e.key === 'ArrowDown' ? 1 : -1), 0, Math.max(0, rows.length - 1));
-                draw();
-            } else if (e.key === 'Enter') {
-                e.preventDefault();
-                if (rows[active]) toggle(rows[active].id);
-            }
-        });
-        const box = h('div', { class: 'vw-chip-pop' }, input, list);
-        const pop = ui.popover(anchor, box, { above: true, align: 'end', class: 'vw-chip-popover', padding: '8px', onClose: () => {
-            if (chipPop === pop) chipPop = null;
-            V.root?.focus({ preventScroll: true });
-        } });
-        chipPop = pop;
-        draw();
-        requestAnimationFrame(() => input.focus());
     }
 
     // ---------- '편집됨' state in the control row ----------
@@ -843,6 +815,7 @@
             { keys: ['W'], label: '뒷부분 잘라내기' },
             { keys: [dk('Mod+B')], label: '자르기' },
             { keys: ['Delete'], label: '조각 빼기·되살리기' },
+            ...(App.chipsPicker ? [{ keys: ['#', '1–9'], label: '고른 조각에 칩 (없으면 만들기)' }] : []),
             { keys: ['P'], label: '편집본 미리보기' },
             ...(App.clips?.add ? [{ keys: ['G'], label: '보관함에 담기' }] : []),
             { keys: [dk('Mod+Z')], label: '되돌리기' },
@@ -883,7 +856,6 @@
     // Events
     // =====================================================================================================
     App.bus.on('viewer:entry', ({ entry }) => {
-        chipPop?.close();
         disposeStrip();
         if (sel && sel.path !== entry?.path) sel = null;
     });
@@ -1002,8 +974,10 @@
             return hintMode;
         },
         hints,
+        chipTarget,
         _stats: stats,
         _piecesFrom: piecesFrom,
         _editFrom: editFrom,
     };
+    App.chipset?.setPieceProvider?.(chipTarget);
 })();

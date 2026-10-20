@@ -1,5 +1,7 @@
 /*
- * '#' chip picker — a spotlight over the selection (gallery) or the photo on screen (viewer).
+ * '#' chip picker — a spotlight over the selection (gallery) or the photo on screen (viewer). In the viewer, while a
+ * video piece is selected (App.chipset.pieceTarget()), it tags that piece; the head says which, and a button switches
+ * between the piece and the whole file.
  * Fuzzy-matches every chip of the active preset, listed as '분류 › 칩 › 하위', by name and by Hangul initials
  * (ㄱㅅㅎ → 김수현), with tri-state marks for the target files.
  *   Enter        toggle the chip on every target file (one undo entry, centered HUD)
@@ -23,11 +25,13 @@
         return [...cats.filter((c) => c.mode === 'search'), ...cats.filter((c) => c.mode !== 'search')];
     }
 
+    /** args: { catId, returnFocus (element to focus after closing) } */
     function open(scope, args = {}) {
         const C = App.chipset;
         if (!C?.ready) return;
-        const files = C.targetFiles(scope);
-        if (!files.length) {
+        const piece = scope === 'viewer' ? C.pieceTarget?.() || null : null;
+        const files = piece ? [] : C.targetFiles(scope);
+        if (!piece && !files.length) {
             C.hud('칩을 붙일 파일을 먼저 선택해 주세요', { kind: 'info', sub: '사진이나 영상을 고른 뒤 # 을 눌러요' });
             return;
         }
@@ -35,11 +39,53 @@
         const targets = createTargets(C);
         let ti = targets.findIndex((c) => c.id === (args.catId || App.settings.get('chips.pickerCreateCat')));
         if (ti < 0) ti = 0;
-        s = { scope, files, active: 0, rows: [], targets, ti, prevFocus: document.activeElement };
+        s = { scope, files, piece, active: 0, rows: [], targets, ti, prevFocus: args.returnFocus || document.activeElement };
         build();
         App.layers.push('dialog');
         update();
         s.input.focus();
+    }
+
+    // What the chips go on: the selected piece, the file on screen (viewer) or the selected files
+    function paintTarget() {
+        const C = App.chipset;
+        const piece = s.piece;
+        s.countEl.innerHTML = `${icon(piece ? 'scissors' : 'layers', 12)}<span></span>`;
+        s.countEl.lastChild.textContent = piece ? `${piece.label} · ${piece.range}` : s.scope === 'viewer' ? '보고 있는 파일' : `${formatCount(s.files.length)}개 파일`;
+        const other = s.scope !== 'viewer' ? null : piece ? 'file' : C.pieceTarget?.() ? 'piece' : null;
+        s.switchBtn.hidden = !other;
+        s.switchBtn.textContent = other === 'file' ? '영상 전체로' : '조각으로';
+        s.switchBtn.dataset.tip = other === 'file' ? '이 조각 말고 영상 파일 전체에 붙여요' : '고른 조각에 붙여요';
+    }
+
+    function switchTarget() {
+        const C = App.chipset;
+        if (s.piece) {
+            s.piece = null;
+            s.files = C.targetFiles('viewer');
+        } else {
+            const t = C.pieceTarget?.();
+            if (!t) return;
+            s.piece = t;
+            s.files = [];
+        }
+        paintTarget();
+        update();
+        s.input.focus();
+    }
+
+    // Cuts can change under the open picker (Ctrl+Z with an empty query): follow the selected piece, or fall back to the
+    // whole file when the piece is gone
+    function refreshPiece() {
+        if (!s?.piece) return;
+        const C = App.chipset;
+        const t = C.pieceTarget?.();
+        if (t) s.piece = t;
+        else if (s.piece.valid && !s.piece.valid()) {
+            s.piece = null;
+            s.files = C.targetFiles('viewer');
+        }
+        paintTarget();
     }
 
     function close() {
@@ -66,20 +112,24 @@
         });
         const list = h('div', { class: 'chip-picker-list', id: 'chip-picker-list', role: 'listbox' });
         const foot = h('div', { class: 'chip-picker-foot' });
-        const target = s.scope === 'viewer' ? '보고 있는 파일' : `${formatCount(s.files.length)}개 파일`;
+        const countEl = h('span', { class: 'chip-picker-count' });
+        const switchBtn = h('button', { type: 'button', class: 'btn ghost sm chip-picker-switch', hidden: true, onmousedown: (e) => e.preventDefault(), onclick: () => switchTarget() });
         const box = h('div', { class: 'chip-picker', role: 'dialog', 'aria-label': '칩 고르기' },
             h('div', { class: 'chip-picker-head' },
                 h('span', { class: 'chip-picker-hash', text: '#' }),
                 input,
-                h('span', { class: 'chip-picker-count', html: `${icon('layers', 12)}<span></span>` })),
+                countEl,
+                switchBtn),
             list,
             foot);
-        box.querySelector('.chip-picker-count span').textContent = target;
         root = h('div', { class: 'chip-picker-backdrop', id: 'chip-picker' }, box);
         document.body.append(root);
         s.input = input;
         s.list = list;
         s.foot = foot;
+        s.countEl = countEl;
+        s.switchBtn = switchBtn;
+        paintTarget();
         root.addEventListener('mousedown', (e) => {
             if (e.target === root) close();
         });
@@ -139,8 +189,8 @@
         }
         s.total = rows.length;
         s.rows = rows.slice(0, 150);
-        s.counts = C.counts(s.files);
-        s.n = s.files.length;
+        s.counts = s.piece ? C.countsFor(s.piece) : C.counts(s.files);
+        s.n = s.piece ? 1 : s.files.length;
         s.active = Math.max(0, Math.min(s.active, s.rows.length - 1));
         paint();
     }
@@ -275,8 +325,10 @@
         if (!r || !C?.ready) return;
         if (r.kind === 'create') {
             const target = s.targets[s.ti];
-            const id = C.createAndApply(target?.id || null, r.name, s.files);
+            const id = C.createAndApply(target?.id || null, r.name, s.piece || s.files);
             if (!id) return;
+        } else if (s.piece) {
+            C.applyPiece(s.piece, r.item.id, remove ? 'remove' : 'toggle');
         } else {
             C.apply(s.files, r.item.id, remove ? 'remove' : 'toggle');
         }
@@ -292,7 +344,7 @@
     }
 
     App.commands.register({ id: 'chips.picker', title: '칩 검색해서 고르기', group: '칩', icon: 'hash', keys: '#', when: () => App.fs.ready && !!App.chipset?.ready, run: (args) => open('main', args || {}) });
-    App.commands.register({ id: 'chips.picker.viewer', title: '칩 검색해서 고르기 (보기 화면)', group: '칩', icon: 'hash', keys: '#', scope: 'viewer', when: () => !!App.viewer?.isOpen && !!App.chipset?.ready, run: () => open('viewer') });
+    App.commands.register({ id: 'chips.picker.viewer', title: '칩 검색해서 고르기 (보기 화면 · 고른 조각)', group: '칩', icon: 'hash', keys: '#', scope: 'viewer', when: () => !!App.viewer?.isOpen && !!App.chipset?.ready, run: () => open('viewer') });
 
     App.register('chips-picker', {
         init() {
@@ -308,7 +360,9 @@
                 }
             });
             App.bus.on('catalog:changed', () => {
-                if (s) update();
+                if (!s) return;
+                refreshPiece();
+                update();
             });
         },
     });

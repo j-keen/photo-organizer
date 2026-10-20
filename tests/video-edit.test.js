@@ -181,14 +181,16 @@ module.exports = [
             await page.keyboard.press('Enter');
             assert.equal(await depth(page), d0 + 1, 'typing collapses into one undo step');
 
-            // chips through the picker (initials work)
+            // chips through the '#' picker, which targets the selected piece (initials work)
             await page.click('.vw-pstrip-addchip');
-            await page.waitForSelector('.vw-chip-pop input');
+            await page.waitForSelector('#chip-picker .chip-picker-input');
+            assert.match(await page.textContent('#chip-picker .chip-picker-count'), /조각 2\/2/);
             await page.keyboard.type('ㄱㅅ');
-            await page.waitForSelector('.vw-chip-opt');
+            await page.waitForFunction((id) => document.querySelector('#chip-picker .chip-picker-row.active')?.dataset.chip === id, chipId);
             await page.keyboard.press('Enter');
+            await page.waitForSelector('#chip-picker', { state: 'detached' });
             await page.waitForFunction((id) => App.catalog.get('clip.webm').meta.edit?.pieces?.['1.5']?.chips?.includes(id), chipId);
-            await page.keyboard.press('Escape');
+            assert.equal(await page.evaluate(() => (App.catalog.get('clip.webm').chips || []).length), 0, 'the piece got the chip, not the file');
             await page.waitForSelector('.vw-pstrip .vw-chip-pill:has-text("김수현")');
             assert.ok(await page.evaluate(() => document.querySelector('.vw-piece.is-selected').classList.contains('has-note')), 'pieces with a note get a dot on the bar');
 
@@ -219,6 +221,130 @@ module.exports = [
             assert.equal(await depth(page), d1 + 1);
             await page.keyboard.press('Control+z');
             await page.waitForFunction(() => App.catalog.get('clip.webm').meta.edit?.pieces?.['1.5']?.memo === '두 번째' && !App.catalog.get('clip.webm').memo);
+        },
+    },
+    {
+        name: 'chips made and put on a piece without leaving the viewer: # creates + tags the selected piece (one undo step), 1–9 and the chip drawer follow the piece, Esc goes back to the file, the drawer adds a category',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: { 'clip.webm': { video: { seconds: 3 } } } });
+            const pieceChips = (key) => page.evaluate((k) => App.catalog.get('clip.webm').meta.edit?.pieces?.[k]?.chips || [], key);
+            const fileChips = () => page.evaluate(() => App.catalog.get('clip.webm').chips || []);
+            await openVideo(page, 'clip.webm');
+            await seekTo(page, 1.5);
+            await page.keyboard.press('Control+b');
+            await page.waitForFunction(() => App.catalog.get('clip.webm').meta.edit?.cuts?.length === 1);
+            await clickBarAt(page, 2.2);
+            await page.waitForSelector('.vw-pstrip');
+
+            // No chips at all yet: '#' → a new name → Enter makes the chip and puts it on the selected piece
+            const d0 = await depth(page);
+            await page.keyboard.press('#');
+            await page.waitForSelector('#chip-picker .chip-picker-input');
+            assert.match(await page.textContent('#chip-picker .chip-picker-count'), /조각 2\/2/);
+            assert.equal(await page.textContent('#chip-picker .chip-picker-switch'), '영상 전체로');
+            await page.keyboard.type('하이라이트');
+            await page.waitForSelector('#chip-picker .chip-picker-row.create.active');
+            await page.keyboard.press('Enter');
+            await page.waitForSelector('#chip-picker', { state: 'detached' });
+            const id = await page.evaluate(() => App.chipset.list().find((c) => c.name === '하이라이트')?.id);
+            assert.ok(id, 'the chip was created in the viewer');
+            assert.deepEqual(await pieceChips('1.5'), [id]);
+            assert.deepEqual(await fileChips(), [], 'the file itself is untouched');
+            assert.equal(await depth(page), d0 + 1, 'making the chip and tagging the piece is one undo step');
+            assert.match(await page.textContent('#chip-hud'), /조각 2\/2에 붙였어요/);
+            await page.waitForSelector('.vw-pstrip .vw-chip-pill:has-text("하이라이트")');
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => !App.chipset.list().length && !(App.catalog.get('clip.webm').meta.edit?.pieces?.['1.5']?.chips || []).length);
+            await page.keyboard.press('Control+y');
+            await page.waitForFunction((x) => (App.catalog.get('clip.webm').meta.edit?.pieces?.['1.5']?.chips || []).includes(x), id);
+
+            // Digit hotkeys tag the selected piece; once Esc lets go of the piece they tag the file
+            await page.evaluate((x) => App.chipset.setHotkey(x, 1), id);
+            await page.keyboard.press('1');
+            await page.waitForFunction(() => !(App.catalog.get('clip.webm').meta.edit?.pieces?.['1.5']?.chips || []).length);
+            await page.keyboard.press('1');
+            await page.waitForFunction((x) => (App.catalog.get('clip.webm').meta.edit?.pieces?.['1.5']?.chips || []).includes(x), id);
+            assert.deepEqual(await fileChips(), []);
+            await page.keyboard.press('Escape');
+            await page.waitForSelector('.vw-pstrip', { state: 'detached' });
+            assert.ok(await page.isVisible('#viewer'), 'Esc only let go of the piece');
+            await page.keyboard.press('1');
+            await page.waitForFunction((x) => (App.catalog.get('clip.webm').chips || []).includes(x), id);
+            assert.deepEqual(await pieceChips('1.5'), [id], 'the piece keeps its own chip');
+
+            // The chip drawer follows the selection: a piece → that piece
+            await page.click('.chip-vw-btn');
+            await page.waitForSelector('.chip-drawer:not([hidden]) .chip-panel.compact');
+            assert.equal(await page.locator('.chip-drawer .chip-target.piece').count(), 0, 'nothing selected → the drawer tags the file');
+            await clickBarAt(page, 0.7);
+            await page.waitForSelector('.chip-drawer .chip-target.piece');
+            assert.match(await page.textContent('.chip-drawer .chip-target.piece'), /조각 1\/2/);
+            await page.click(`.chip-drawer .chip[data-chip="${id}"]`);
+            await page.waitForFunction((x) => (App.catalog.get('clip.webm').meta.edit?.pieces?.['0']?.chips || []).includes(x), id);
+
+            // A new category right from the drawer: the dialog, then its chips are typed in the drawer
+            await page.click('.chip-drawer .chip-compact-foot [data-action="add-category"]');
+            await page.waitForSelector('.dialog .chip-dialog');
+            await page.keyboard.type('장르');
+            await page.click('.dialog button:has-text("만들기")');
+            await page.waitForSelector('.chip-drawer .chip-add-input');
+            await page.waitForFunction(() => document.activeElement?.classList.contains('chip-add-input') && !!document.activeElement.closest('.chip-drawer'));
+            await page.keyboard.type('액션, 드라마');
+            await page.keyboard.press('Enter');
+            await page.waitForFunction(() => ['액션', '드라마'].every((n) => App.chipset.list().some((c) => c.name === n && c.catName === '장르')));
+            await page.keyboard.press('Escape');
+            const action = await page.evaluate(() => App.chipset.list().find((c) => c.name === '액션').id);
+            await page.click(`.chip-drawer .chip[data-chip="${action}"]`);
+            await page.waitForFunction((x) => (App.catalog.get('clip.webm').meta.edit?.pieces?.['0']?.chips || []).includes(x), action);
+            assert.ok(await page.isVisible('#viewer'), 'never left the viewer');
+        },
+    },
+    {
+        name: "viewer piece chips: undoing the cut under the open # picker falls back to the whole file; the strip's × follows the chip rules (a parent takes its sub-chip along)",
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: { 'clip.webm': { video: { seconds: 3 } } } });
+            const ids = await page.evaluate(() => {
+                const C = App.chipset;
+                const cat = C.addCategory({ name: '인물' });
+                const parent = C.addChips(cat.id, ['배우A'])[0];
+                const sub = C.addChips(cat.id, ['무대'], { parentId: parent.id })[0];
+                return { parent: parent.id, sub: sub.id };
+            });
+            const pieceChips = () => page.evaluate(() => App.catalog.get('clip.webm').meta.edit?.pieces?.['1.5']?.chips || []);
+            const cutAndPick = async () => {
+                await seekTo(page, 1.5);
+                await page.keyboard.press('Control+b');
+                await page.waitForFunction(() => App.catalog.get('clip.webm').meta.edit?.cuts?.length === 1);
+                await clickBarAt(page, 2.2);
+                await page.waitForSelector('.vw-pstrip');
+            };
+            await openVideo(page, 'clip.webm');
+            await cutAndPick();
+
+            // Ctrl+Z (empty query) inside the picker undoes the cut: the piece is gone, so the picker tags the file
+            await page.keyboard.press('#');
+            await page.waitForSelector('#chip-picker .chip-picker-input');
+            assert.match(await page.textContent('#chip-picker .chip-picker-count'), /조각 2\/2/);
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => !App.catalog.get('clip.webm').meta.edit);
+            await page.waitForFunction(() => /보고 있는 파일/.test(document.querySelector('#chip-picker .chip-picker-count')?.textContent || ''));
+            await page.keyboard.type('메모용');
+            await page.waitForSelector('#chip-picker .chip-picker-row.create.active');
+            await page.keyboard.press('Enter');
+            await page.waitForSelector('#chip-picker', { state: 'detached' });
+            await page.waitForFunction(() => (App.catalog.get('clip.webm').chips || []).length === 1);
+
+            // A sub-chip brings its parent along; the strip's × on the parent takes both off (one undo step)
+            await cutAndPick();
+            await page.evaluate((id) => App.chipset.applyPiece(App.chipset.pieceTarget(), id, 'add'), ids.sub);
+            await page.waitForFunction((x) => ['parent', 'sub'].every((k) => (App.catalog.get('clip.webm').meta.edit?.pieces?.['1.5']?.chips || []).includes(x[k])), ids);
+            const d0 = await depth(page);
+            await page.click('.vw-pstrip .vw-chip-pill:has-text("배우A") .vw-chip-x');
+            await page.waitForFunction(() => !(App.catalog.get('clip.webm').meta.edit?.pieces?.['1.5']?.chips || []).length);
+            assert.equal(await depth(page), d0 + 1);
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => (App.catalog.get('clip.webm').meta.edit?.pieces?.['1.5']?.chips || []).length === 2);
+            assert.deepEqual((await pieceChips()).sort(), [ids.parent, ids.sub].sort());
         },
     },
     {

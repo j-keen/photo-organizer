@@ -18,7 +18,10 @@
  *   apply(pathsOrEntries, id, 'toggle'|'add'|'remove', { hud }) -> { mode, changed, total }   (ONE undo entry)
  *   addCategory, addChips, renameChip, renameCategory, setCategory, moveChip, moveCategory, moveChipTo,
  *   removeChip, removeCategory, mergeChip, setHotkey, hotkeyOf, createPreset, renamePreset, movePreset, deletePreset,
- *   createAndApply(catId, name, files)
+ *   createAndApply(catId, name, files | pieceTarget)
+ *   pieceTarget() -> the viewer's selected video piece as a chip target, or null (provider: setPieceProvider(fn), set by
+ *     video-edit.js) · countsFor(files | pieceTarget) · applyPiece(pieceTarget, id, mode, { hud }) (ONE undo entry)
+ *     While a piece is selected in the viewer, the digit hotkeys tag the piece instead of the file.
  *   transaction(label, fn(tx)) — structure + per-file changes as ONE undo entry
  * Undo: every edit above is exactly ONE App.undo entry (whole-document snapshots for the structure, before/after
  *   values for files). Catalog writes pass { undoable: false } so a catalog that records undo never doubles them.
@@ -476,15 +479,13 @@
         return out;
     }
 
-    // ---------- Applying chips to files ----------
-    function apply(targets, id, mode = 'toggle', { hud: showHud = true } = {}) {
-        const i = byId.get(id);
-        const paths = toFilePaths(targets);
-        if (!i || !doc || !paths.length) return { mode, changed: 0, total: paths.length };
+    /**
+     * What adding / removing chip `id` does to one chip list: a sub-chip brings its parent along, removing a parent takes
+     * its sub-chips, and in a single-choice category one top-level chip (with its subs) pushes the others out.
+     */
+    function chipEditor(i, id, mode) {
         const parentId = i.parent ? i.parent.id : null;
         const childIds = i.parent ? [] : i.chip.children.map((c) => c.id);
-        if (mode === 'toggle') mode = paths.every((p) => chipsRaw(p).includes(id)) ? 'remove' : 'add';
-        // Single-choice category: adding one top-level chip (or one of its subs) drops the other chips of that category
         const top = parentId || id;
         const drop = new Set();
         if (mode === 'add' && i.cat.single) {
@@ -494,20 +495,27 @@
                 for (const s of c.children) drop.add(s.id);
             }
         }
+        return (cur) => {
+            if (mode !== 'add') return cur.filter((x) => x !== id && !childIds.includes(x));
+            const next = cur.filter((x) => !drop.has(x));
+            if (parentId && !next.includes(parentId)) next.push(parentId);
+            if (!next.includes(id)) next.push(id);
+            return next;
+        };
+    }
+
+    const sameIds = (a, b) => a.length === b.length && a.every((x, k) => x === b[k]);
+
+    // ---------- Applying chips to files ----------
+    function apply(targets, id, mode = 'toggle', { hud: showHud = true } = {}) {
+        const i = byId.get(id);
+        const paths = toFilePaths(targets);
+        if (!i || !doc || !paths.length) return { mode, changed: 0, total: paths.length };
+        if (mode === 'toggle') mode = paths.every((p) => chipsRaw(p).includes(id)) ? 'remove' : 'add';
+        const edit = chipEditor(i, id, mode);
         const verb = mode === 'add' ? '붙이기' : '떼기';
         const { changed } = transaction(`칩 ${verb} "${hudLabel(id)}"`, (tx) => {
-            for (const p of paths) {
-                const cur = tx.chipsOf(p);
-                let next;
-                if (mode === 'add') {
-                    next = cur.filter((x) => !drop.has(x));
-                    if (parentId && !next.includes(parentId)) next.push(parentId);
-                    if (!next.includes(id)) next.push(id);
-                } else {
-                    next = cur.filter((x) => x !== id && !childIds.includes(x));
-                }
-                tx.setChips(p, next);
-            }
+            for (const p of paths) tx.setChips(p, edit(tx.chipsOf(p)));
         });
         if (mode === 'add' && changed) rememberRecent(id);
         if (showHud) {
@@ -517,14 +525,72 @@
         return { mode, changed, total: paths.length };
     }
 
+    // ---------- A chip target other than files: the viewer's selected video piece ----------
+    // video-edit.js registers the provider. While a piece is selected, # · 1–9 · the chip drawer tag the piece.
+    // Piece target: { kind: 'piece', path, start, end, label ('조각 2/3'), range, chips() → ids, stage(tx, ids), flush() }
+    let pieceProvider = null;
+
+    function setPieceProvider(fn) {
+        pieceProvider = typeof fn === 'function' ? fn : null;
+    }
+
+    function pieceTarget() {
+        if (!pieceProvider || !App.viewer?.isOpen) return null;
+        try {
+            const t = pieceProvider();
+            return t && t.kind === 'piece' ? t : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    const isPiece = (t) => !!t && !Array.isArray(t) && t.kind === 'piece';
+
+    /** counts() for files, or for a piece target (each of its chips → 1) */
+    function countsFor(target) {
+        if (!isPiece(target)) return counts(toFilePaths(target));
+        const m = new Map();
+        for (const id of target.chips()) m.set(id, 1);
+        return m;
+    }
+
+    // The piece can be gone by the time a chip is chosen (an undone cut under the open picker …)
+    function pieceGone(t, showHud) {
+        if (!t.valid || t.valid()) return false;
+        if (showHud) hud('고른 조각이 바뀌었어요', { kind: 'info', sub: '재생바에서 조각을 다시 골라 주세요' });
+        return true;
+    }
+
+    /** apply() for a piece target — the same rules (parents, sub-chips, single-choice), ONE undo entry */
+    function applyPiece(t, id, mode = 'toggle', { hud: showHud = true } = {}) {
+        const i = byId.get(id);
+        if (!i || !doc || !isPiece(t)) return { mode, changed: 0, total: 0 };
+        t.flush?.();
+        if (pieceGone(t, showHud)) return { mode, changed: 0, total: 0 };
+        const cur = t.chips();
+        if (mode === 'toggle') mode = cur.includes(id) ? 'remove' : 'add';
+        const next = chipEditor(i, id, mode)(cur);
+        const verb = mode === 'add' ? '붙이기' : '떼기';
+        const changed = sameIds(cur, next) ? 0 : transaction(`조각 칩 ${verb} "${hudLabel(id)}"`, (tx) => t.stage(tx, next)).changed;
+        if (mode === 'add' && changed) rememberRecent(id);
+        if (showHud) {
+            if (!changed) hud(mode === 'add' ? '이미 붙어 있어요' : '떼어 낼 칩이 없어요', { kind: 'info', sub: `${hudLabel(id)} · ${t.label}` });
+            else hud(`${mode === 'add' ? '＋' : '－'} ${hudLabel(id)}`, { kind: mode, sub: `${t.label}${mode === 'add' ? '에 붙였어요' : '에서 뗐어요'}` });
+        }
+        return { mode, changed, total: 1 };
+    }
+
     /**
-     * Create a chip (in catId, or in a new search-type category "태그" when there is none) and put it on the files —
-     * ONE undo entry. Reuses an existing chip with the same name. Returns the chip id.
+     * Create a chip (in catId, or in a new search-type category "태그" when there is none) and put it on the files or
+     * on a piece target — ONE undo entry. Reuses an existing chip with the same name. Returns the chip id.
      */
     function createAndApply(catId, name, targets, { hud: showHud = true } = {}) {
         const n = cleanName(name);
         if (!doc || !n) return null;
-        const paths = toFilePaths(targets);
+        const piece = isPiece(targets) ? targets : null;
+        const paths = piece ? [] : toFilePaths(targets);
+        piece?.flush?.();
+        if (piece && pieceGone(piece, showHud)) return null;
         let id = null;
         transaction(`칩 만들고 붙이기 "${n}"`, (tx) => {
             let cat = catId ? findCat(tx.preset, catId) : null;
@@ -546,10 +612,17 @@
                 if (!cur.includes(id)) cur.push(id);
                 tx.setChips(p, cur);
             }
+            if (piece) {
+                const before = piece.chips();
+                const next = before.filter((x) => !drop.has(x));
+                if (!next.includes(id)) next.push(id);
+                if (!sameIds(before, next)) piece.stage(tx, next);
+            }
         });
         if (id) {
-            if (paths.length) rememberRecent(id);
-            if (showHud) hud(`＋ ${hudLabel(id)}${paths.length > 1 ? ` — ${formatCount(paths.length)}개` : ''}`, { kind: 'add', sub: paths.length ? '새 칩을 만들어 붙였어요' : '새 칩을 만들었어요' });
+            if (paths.length || piece) rememberRecent(id);
+            const sub = piece ? `새 칩을 만들어 ${piece.label}에 붙였어요` : paths.length ? '새 칩을 만들어 붙였어요' : '새 칩을 만들었어요';
+            if (showHud) hud(`＋ ${hudLabel(id)}${paths.length > 1 ? ` — ${formatCount(paths.length)}개` : ''}`, { kind: 'add', sub });
         }
         return id;
     }
@@ -985,6 +1058,11 @@
             hud(`${digit}번 칩 단축키가 비어 있어요`, { kind: 'info', sub: '칩을 우클릭해서 [단축키 지정]을 골라 보세요' });
             return;
         }
+        const piece = scope === 'viewer' ? pieceTarget() : null;
+        if (piece) {
+            applyPiece(piece, id, 'toggle');
+            return;
+        }
         const files = targetFiles(scope);
         if (!files.length) {
             hud('칩을 붙일 파일을 먼저 선택해 주세요', { kind: 'info', sub: hudLabel(id) });
@@ -1044,6 +1122,10 @@
         targetFiles,
         apply,
         createAndApply,
+        pieceTarget,
+        setPieceProvider,
+        countsFor,
+        applyPiece,
         addCategory,
         addChips,
         addChip: (catId, name, opts) => addChips(catId, [name], opts)[0] || null,

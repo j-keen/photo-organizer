@@ -5,7 +5,8 @@
  *   Multi-selection shows tri-state chips (on / mixed "3/5" / off); one click = one undo entry for all files.
  * Also here: category / chip / preset menus and dialogs, gallery card badge + context menu, copy/paste chips.
  *
- * App.chipsPanel.render(host, { key, files, entries, compact }) — render a panel into any element
+ * App.chipsPanel.render(host, { key, files, entries, compact, piece }) — render a panel into any element.
+ *   piece: a chip target from App.chipset.pieceTarget() (the viewer's selected video piece) — clicks tag the piece.
  */
 (() => {
     'use strict';
@@ -71,10 +72,11 @@
         }
         const preset = C.active();
         const files = opts.files || [];
-        const n = files.length;
-        const counts = C.counts(files);
+        const piece = opts.piece || null;
+        const n = piece ? 1 : files.length;
+        const counts = piece ? C.countsFor(piece) : C.counts(files);
         // A different selection starts clean (no "just tagged" sub-row)
-        const filesKey = `${n}|${files[0] || ''}|${files[n - 1] || ''}`;
+        const filesKey = `${n}|${files[0] || ''}|${files[files.length - 1] || ''}|${piece ? piece.start : ''}`;
         if (st.filesKey !== filesKey) {
             st.filesKey = filesKey;
             st.lastChip = null;
@@ -94,7 +96,7 @@
         if (!opts.compact) panel.append(renderHead(preset));
         const target = targetLine(ctx);
         if (target) panel.append(target);
-        const legacy = legacyBanner(ctx);
+        const legacy = piece ? null : legacyBanner(ctx);
         if (legacy) panel.append(legacy);
         if (!preset.categories.length) {
             panel.append(emptyState());
@@ -109,7 +111,8 @@
             panel.append(h('div', { class: 'chip-compact-foot' },
                 h('button', { type: 'button', class: 'btn ghost sm', dataset: { action: 'preset-menu' }, html: `${icon('layers', 13)}<span class="truncate"></span>${icon('chevron-down', 12)}` }),
                 h('span', { class: 'grow' }),
-                h('button', { type: 'button', class: 'btn ghost sm', dataset: { action: 'picker' }, 'data-tip': '칩 검색해서 고르기', 'data-tip-keys': '#', html: `${icon('hash', 13)}<span>찾기</span>` })));
+                h('button', { type: 'button', class: 'btn ghost sm', dataset: { action: 'add-category' }, 'data-tip': '분류 추가 (배우, 장르처럼)', html: `${icon('plus', 13)}<span>분류</span>` }),
+                h('button', { type: 'button', class: 'btn ghost sm', dataset: { action: 'picker' }, 'data-tip': '칩 찾기 · 없는 이름은 Enter로 새로 만들어요', 'data-tip-keys': '#', html: `${icon('hash', 13)}<span>찾기</span>` })));
             panel.querySelector('.chip-compact-foot .truncate').textContent = preset.name;
         }
         return panel;
@@ -130,6 +133,12 @@
     }
 
     function targetLine(ctx) {
+        const piece = ctx.opts.piece;
+        if (piece) {
+            const el = h('div', { class: 'chip-target piece', html: `${icon('scissors', 13)}<span></span>` });
+            el.lastChild.textContent = `${piece.label} (${piece.range})에 붙여요 — 영상 전체에 붙이려면 Esc`;
+            return el;
+        }
         const entries = ctx.opts.entries || [];
         const dirs = entries.filter((e) => e.kind === 'dir').length;
         let text = '';
@@ -374,8 +383,8 @@
             box.append(list);
         }
         const opts = panel._opts;
-        const counts = C.counts(opts.files || []);
-        const n = (opts.files || []).length;
+        const counts = opts.piece ? C.countsFor(opts.piece) : C.counts(opts.files || []);
+        const n = opts.piece ? 1 : (opts.files || []).length;
         const items = searchItems(cat, q);
         const clean = C.cleanName(q);
         const exact = cat.chips.some((ch) => C.normKey(ch.name) === C.normKey(clean));
@@ -427,11 +436,13 @@
         let id = null;
         if (row.kind === 'create') {
             try {
-                id = C.createAndApply(catId, row.name, files);
+                id = C.createAndApply(catId, row.name, opts.piece || files);
             } catch (e) {
                 ui.toast(e.message, { type: 'warning' });
                 return;
             }
+        } else if (opts.piece) {
+            C.applyPiece(opts.piece, row.chip.id, remove ? 'remove' : 'toggle');
         } else {
             id = row.chip.id;
             if (!files.length) {
@@ -573,8 +584,14 @@
         const chip = e.target.closest('.chip[data-chip]');
         if (chip) {
             chipClicks++;
-            const files = liveOpts(panel).files || [];
+            const live = liveOpts(panel);
+            const files = live.files || [];
             const id = chip.dataset.chip;
+            if (live.piece) {
+                const res = C.applyPiece(live.piece, id, chip.dataset.other ? 'remove' : 'toggle');
+                st.lastChip = res.mode === 'add' ? id : null;
+                return;
+            }
             if (!files.length) {
                 C.hud(opts.entries?.length ? '폴더에는 칩을 붙일 수 없어요' : '칩을 붙일 파일을 먼저 선택해 주세요', { kind: 'info', sub: C.hudLabel(id) });
                 return;
@@ -801,19 +818,30 @@
         }
     }
 
+    // Where new chips are typed: the chip drawer while the viewer is open (opened if needed), else the inspector
+    function addHost() {
+        if (App.viewer?.isOpen && App.chipsViewer) {
+            if (!App.chipsViewer.isOpen) App.chipsViewer.toggle(true);
+            return '.chip-panel[data-panel="drawer"]';
+        }
+        if (App.layout && !App.layout.isVisible('inspector')) App.layout.setPanel('inspector', true);
+        return '.chip-panel[data-panel="inspector"]';
+    }
+
     function startAdding(catId, parentId) {
         const C = cs();
         const cat = C.category(catId);
         if (!cat) return;
+        const host = addHost();
         if (cat.mode === 'search' && !parentId) {
             // 검색형: the search box doubles as the "new chip" field
-            if (App.layout && !App.layout.isVisible('inspector')) App.layout.setPanel('inspector', true);
-            requestAnimationFrame(() => document.querySelector(`.chip-panel[data-panel="inspector"] [data-search="${CSS.escape(catId)}"]`)?.focus());
+            requestAnimationFrame(() => document.querySelector(`${host} [data-search="${CSS.escape(catId)}"]`)?.focus());
             return;
         }
         for (const st of states.values()) st.adding = { catId, parentId };
         rerenderAll();
-        requestAnimationFrame(() => document.querySelector('.chip-panel[data-panel="inspector"] .chip-add-input, .chip-panel .chip-add-input')?.focus());
+        // (one selector list would return the first match in document order — the inspector, hidden behind the viewer)
+        requestAnimationFrame(() => (document.querySelector(`${host} .chip-add-input`) || document.querySelector('.chip-panel .chip-add-input'))?.focus());
     }
 
     // ---------- Dialogs ----------
@@ -890,7 +918,6 @@
         if (!v) return;
         const cat = guard(() => C.addCategory(v));
         if (!cat) return;
-        if (App.layout && !App.layout.isVisible('inspector')) App.layout.setPanel('inspector', true);
         startAdding(cat.id, null);
     }
 

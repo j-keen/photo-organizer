@@ -76,7 +76,8 @@
     flex: none;
 }
 
-.chip-target.multi {
+.chip-target.multi,
+.chip-target.piece {
     background: var(--accent-soft);
     color: var(--accent-2);
     font-weight: 600;
@@ -919,6 +920,14 @@
     white-space: nowrap;
 }
 
+/* viewer: switch between the selected piece and the whole file */
+.chip-picker-switch {
+    flex: none;
+    margin-left: -4px;
+    font-size: var(--fs-xs);
+    white-space: nowrap;
+}
+
 .chip-picker-list {
     flex: 1;
     min-height: 0;
@@ -1360,6 +1369,12 @@
 /* While the drawer is open, keep the photo clear of it */
 #viewer.chip-drawer-open .vw-stage {
     right: 388px;
+}
+
+/* ... and the video controls + edit strip (centered on the whole viewer otherwise, half under the drawer) */
+#viewer.chip-drawer-open .vw-ctl {
+    left: calc(50% - 194px);
+    width: min(1060px, calc(100% - 420px));
 }
 
 @keyframes chip-drawer-in {

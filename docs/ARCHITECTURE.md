@@ -345,3 +345,20 @@ Stored in `.fluid-organizer/clips.json` via `App.wsdata` (`{ version: 1, clips: 
 
 **Workspace data** (§6) also holds `clips.json`, `dupes.json`, `dupes-log.json`, `lock.json`. Other drives: duplicates removed there go to
 `<root>\_중복정리\NNN_<name>` (log `정리기록.json`); external fingerprints live in `%APPDATA%\FluidIdentity\fingerprints.sqlite`.
+
+## 10. Viewer chips for pieces (2026-10-21, owner: '뷰어에서 만들 수 있게 해놔야 사용성이 좋지')
+
+Everything about chips works without leaving the viewer, and a selected video piece is a chip target of its own.
+- `App.chipset.pieceTarget()` → the viewer's selected piece, or null. Shape: `{ kind: 'piece', path, start, end, label ('조각 2/3' |
+  '잘라낸 부분'), range, chips() → ids, stage(tx, ids), flush() }`. The provider is registered by video-edit.js
+  (`App.chipset.setPieceProvider(App.videoEdit.chipTarget)`); `stage` patches the file's `meta` inside a chipset transaction, so
+  creating a chip + tagging the piece is ONE undo step.
+- `App.chipset.countsFor(files | piece)`, `applyPiece(piece, id, mode, { hud })` (same parent / sub-chip / single-choice rules as
+  `apply`, via the shared `chipEditor`), `createAndApply(catId, name, files | piece)`.
+- While a piece is selected: the viewer's digit hotkeys, the `#` picker (`App.chipsPicker.open('viewer', { returnFocus })`; the
+  head shows the target and switches 조각 ↔ 영상 전체) and the chip drawer (`App.chipsPanel.render(host, { …, piece })`) tag the
+  piece. Esc lets go of the piece → they tag the file again. The strip's '+ 칩' opens the same `#` picker.
+- Creating in the viewer: the picker makes a chip from any new name (a '태그' category when there is none); the drawer's compact
+  foot has '분류' (category dialog), and `startAdding` types new chips in the drawer while the viewer is open.
+- Piece chips stay piece chips: the sidebar chip filter and 칩별 정리 count FILE chips only (search finds piece chips; saving a
+  piece as a file or putting it in 보관함 carries them along).

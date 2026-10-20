@@ -2,6 +2,7 @@
  * Viewer integration: a '칩' button in the full-screen viewer's toolbar (App.viewer.toolbarItems) toggles a compact
  * chip drawer, so the owner can tag while looking at a photo full-screen. The drawer remembers whether it was open
  * and follows ←/→ to the next file. Digits 1–9 and '#' also work in the viewer (see chipset.js / chips-picker.js).
+ * While a video piece is selected on the seek bar (App.chipset.pieceTarget()), the drawer tags that piece instead.
  * Command: chips.drawer.viewer (Alt+C in the viewer).
  */
 (() => {
@@ -42,8 +43,9 @@
     function renderDrawer() {
         if (!drawer || drawer.hidden) return;
         const cur = current();
-        nameEl.textContent = cur ? cur.name : '';
-        App.chipsPanel.render(bodyEl, { key: 'drawer', files: cur ? [cur.path] : [], entries: cur ? [cur] : [], compact: true });
+        const piece = cur ? App.chipset?.pieceTarget?.() || null : null;
+        nameEl.textContent = cur ? (piece ? `${cur.name} · ${piece.label}` : cur.name) : '';
+        App.chipsPanel.render(bodyEl, { key: 'drawer', files: cur ? [cur.path] : [], entries: cur ? [cur] : [], compact: true, piece });
     }
 
     function syncButtons() {
@@ -107,6 +109,10 @@
                 if (!App.viewer?.isOpen) return;
                 syncButtons();
                 renderDrawer();
+            });
+            // Selecting a piece on the seek bar (or letting go of it) switches what the drawer tags
+            App.bus.on('viewer:piece-select', () => {
+                if (App.viewer?.isOpen) renderDrawer();
             });
         },
     });
