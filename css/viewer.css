@@ -843,6 +843,41 @@
     color: var(--accent-2);
 }
 
+/* several panels fit the file: tabs in the head (칩 | 메모 목록) */
+.vw-dock-title.has-tabs {
+    gap: 2px;
+    margin-left: -8px;
+}
+
+.vw-dock-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: var(--r);
+    background: transparent;
+    color: var(--text-3);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.vw-dock-tab .ico {
+    color: inherit;
+}
+
+.vw-dock-tab:hover {
+    background: var(--bg-2);
+    color: var(--text);
+}
+
+.vw-dock-tab.on {
+    background: var(--accent-soft);
+    color: var(--accent-2);
+}
+
 .vw-dock-body {
     flex: 1;
     min-height: 0;

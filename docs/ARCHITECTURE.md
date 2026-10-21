@@ -356,9 +356,18 @@ Everything about chips works without leaving the viewer, and a selected video pi
 - `App.chipset.countsFor(files | piece)`, `applyPiece(piece, id, mode, { hud })` (same parent / sub-chip / single-choice rules as
   `apply`, via the shared `chipEditor`), `createAndApply(catId, name, files | piece)`.
 - While a piece is selected: the viewer's digit hotkeys, the `#` picker (`App.chipsPicker.open('viewer', { returnFocus })`; the
-  head shows the target and switches 조각 ↔ 영상 전체) and the chip drawer (`App.chipsPanel.render(host, { …, piece })`) tag the
+  head shows the target and switches 조각 ↔ 영상 전체) and the chip panel (`App.chipsPanel.render(host, { …, piece })`) tag the
   piece. Esc lets go of the piece → they tag the file again. The strip's '+ 칩' opens the same `#` picker.
-- Creating in the viewer: the picker makes a chip from any new name (a '태그' category when there is none); the drawer's compact
-  foot has '분류' (category dialog), and `startAdding` types new chips in the drawer while the viewer is open.
+- Creating in the viewer: the picker makes a chip from any new name (a '태그' category when there is none); the panel's compact
+  foot has '분류' (category dialog), and `startAdding` types new chips in the panel while the viewer is open.
 - Piece chips stay piece chips: the sidebar chip filter and 칩별 정리 count FILE chips only (search finds piece chips; saving a
   piece as a file or putting it in 보관함 carries them along).
+- The viewer's chip panel is a DOCK panel (chips-viewer.js, `registerPanel({ id: 'chips', order: 10, closeOnEscape: false })`,
+  2026-10-22, owner: '팝업 말고 옆에 레이아웃으로 자리를 따로'): it has its own column right of the media (the stage, controls
+  and film strip make room; nothing floats over the photo). Opened by the top-bar '칩' button / Alt+C / its tab; setting
+  `chips.drawer` remembers it through `viewer:panel` (opening it in any way → on; closing the dock by hand → off; tab switches,
+  photo/video changes and closing the viewer leave it). When on, it takes the dock on `viewer:entry` if nothing else is there.
+  It has no `hints()`, so the hint row keeps the photo/video keys.
+- Viewer dock (viewer.js): panels fitting the file (`kinds`, sorted by `order`) show as TABS in the dock head (video: 칩 |
+  메모 목록); a panel whose `kinds` don't fit the next file closes (reason 'kind'), e.g. 메모 목록 on a photo;
+  `onClose({ reason: 'user' | 'switch' | 'viewer' | 'kind' })`; event `viewer:panel` {id} / {id: null, closed, reason}.

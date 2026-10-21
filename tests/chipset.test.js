@@ -283,14 +283,32 @@ module.exports = [
             assert.ok(await page.isVisible('#viewer'), 'still in the viewer');
             await page.keyboard.press('Control+Alt+4');
             await page.waitForFunction(() => App.catalog.peek('c.png')?.rating === 4);
-            // Chip drawer from the viewer toolbar
+            // The chip panel has its own column in the viewer layout (the dock), not a box floating over the photo
             await page.click('.chip-vw-btn');
-            await page.waitForSelector('.chip-drawer:not([hidden]) .chip-panel.compact');
-            await page.click(`.chip-drawer .chip[data-chip="${ids['드라마']}"]`);
+            await page.waitForSelector('.vw-dock:not([hidden]) .chip-dock .chip-panel.compact');
+            const [stageBox, dockBox, stripBox] = await Promise.all(['.vw-stage-wrap', '.vw-dock', '.vw-bottom'].map((s) => page.locator(s).boundingBox()));
+            assert.ok(stageBox.x + stageBox.width <= dockBox.x + 1, 'the photo area ends where the chip panel starts');
+            assert.ok(dockBox.y + dockBox.height <= stripBox.y + 1, 'the panel sits above the film strip, never over it');
+            assert.ok(await page.evaluate(() => document.querySelector('.chip-vw-btn').classList.contains('active')));
+            await page.click(`.chip-dock .chip[data-chip="${ids['드라마']}"]`);
             await page.waitForFunction(() => App.catalog.peek('c.png')?.chips?.length === 1);
             await page.waitForFunction(() => document.querySelector('.chip-vw-btn .chip-vw-count').textContent === '1');
             await page.keyboard.press('ArrowRight');
-            await page.waitForFunction(() => document.querySelector('.chip-drawer-file').textContent === 'd-clip.webm');
+            await page.waitForFunction(() => document.querySelector('.chip-dock-file').textContent === 'd-clip.webm');
+            // a video: the same column offers the 메모 목록 tab too
+            await page.waitForSelector('.vw-dock-tab[data-panel="markers"]');
+            await page.click('.vw-dock-tab[data-panel="markers"]');
+            await page.waitForSelector('.vw-dock-body[data-panel="markers"]');
+            await page.click('.vw-dock-tab[data-panel="chips"]');
+            await page.waitForSelector('.vw-dock .chip-dock');
+            // Esc closes the viewer (the chip panel is a working panel); it's open again next time
+            await page.keyboard.press('Escape');
+            await page.waitForSelector('#viewer', { state: 'hidden' });
+            await page.keyboard.press('Enter');
+            await page.waitForSelector('#viewer:not([hidden]) .vw-dock .chip-dock');
+            await page.click('.vw-dock-head button[aria-label="패널 닫기"]');
+            await page.waitForSelector('.vw-dock', { state: 'hidden' });
+            assert.equal(await page.evaluate(() => App.settings.get('chips.drawer')), false, 'closing it is remembered');
             await page.keyboard.press('Escape');
             await page.waitForSelector('#viewer', { state: 'hidden' });
         },
@@ -540,6 +558,38 @@ module.exports = [
             assert.deepEqual(await names(page, 'a.png'), ['드라마', '로맨스']);
             assert.equal(await page.evaluate((id) => App.chipset.hotkeyOf(id), ids['김수현']), '2');
             assert.equal(await page.evaluate((id) => App.chipset.labelOf(id), ids['로맨스']), '장르 › 드라마 › 로맨스');
+        },
+    },
+    {
+        name: 'viewer chip panel in the dock: opening it from its tab is remembered; 메모 목록 steps out on a photo and the chip panel takes the column back',
+        async run({ openApp, assert, card }) {
+            const { page } = await openApp({ seed: SEED });
+            await setupChips(page);
+            const tabs = () => page.$$eval('.vw-dock-tab', (els) => els.map((el) => `${el.dataset.panel}${el.classList.contains('on') ? '*' : ''}`));
+            // a video with nothing in the dock: 메모 목록 first, then the 칩 tab opens the chip panel — and that is remembered
+            await (await card(page, 'd-clip.webm')).dblclick();
+            await page.waitForFunction(() => App.viewer.isOpen && App.viewer.player?.metaReady);
+            assert.equal(await page.locator('.vw-dock').isVisible(), false);
+            await page.keyboard.press('Shift+B');
+            await page.waitForSelector('.vw-dock-body[data-panel="markers"]');
+            assert.deepEqual(await tabs(), ['chips', 'markers*']);
+            await page.click('.vw-dock-tab[data-panel="chips"]');
+            await page.waitForSelector('.vw-dock .chip-dock');
+            assert.equal(await page.evaluate(() => App.settings.get('chips.drawer')), true, 'opened from the tab → remembered');
+            // 메모 목록 is for videos: on a photo it steps out and the chip panel (still wanted) takes the column
+            await page.keyboard.press('Shift+B');
+            await page.waitForSelector('.vw-dock-body[data-panel="markers"]');
+            await page.keyboard.press('PageUp'); // (← seeks inside a video)
+            await page.waitForFunction(() => App.viewer.current?.type === 'image');
+            await page.waitForSelector('.vw-dock-body[data-panel="chips"] .chip-dock');
+            assert.equal(await page.locator('.vw-dock-tab').count(), 0, 'a photo has one panel: a plain title, no tabs');
+            // closing the column by hand turns it off; the next file doesn't bring it back
+            await page.click('.vw-dock-head button[aria-label="패널 닫기"]');
+            await page.waitForSelector('.vw-dock', { state: 'hidden' });
+            assert.equal(await page.evaluate(() => App.settings.get('chips.drawer')), false);
+            await page.keyboard.press('ArrowLeft');
+            await page.waitForTimeout(300);
+            assert.equal(await page.locator('.vw-dock').isVisible(), false);
         },
     },
 ];

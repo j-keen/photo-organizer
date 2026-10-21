@@ -224,7 +224,7 @@ module.exports = [
         },
     },
     {
-        name: 'chips made and put on a piece without leaving the viewer: # creates + tags the selected piece (one undo step), 1–9 and the chip drawer follow the piece, Esc goes back to the file, the drawer adds a category',
+        name: 'chips made and put on a piece without leaving the viewer: # creates + tags the selected piece (one undo step), 1–9 and the chip panel (right-side column) follow the piece, Esc goes back to the file, the panel adds a category',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: { 'clip.webm': { video: { seconds: 3 } } } });
             const pieceChips = (key) => page.evaluate((k) => App.catalog.get('clip.webm').meta.edit?.pieces?.[k]?.chips || [], key);
@@ -272,29 +272,29 @@ module.exports = [
             await page.waitForFunction((x) => (App.catalog.get('clip.webm').chips || []).includes(x), id);
             assert.deepEqual(await pieceChips('1.5'), [id], 'the piece keeps its own chip');
 
-            // The chip drawer follows the selection: a piece → that piece
+            // The chip panel (right-side column) follows the selection: a piece → that piece
             await page.click('.chip-vw-btn');
-            await page.waitForSelector('.chip-drawer:not([hidden]) .chip-panel.compact');
-            assert.equal(await page.locator('.chip-drawer .chip-target.piece').count(), 0, 'nothing selected → the drawer tags the file');
+            await page.waitForSelector('.vw-dock:not([hidden]) .chip-dock .chip-panel.compact');
+            assert.equal(await page.locator('.chip-dock .chip-target.piece').count(), 0, 'nothing selected → the panel tags the file');
             await clickBarAt(page, 0.7);
-            await page.waitForSelector('.chip-drawer .chip-target.piece');
-            assert.match(await page.textContent('.chip-drawer .chip-target.piece'), /조각 1\/2/);
-            await page.click(`.chip-drawer .chip[data-chip="${id}"]`);
+            await page.waitForSelector('.chip-dock .chip-target.piece');
+            assert.match(await page.textContent('.chip-dock .chip-target.piece'), /조각 1\/2/);
+            await page.click(`.chip-dock .chip[data-chip="${id}"]`);
             await page.waitForFunction((x) => (App.catalog.get('clip.webm').meta.edit?.pieces?.['0']?.chips || []).includes(x), id);
 
-            // A new category right from the drawer: the dialog, then its chips are typed in the drawer
-            await page.click('.chip-drawer .chip-compact-foot [data-action="add-category"]');
+            // A new category right from the panel: the dialog, then its chips are typed in the panel
+            await page.click('.chip-dock .chip-compact-foot [data-action="add-category"]');
             await page.waitForSelector('.dialog .chip-dialog');
             await page.keyboard.type('장르');
             await page.click('.dialog button:has-text("만들기")');
-            await page.waitForSelector('.chip-drawer .chip-add-input');
-            await page.waitForFunction(() => document.activeElement?.classList.contains('chip-add-input') && !!document.activeElement.closest('.chip-drawer'));
+            await page.waitForSelector('.chip-dock .chip-add-input');
+            await page.waitForFunction(() => document.activeElement?.classList.contains('chip-add-input') && !!document.activeElement.closest('.chip-dock'));
             await page.keyboard.type('액션, 드라마');
             await page.keyboard.press('Enter');
             await page.waitForFunction(() => ['액션', '드라마'].every((n) => App.chipset.list().some((c) => c.name === n && c.catName === '장르')));
             await page.keyboard.press('Escape');
             const action = await page.evaluate(() => App.chipset.list().find((c) => c.name === '액션').id);
-            await page.click(`.chip-drawer .chip[data-chip="${action}"]`);
+            await page.click(`.chip-dock .chip[data-chip="${action}"]`);
             await page.waitForFunction((x) => (App.catalog.get('clip.webm').meta.edit?.pieces?.['0']?.chips || []).includes(x), action);
             assert.ok(await page.isVisible('#viewer'), 'never left the viewer');
         },

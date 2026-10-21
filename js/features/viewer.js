@@ -15,9 +15,11 @@
  *   changeTransform(paths, (t) => t', label)         — undoable orientation change (one Ctrl+Z)
  *   setRotation(path, rot), rotate(±90), flip('h'|'v'), resetTransform(), applyTransformVars(el, t) (thumbnails)
  *   registerRenderer(type, { mount(ctx) -> instance }), registerPanel({ id, title, icon, keys, render, ... })
+ *     — dock panels share ONE column right of the media; the ones fitting the file (def.kinds, default all) are tabs
  *   togglePanel(id, force), isPanelOpen(id), osd(text, {icon}), refreshChrome(), freeze(path)
  * Events: 'viewer:entry' {entry, index, count} (current file changed, before it loads),
- *         'viewer:shown' {entry, media}, 'viewer:closing' {path}, 'viewer:closed' {path}
+ *         'viewer:shown' {entry, media}, 'viewer:closing' {path}, 'viewer:closed' {path},
+ *         'viewer:panel' {id} (a dock panel opened) / {id: null, closed, reason} (closed: 'user' | 'viewer' | 'kind')
  */
 (() => {
     'use strict';
@@ -291,7 +293,7 @@
         close() {
             if (!viewer.isOpen) return;
             const cur = viewer.current;
-            if (openPanel) closePanel();
+            if (openPanel) closePanel({ reason: 'viewer' });
             App.bus.emit('viewer:closing', { path: cur?.path });
             if (pending) destroyRec(pending);
             if (visible) destroyRec(visible);
@@ -393,7 +395,10 @@
             renderers.set(type, renderer);
         },
 
-        /** panel: { id, title, icon, keys, toolbar, render(body, ctx) -> cleanup?, onEntry?(entry), hints?() } */
+        /**
+         * panel: { id, title, icon, keys, toolbar, kinds?: ['image'|'video'], order? (tab order, default 50), closeOnEscape?,
+         *          render(body, ctx) -> cleanup?, onEntry?(entry), onClose?({ reason }), hints?() (replace the hint row) }
+         */
         registerPanel(def) {
             panels.set(def.id, def);
         },
@@ -475,6 +480,8 @@
         const token = ++loadToken;
         updateChrome(entry);
         App.select.set([entry.path]);
+        // a panel made for another kind of file (메모 목록 → a photo) steps out; another panel may take the dock
+        if (openPanel && openPanel.def.kinds && !openPanel.def.kinds.includes(entry.type)) closePanel({ reason: 'kind' });
         App.bus.emit('viewer:entry', { entry, index, count: files.length });
 
         if (pending) destroyRec(pending);
@@ -567,6 +574,7 @@
             } catch (e) {
                 console.error('[viewer] panel onEntry failed', e);
             }
+            renderDockHead(); // photo ↔ video changes which tabs fit
         }
     }
 
@@ -804,13 +812,44 @@
     }
 
     // ---------- Dock panels (right side) ----------
+    // One column next to the media, part of the layout (never floating over it). Panels that fit the file on screen
+    // show as tabs in its head (e.g. 칩 | 메모 목록 for a video), so switching never hunts for a toolbar button.
+    function panelsFor(kind) {
+        return [...panels.values()].filter((p) => !p.kinds || p.kinds.includes(kind)).sort((a, b) => (a.order ?? 50) - (b.order ?? 50));
+    }
+
+    function renderDockHead() {
+        if (!openPanel) return;
+        const def = openPanel.def;
+        const list = panelsFor(viewer.current?.type);
+        dockTitle.innerHTML = '';
+        dockTitle.classList.toggle('has-tabs', list.length > 1 && list.includes(def));
+        if (!dockTitle.classList.contains('has-tabs')) {
+            dockTitle.innerHTML = `${icon(def.icon || 'info', { size: 15 })}<span>${escapeHtml(def.title)}</span>`;
+            return;
+        }
+        for (const p of list) {
+            const on = p === def;
+            dockTitle.append(h('button', {
+                type: 'button',
+                class: `vw-dock-tab${on ? ' on' : ''}`,
+                'aria-pressed': String(on),
+                'data-tip': p.title,
+                'data-tip-keys': p.keys || null,
+                dataset: { panel: p.id },
+                html: `${icon(p.icon || 'info', { size: 14 })}<span>${escapeHtml(p.title)}</span>`,
+                onmousedown: (e) => e.preventDefault(),
+                onclick: () => !on && showPanel(p.id),
+            }));
+        }
+    }
+
     function showPanel(id) {
         const def = panels.get(id);
         if (!def) return;
-        if (openPanel) closePanel({ silent: true });
+        if (openPanel) closePanel({ silent: true, reason: 'switch' });
         dock.hidden = false;
         root.classList.add('vw-has-dock');
-        dockTitle.innerHTML = `${icon(def.icon || 'info', { size: 15 })}<span>${escapeHtml(def.title)}</span>`;
         dockBody.innerHTML = '';
         dockBody.dataset.panel = id;
         let cleanup = null;
@@ -820,16 +859,23 @@
             console.error('[viewer] panel render failed', e);
         }
         openPanel = { def, cleanup };
+        renderDockHead();
         renderHints();
         refreshChrome();
         resizeAll();
+        App.bus.emit('viewer:panel', { id });
     }
 
-    function closePanel({ silent = false } = {}) {
+    /**
+     * reason (passed to def.onClose): 'user' (closed it), 'switch' (another panel took the dock), 'viewer' (viewer closed),
+     * 'kind' (the next file isn't a kind the panel is for)
+     */
+    function closePanel({ silent = false, reason = 'user' } = {}) {
         if (!openPanel) return;
+        const id = openPanel.def.id;
         try {
             if (typeof openPanel.cleanup === 'function') openPanel.cleanup();
-            openPanel.def.onClose?.();
+            openPanel.def.onClose?.({ reason });
         } catch (e) {
             console.error('[viewer] panel cleanup failed', e);
         }
@@ -842,6 +888,7 @@
             refreshChrome();
             resizeAll();
         }
+        if (reason !== 'switch') App.bus.emit('viewer:panel', { id: null, closed: id, reason });
     }
 
     function resizeAll() {

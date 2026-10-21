@@ -51,7 +51,7 @@
 
     // ---------- Rendering ----------
     function render(host, opts) {
-        const scroller = host.closest('.insp-zone-scroll, .chip-drawer-body');
+        const scroller = host.closest('.insp-zone-scroll, .vw-dock-body');
         const scrollTop = scroller ? scroller.scrollTop : 0;
         const focus = captureFocus(host);
         const panel = buildPanel(opts);

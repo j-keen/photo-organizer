@@ -1647,6 +1647,7 @@
         icon: 'vw-list-marker',
         keys: 'Shift+B',
         toolbar: true,
+        kinds: ['video'],
         render(body) {
             const refresh = () => renderMarkerPanel(body);
             refresh();
