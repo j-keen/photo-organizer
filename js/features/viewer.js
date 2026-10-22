@@ -1175,9 +1175,10 @@
             actionsEl = h('div', { class: 'vw-actions' });
             topEl = h('div', { class: 'vw-top' },
                 h('div', { class: 'vw-top-left' },
-                    btn('x', '닫기', 'Escape', () => App.commands.run('viewer.close'), { class: 'vw-close' }),
                     h('div', { class: 'vw-titles' }, titleEl, h('div', { class: 'vw-subline' }, counterEl, h('span', { class: 'vw-dot' }), subEl))),
-                h('div', { class: 'vw-top-right' }, toolsEl, actionsEl));
+                // closing the viewer sits at the far top-right, like a window (owner: the old top-left X was confused with the panel's)
+                h('div', { class: 'vw-top-right' }, toolsEl, actionsEl, h('span', { class: 'vw-sep' }),
+                    btn('x', '보기 화면 닫기', 'Escape', () => App.commands.run('viewer.close'), { class: 'vw-close' })));
 
             stage = h('div', { class: 'vw-stage' });
             overlays = h('div', { class: 'vw-overlays' });
@@ -1190,7 +1191,8 @@
             dockBody = h('div', { class: 'vw-dock-body' });
             dock = h('aside', { class: 'vw-dock', hidden: true },
                 h('div', { class: 'vw-dock-head' }, dockTitle, h('div', { class: 'grow' }),
-                    btn('x', '패널 닫기', null, () => closePanel(), { class: 'sm' })),
+                    // not an X: that one closes the viewer (top-right corner)
+                    btn('panel-right', '패널 닫기', null, () => closePanel(), { class: 'sm' })),
                 dockBody);
             mainEl = h('div', { class: 'vw-main' }, stageWrap, dock);
 
