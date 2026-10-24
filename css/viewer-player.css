@@ -709,3 +709,35 @@
         display: none;
     }
 }
+
+/* Keep the next-video card clear of the controls, including the selected-piece strip. */
+.vw-autonext {
+    position: absolute;
+    right: 20px;
+    bottom: var(--vw-autonext-bottom, 100px);
+    z-index: 6;
+    max-width: min(360px, calc(100% - 40px));
+    padding: 12px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r);
+    background: var(--bg-glass);
+    color: var(--text);
+    box-shadow: var(--sh-2);
+    backdrop-filter: blur(16px);
+    pointer-events: auto;
+    cursor: default;
+}
+
+.vw-autonext-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-sm);
+}
+
+.vw-autonext-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 8px;
+}
