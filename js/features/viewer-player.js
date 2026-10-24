@@ -1198,7 +1198,16 @@
                     this.vol,
                     h('span', { class: 'vw-sep' }),
                     h('div', { class: 'vw-ctl-group' }, this.editBtn, this.fsBtn)));
-            V.overlayEl.append(this.el);
+            this.idleFill = h('div', { class: 'vw-idle-progress-fill' });
+            this.idleProgress = h('div', { class: 'vw-idle-progress', hidden: true, 'aria-hidden': 'true' }, this.idleFill);
+            V.overlayEl.append(this.el, this.idleProgress);
+            // Observe the full bar so piece notes and responsive wrapping reserve their actual height.
+            this.sizeObserver = new ResizeObserver(() => {
+                const height = this.el.getBoundingClientRect().height;
+                V.root.style.setProperty('--vw-controls-height', `${height}px`);
+                requestAnimationFrame(() => this.player?.resize());
+            });
+            this.sizeObserver.observe(this.el);
             this.bindSeek();
             this.bindVolume();
             this.el.addEventListener('dblclick', (e) => e.stopPropagation());
@@ -1209,6 +1218,7 @@
             if (!this.el) return;
             this.player = player;
             this.el.hidden = !player;
+            this.idleProgress.hidden = !player;
             if (!player) return;
             this.update();
             this.updateBuffered();
@@ -1277,6 +1287,7 @@
             set(this.fsBtn, '_html', V.icon(fs ? 'vw-minimize' : 'maximize'));
             this.fsBtn.dataset.tip = fs ? '전체 화면 끝내기' : '전체 화면';
             this.el.classList.toggle('is-failed', !!p.failed);
+            this.idleProgress.hidden = !!p.failed;
         },
 
         // Cheap per-frame refresh: progress, knob and the clock.
@@ -1289,6 +1300,7 @@
             if (this._w !== w) {
                 this._w = w;
                 this.played.style.width = w;
+                this.idleFill.style.width = w;
                 this.knob.style.left = w;
             }
             const html = `<span class="vw-time-cur">${this.showRemaining && d ? fmt(t - d) : fmt(t)}</span><span class="vw-time-sep">/</span><span class="vw-time-dur">${d ? fmt(d) : '–:––'}</span>`;
@@ -1686,7 +1698,10 @@
     });
 
     App.bus.on('viewer:entry', ({ entry }) => {
-        if (entry.type !== 'video' && bar.el) bar.el.hidden = true;
+        if (entry.type !== 'video' && bar.el) {
+            bar.el.hidden = true;
+            bar.idleProgress.hidden = true;
+        }
         markerPop?.close();
     });
     App.bus.on('catalog:changed', ({ paths }) => {

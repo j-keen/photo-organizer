@@ -211,6 +211,11 @@
     overflow: hidden;
 }
 
+/* Reserve the measured bar plus its top and bottom breathing room. */
+#viewer[data-kind="video"].vw-controls-below:not(.vw-fs):not(.vw-slideshow) .vw-stage {
+    bottom: calc(var(--vw-controls-height, 72px) + 32px);
+}
+
 .vw-slot {
     position: absolute;
     inset: 0;

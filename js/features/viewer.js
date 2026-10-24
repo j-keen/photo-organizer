@@ -635,6 +635,8 @@
             }
         }
         root.dataset.kind = entry.type;
+        applyChromePrefs();
+        poke();
         const single = files.length < 2;
         navPrev.hidden = single;
         navNext.hidden = single;
@@ -776,6 +778,7 @@
     }
 
     function applyChromePrefs() {
+        root.classList.toggle('vw-controls-below', App.settings.get('viewer.controlsBelow', true) !== false);
         root.dataset.bg = App.settings.get('viewer.bg', 'auto');
         root.classList.toggle('vw-no-hints', !App.settings.get('viewer.hints', true));
         root.classList.toggle('vw-no-strip', !App.settings.get('viewer.filmstrip', true));
@@ -953,21 +956,24 @@
 
     function shouldAutoHide() {
         if (!viewer.isOpen) return false;
-        if (root.querySelector('.vw-top:hover, .vw-ctl:hover, .vw-strip:hover, .vw-dock:hover, .vw-info:hover, .vw-show-hud:hover')) return false;
-        if (document.querySelector('.menu, .dialog-backdrop')) return false;
-        if (root.querySelector('.vw-ctl:focus-within')) return false; // typing a piece memo
-        if (viewer.slideshow?.running) return true;
-        if (viewer.player?.playing) return true;
-        return !!document.fullscreenElement;
+        if (root.querySelector('.vw-top:hover, .vw-ctl:hover')) return false;
+        if (document.querySelector('.menu, .dialog-backdrop, .popover')) return false;
+        if (root.querySelector('.vw-ctl:focus-within')) return false; // keep the piece memo readable while typing
+        return viewer.kind === 'video' || !!viewer.slideshow?.running || root.classList.contains('vw-fs');
+    }
+
+    function scheduleIdle() {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+            if (shouldAutoHide()) root.classList.add('vw-idle');
+            else if (viewer.isOpen) scheduleIdle();
+        }, viewer.kind === 'video' && !viewer.player?.playing ? 4000 : IDLE_MS);
     }
 
     function poke() {
         if (!root) return;
         root.classList.remove('vw-idle');
-        clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => {
-            if (shouldAutoHide()) root.classList.add('vw-idle');
-        }, IDLE_MS);
+        scheduleIdle();
     }
 
     // ---------- Fullscreen ----------
@@ -1220,6 +1226,11 @@
 
             root.addEventListener('mousemove', poke, { passive: true });
             root.addEventListener('pointerdown', poke, { passive: true });
+            document.addEventListener('keydown', () => {
+                if (viewer.isOpen) poke();
+            }, true);
+            // Slideshow and fullscreen both change the available fit area through root classes.
+            new MutationObserver(resizeAll).observe(root, { attributes: true, attributeFilter: ['class'] });
             new ResizeObserver(() => {
                 visible?.inst?.resize?.();
                 pending?.inst?.resize?.();
@@ -1239,7 +1250,7 @@
             App.bus.on('workspace:closed', () => viewer.close());
             App.bus.on('settings:changed', ({ key }) => {
                 if (!viewer.isOpen) return;
-                if (key === 'viewer.filmstrip' || key === 'viewer.hints' || key === 'viewer.bg') {
+                if (key === 'viewer.controlsBelow' || key === 'viewer.filmstrip' || key === 'viewer.hints' || key === 'viewer.bg') {
                     applyChromePrefs();
                     refreshChrome();
                     resizeAll();

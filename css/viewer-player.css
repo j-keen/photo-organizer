@@ -86,6 +86,34 @@
     cursor: default;
 }
 
+#viewer[data-kind="video"].vw-controls-below:not(.vw-fs):not(.vw-slideshow) .vw-ctl {
+    width: calc(100% - 32px);
+    opacity: 1 !important;
+    pointer-events: auto;
+}
+
+.vw-idle-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: var(--line-2);
+    opacity: 0;
+    pointer-events: none;
+}
+
+.vw-idle-progress-fill {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+}
+
+#viewer.vw-idle.vw-fs .vw-idle-progress,
+#viewer.vw-idle.vw-slideshow .vw-idle-progress {
+    opacity: 1;
+}
+
 /* nothing to control when the format can't be played */
 .vw-ctl.is-failed {
     display: none;

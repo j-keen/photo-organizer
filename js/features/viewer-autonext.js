@@ -1,7 +1,8 @@
 /*
  * Viewer auto-next: viewer.autoNext (default true), persisted through App.settings.
  * Natural video/edit endings offer the next video in viewer.files without wrapping.
- * Contributes a checked viewer menu item; no additional public viewer API.
+ * Contributes a checked viewer menu item and the shared 'viewer' settings page, including viewer.controlsBelow
+ * (default true). No additional public viewer API.
  */
 (() => {
     'use strict';
@@ -153,26 +154,36 @@
         }
     }, true);
 
-    App.register('viewer-autonext', {
-        init() {
-            // Use a separate page so the editor team's settings remain independent.
-            if (typeof App.settingsUI?.registerPage !== 'function') return;
-            App.settingsUI.registerPage({
-                id: 'video-autonext',
-                title: '영상 이어 보기',
-                icon: 'play',
-                render(body) {
-                    const input = h('input', { type: 'checkbox', 'aria-label': '다 보면 다음 영상' });
-                    input.checked = App.settings.get(KEY, true) !== false;
-                    input.addEventListener('change', () => setEnabled(input.checked));
-                    body.append(h('label', {}, input, h('span', { text: '다 보면 다음 영상' })),
-                        h('p', { text: '영상을 다 보면 3초 뒤에 다음 영상을 재생해요.' }));
-                    const off = App.bus.on('settings:changed', ({ key }) => {
-                        if (key === KEY) input.checked = App.settings.get(KEY, true) !== false;
-                    });
-                    return off;
-                },
-            });
-        },
+    App.bus.on('app:ready', () => {
+        const S = App.settingsUI;
+        if (!S?.addPage || S.pages?.some?.((pg) => pg.id === 'viewer')) return;
+        S.addPage({
+            id: 'viewer',
+            title: '보기 화면',
+            icon: 'play',
+            order: 44,
+            desc: '영상 재생바와 이어 보기를 설정해요.',
+            render(body, kit) {
+                const g = kit.group('영상 보기', '편하게 영상을 볼 수 있도록 설정해요.');
+                const toggle = (key, label, desc) => {
+                    const control = kit.toggle({ key, fallback: true });
+                    // The kit writes the setting; capture its previous value for one global undo step.
+                    control.addEventListener('change', (event) => {
+                        const before = App.settings.get(key, true) !== false;
+                        const after = !!event.target.checked;
+                        if (before === after) return;
+                        App.undo.push({
+                            label,
+                            undo: () => App.settings.set(key, before),
+                            redo: () => App.settings.set(key, after),
+                        });
+                    }, true);
+                    g.body.append(kit.row({ label, desc, control }));
+                };
+                toggle(KEY, '다 보면 다음 영상', '영상을 다 보면 3초 뒤에 다음 영상을 재생해요.');
+                toggle('viewer.controlsBelow', '재생바를 영상 아래에 보여요', '일반 보기에서 재생바가 영상과 자막을 가리지 않아요.');
+                body.append(g.el);
+            },
+        });
     });
 })();
