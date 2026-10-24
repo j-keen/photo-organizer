@@ -108,14 +108,25 @@
     --cc: var(--accent);
 }
 
+/* A category reads as a heading bar (owner: names were hard to spot among the chips) — green, or the category's color */
 .chip-cat-head {
+    --hc: var(--success);
     display: flex;
     align-items: center;
     gap: 6px;
-    min-height: 22px;
-    margin-bottom: 7px;
+    min-height: 28px;
+    margin-bottom: 8px;
+    padding: 3px 6px 3px 10px;
+    border: 1px solid color-mix(in srgb, var(--hc) 40%, transparent);
+    border-left: 3px solid var(--hc);
+    border-radius: var(--r);
+    background: color-mix(in srgb, var(--hc) 14%, transparent);
     font-size: var(--fs-sm);
     color: var(--text-2);
+}
+
+.chip-cat.colored .chip-cat-head {
+    --hc: var(--cc);
 }
 
 .chip-cat-dot {
