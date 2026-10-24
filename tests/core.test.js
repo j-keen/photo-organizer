@@ -324,8 +324,13 @@ module.exports = [
         name: 'an empty JSON file (interrupted first write) is treated as missing',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: { ...SEED, '.fluid-organizer/chipsets.json': '' } });
-            assert.equal(await page.evaluate(() => App.fs.readJSON('.fluid-organizer/chipsets.json', 'fallback')), 'fallback');
-            assert.equal(await page.evaluate(() => App.wsdata.read('chipsets', 'fb')), 'fb');
+            await page.waitForFunction(() => App.chipset && App.chipset.ready);
+            assert.equal(await page.evaluate(() => App.chipset.presets().length), 1);
+            // Use a separate document so chipset saves cannot race the fallback assertions.
+            await page.evaluate(() => App.fs.writeRaw('.fluid-organizer/probe.json', ''));
+            assert.equal(await page.evaluate(() => window.__opfs.read('.fluid-organizer/probe.json')), '');
+            assert.equal(await page.evaluate(() => App.fs.readJSON('.fluid-organizer/probe.json', 'fallback')), 'fallback');
+            assert.equal(await page.evaluate(() => App.wsdata.read('probe', 'fb')), 'fb');
         },
     },
     {

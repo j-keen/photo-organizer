@@ -96,7 +96,7 @@ Scripts register commands at load time; DOM work happens in `init()`:
 | `catalog:loaded` / `catalog:changed` | `{paths}` | catalog |
 | `index:progress` / `index:ready` / `index:changed` | | index |
 | `jobs:changed` | — | jobs |
-| `item:open` | `{path}` | nav.open → viewer |
+| `item:open` | `{path, time?}` | nav.open → viewer (openHooks, see §11) |
 | `viewer:shown` / `viewer:closed` | `{entry, media}` / `{path}` | viewer |
 | `thumbs:meta` | `{path, duration}` | thumbs |
 | `settings:changed` | `{key, value}` | settings |
@@ -360,8 +360,8 @@ Everything about chips works without leaving the viewer, and a selected video pi
   piece. Esc lets go of the piece → they tag the file again. The strip's '+ 칩' opens the same `#` picker.
 - Creating in the viewer: the picker makes a chip from any new name (a '태그' category when there is none); the panel's compact
   foot has '분류' (category dialog), and `startAdding` types new chips in the panel while the viewer is open.
-- Piece chips stay piece chips: the sidebar chip filter and 칩별 정리 count FILE chips only (search finds piece chips; saving a
-  piece as a file or putting it in 보관함 carries them along).
+- Piece chips stay in `meta.edit.pieces`; saving a piece as a file or putting it in 보관함 carries them along.
+  The sidebar chip filter includes kept-piece chips (see §11); 칩별 정리 still uses FILE chips only.
 - The viewer's chip panel is a DOCK panel (chips-viewer.js, `registerPanel({ id: 'chips', order: 10, closeOnEscape: false })`,
   2026-10-22, owner: '팝업 말고 옆에 레이아웃으로 자리를 따로'): it has its own column right of the media (the stage, controls
   and film strip make room; nothing floats over the photo). Opened by the top-bar '칩' button / Alt+C / its tab; setting
@@ -371,3 +371,45 @@ Everything about chips works without leaving the viewer, and a selected video pi
 - Viewer dock (viewer.js): panels fitting the file (`kinds`, sorted by `order`) show as TABS in the dock head (video: 칩 |
   메모 목록); a panel whose `kinds` don't fit the next file closes (reason 'kind'), e.g. 메모 목록 on a photo;
   `onClose({ reason: 'user' | 'switch' | 'viewer' | 'kind' })`; event `viewer:panel` {id} / {id: null, closed, reason}.
+
+## 11. Chip sets, 완료, piece chips in the filter (2026-10-24)
+
+- **Shared library** (`chipset.js`): definitions are program-wide in this browser, merged with each workspace's
+  `.fluid-organizer/chipsets.json`. Version 2: `{ version: 2, activePreset, presets, deleted: [{id, at}] }`;
+  presets add `updatedAt`. IndexedDB keys: `chipsets.library` (full library), `chipsets.lastActive` (fallback set ID),
+  `chipsets.<workspaceId>` (rescue copy). Each workspace file carries the full library and its own `activePreset`.
+  Loading prefers the workspace's surviving active set, then `lastActive`, then the first set. A missing workspace file
+  can recover from its rescue copy. Saves capture snapshots and run serially; `App.workspace.flushHooks` awaits them.
+- **Merge rules**: union by preset ID; newer `updatedAt` wins. Tombstones retain the maximum `at` per ID and suppress a
+  preset only when `at > updatedAt`. Different definitions with equal timestamps retain both; the incoming copy gets a
+  new preset ID and `conflictOf`/`conflictKey` for repeat-load deduplication. Names become unique; colliding category IDs
+  and their references are remapped, while chip IDs stay unchanged. Structural edits and undo/redo receive fresh stamps
+  so stale workspace files cannot reverse them. Set deletion is shared; orphan-chip removal affects only current-workspace files.
+- **Transfer API**: `App.chipset.exportPreset(id)` returns an independent plain preset object (throws for an unknown ID).
+  `importPreset(obj, { replace = false } = {})` validates/normalizes a preset, preserves chip IDs, remaps colliding category
+  IDs/references and makes its name unique. An existing preset ID throws unless `replace` is true. Import returns the preset,
+  selects it and creates ONE undo entry through the commit helper. Commands `chips.exportPreset` / `chips.importPreset`
+  download `<name>.chipset.json` / open a JSON picker; the UI confirms replacement of an existing ID.
+- **Opening files**: `App.nav.openHooks` is an ordered array of synchronous `(entry) => ({ time } | null)` callbacks.
+  `open(entry)` bypasses hooks for folders; for files, the first finite nonnegative `time` wins and is emitted in
+  `item:open {path, time?}`. A throwing hook is logged and does not prevent opening or later hooks.
+- **Completion** (`chips-done.js`): `App.chipsDone = { FOLDER, isDone, summary, move }`, with `FOLDER = '_완료'`.
+  `isDone(path)` tests the `_완료/` prefix; `summary(path)` returns `{tagged, text}` from file and kept-piece chips.
+  Async `move(paths)` resolves files, skips completed paths, flushes the selected piece and confirms untagged files.
+  It returns successful `[{from, to}]` moves (or `[]`), preserving relative folders and catalog data under `_완료/`.
+  Catalog `meta.doneFrom` stores the original parent and `meta.doneAt` the completion timestamp. ONE undo entry owns all
+  successful moves, origin metadata and cleanup of only empty destination folders created by this action; partial successes
+  remain undoable. Undo/redo require the original workspace. If the current viewer file moved, open the next remaining
+  visible candidate (wrapping around), or close the viewer when none remains.
+- **Completion commands**: `chips.done` completes gallery-selected files (also in the context menu);
+  `chips.done.viewer` (`Ctrl+Enter`, viewer scope) and the dock's '완료하고 다음' button complete the whole file even when
+  a piece is selected. `App.chipsFilter.showDone()` opens '완료함', a smart view of every indexed file under `_완료/`.
+- **Piece-aware filter** (`chips-filter.js`): conditions use the union of known file chips and kept video-piece chips.
+  Piece starts must be finite and nonnegative; starts inside removed ranges are excluded. AND may be satisfied across
+  pieces. `App.chipsFilter.stats().chip` / `.cat` count each file once; `.pieces` maps chip IDs to tagged kept-piece counts.
+  '미분류' means no known file or kept-piece chips. When a positive chip condition matches only with piece chips, the card
+  shows '조각 n' for contributing pieces and an open hook starts at the earliest one; file-only matches open normally.
+- **Panel preferences**: inspector and viewer panels lead with the active set menu. `chips.folded` is a per-browser
+  `App.settings` array of folded category IDs, shared by both panels. Headings toggle via click or Enter/Space, expose
+  `aria-expanded` and retain selection counts while folded. Each manual toggle pushes ONE undo entry; adding a chip
+  unfolds its category.
