@@ -67,7 +67,7 @@
         panel._opts = opts;
         bindPanel(panel);
         if (!C || !C.ready) {
-            panel.append(h('div', { class: 'chip-loading' }, h('span', { class: 'spinner' }), h('span', { text: '칩셋을 불러오는 중…' })));
+            panel.append(h('div', { class: 'chip-loading' }, h('span', { class: 'spinner' }), h('span', { text: '칩 세트를 불러오는 중…' })));
             return panel;
         }
         const preset = C.active();
@@ -119,7 +119,7 @@
     }
 
     function renderHead(preset) {
-        const presetBtn = h('button', { type: 'button', class: 'chip-preset-btn', dataset: { action: 'preset-menu' }, 'data-tip': '칩셋 프리셋 바꾸기·관리', 'aria-haspopup': 'menu' },
+        const presetBtn = h('button', { type: 'button', class: 'chip-preset-btn', dataset: { action: 'preset-menu' }, 'data-tip': '칩 세트 바꾸기·관리', 'aria-haspopup': 'menu' },
             h('span', { class: 'chip-preset-ico', html: icon('layers', 14) }),
             h('span', { class: 'chip-preset-name truncate', text: preset.name }),
             h('span', { class: 'chip-preset-caret', html: icon('chevron-down', 12) }));
@@ -331,11 +331,11 @@
                 type: 'button',
                 class: `chip other is-${s}`,
                 dataset: { chip: id, other: '1' },
-                'data-tip': `${i.preset.name} 프리셋의 칩 — 누르면 떼요`,
+                'data-tip': `${i.preset.name} 세트의 칩 — 누르면 떼요`,
             }, h('span', { class: 'chip-name', text: ctx.C.labelOf(id, ' › ') }), h('span', { class: 'chip-x', html: icon('x', 11) })));
         }
         return h('div', { class: 'chip-cat chip-others' },
-            h('div', { class: 'chip-cat-head' }, h('span', { class: 'chip-cat-name', text: '다른 프리셋의 칩' })),
+            h('div', { class: 'chip-cat-head' }, h('span', { class: 'chip-cat-name', text: '다른 세트의 칩' })),
             row);
     }
 
@@ -706,11 +706,13 @@
         const i = list.findIndex((p) => p.active);
         const cur = list[i];
         ui.menu([
-            { header: '칩셋 프리셋' },
+            { header: '칩 세트' },
             ...list.map((p) => ({ label: p.name, checked: p.active, hint: p.categories ? `분류 ${p.categories}` : '비어 있음', action: () => C.setActive(p.id) })),
             '-',
-            { label: '새 프리셋…', icon: 'plus', command: 'chips.newPreset' },
-            { label: '지금 프리셋 복제…', icon: 'copy', command: 'chips.duplicatePreset' },
+            { label: '새 칩 세트…', icon: 'plus', command: 'chips.newPreset' },
+            { label: '지금 세트 복제…', icon: 'copy', command: 'chips.duplicatePreset' },
+            { label: '이 세트를 파일로 내보내기', icon: 'download', command: 'chips.exportPreset' },
+            { label: '세트 파일 불러오기…', icon: 'plus', command: 'chips.importPreset' },
             { label: '이름 바꾸기…', icon: 'edit', command: 'chips.renamePreset' },
             list.length > 1
                 ? {
@@ -723,7 +725,7 @@
                 }
                 : null,
             '-',
-            { label: '프리셋 삭제…', icon: 'trash', danger: true, command: 'chips.deletePreset', disabled: list.length <= 1 },
+            { label: '세트 삭제…', icon: 'trash', danger: true, command: 'chips.deletePreset', disabled: list.length <= 1 },
         ], pos);
     }
 
@@ -966,7 +968,7 @@
         const parts = [`「${C.labelOf(id)}」 칩을 지울까요?`];
         if (info.chip.children?.length) parts.push(`하위 칩 ${info.chip.children.length}개도 함께 지워져요.`);
         if (imp.files) parts.push(`파일 ${formatCount(imp.files)}개에 붙은 칩도 함께 떨어져요.`);
-        if (imp.shared) parts.push('다른 프리셋에도 있는 칩은 파일에 그대로 남아요.');
+        if (imp.shared) parts.push('다른 세트에도 있는 칩은 파일에 그대로 남아요.');
         parts.push(`${App.commands.displayCombo('Mod+Z')}로 되돌릴 수 있어요.`);
         const ok = await ui.confirm({ title: '칩 삭제', message: parts.join(' '), okLabel: '삭제', danger: true });
         if (ok) guard(() => C.removeChip(id));
@@ -1081,7 +1083,7 @@
     App.commands.register({ id: 'chips.addCategory', title: '칩 분류 추가', group: '칩', icon: 'plus', when: ready, run: addCategory });
     App.commands.register({
         id: 'chips.switchPreset',
-        title: '칩셋 프리셋 바꾸기',
+        title: '칩 세트 바꾸기',
         group: '칩',
         icon: 'layers',
         when: ready,
@@ -1093,7 +1095,7 @@
     });
     App.commands.register({
         id: 'chips.nextPreset',
-        title: '다음 칩셋 프리셋',
+        title: '다음 칩 세트',
         group: '칩',
         icon: 'layers',
         keys: 'Alt+P',
@@ -1103,47 +1105,47 @@
             const i = list.findIndex((p) => p.active);
             const next = list[(i + 1) % list.length];
             cs().setActive(next.id);
-            cs().hud(`프리셋: ${next.name}`, { kind: 'info' });
+            cs().hud(`칩 세트: ${next.name}`, { kind: 'info' });
         },
     });
     App.commands.register({
         id: 'chips.newPreset',
-        title: '새 칩셋 프리셋',
+        title: '새 칩 세트',
         group: '칩',
         icon: 'plus',
         when: ready,
         run: async () => {
-            const name = await presetPrompt('새 프리셋', '', '만들기');
+            const name = await presetPrompt('새 칩 세트', '', '만들기');
             if (name) guard(() => cs().createPreset(name));
         },
     });
     App.commands.register({
         id: 'chips.duplicatePreset',
-        title: '칩셋 프리셋 복제',
+        title: '칩 세트 복제',
         group: '칩',
         icon: 'copy',
         when: ready,
         run: async () => {
             const cur = cs().active();
-            const name = await presetPrompt('지금 프리셋 복제', `${cur.name} 사본`, '복제');
+            const name = await presetPrompt('지금 세트 복제', `${cur.name} 사본`, '복제');
             if (name) guard(() => cs().createPreset(name, { duplicate: true }));
         },
     });
     App.commands.register({
         id: 'chips.renamePreset',
-        title: '칩셋 프리셋 이름 바꾸기',
+        title: '칩 세트 이름 바꾸기',
         group: '칩',
         icon: 'edit',
         when: ready,
         run: async () => {
             const cur = cs().active();
-            const name = await presetPrompt('프리셋 이름 바꾸기', cur.name, '바꾸기', cur);
+            const name = await presetPrompt('세트 이름 바꾸기', cur.name, '바꾸기', cur);
             if (name) guard(() => cs().renamePreset(cur.id, name));
         },
     });
     App.commands.register({
         id: 'chips.deletePreset',
-        title: '칩셋 프리셋 삭제',
+        title: '칩 세트 삭제',
         group: '칩',
         icon: 'trash',
         when: () => ready() && cs().presets().length > 1,
@@ -1152,12 +1154,55 @@
             const cur = C.active();
             const imp = C.presetImpact(cur.id);
             const ok = await ui.confirm({
-                title: '프리셋 삭제',
-                message: `「${cur.name}」 프리셋을 지울까요?${imp.files ? ` 이 프리셋에만 있는 칩이 붙은 파일 ${formatCount(imp.files)}개에서 칩이 떨어져요.` : ''} ${App.commands.displayCombo('Mod+Z')}로 되돌릴 수 있어요.`,
+                title: '칩 세트 삭제',
+                message: `모든 작업 폴더에서 이 세트가 사라져요. 「${cur.name}」 세트를 지울까요? 칩을 떼는 작업은 현재 작업 폴더의 파일에만 적용해요.${imp.files ? ` 이 세트에만 있는 칩이 붙은 파일 ${formatCount(imp.files)}개에서 칩이 떨어져요.` : ''} ${App.commands.displayCombo('Mod+Z')}로 되돌릴 수 있어요.`,
                 okLabel: '삭제',
                 danger: true,
             });
             if (ok) guard(() => C.deletePreset(cur.id));
+        },
+    });
+
+    App.commands.register({
+        id: 'chips.exportPreset', title: '이 세트를 파일로 내보내기', group: '칩', icon: 'download', when: ready,
+        run: () => guard(() => {
+            const preset = cs().exportPreset(cs().active().id);
+            const url = URL.createObjectURL(new Blob([JSON.stringify(preset, null, 4)], { type: 'application/json' }));
+            const link = h('a', { href: url, download: `${preset.name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')}.chipset.json`, hidden: true });
+            document.body.append(link);
+            try {
+                link.click();
+            } finally {
+                link.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }
+        }),
+    });
+    App.commands.register({
+        id: 'chips.importPreset', title: '세트 파일 불러오기…', group: '칩', icon: 'plus', when: ready,
+        run: () => {
+            const input = h('input', { type: 'file', accept: '.json', hidden: true });
+            const workspaceId = cs().workspaceId;
+            const remove = () => input.remove();
+            input.addEventListener('cancel', remove, { once: true });
+            input.addEventListener('change', async () => {
+                const file = input.files?.[0];
+                remove();
+                if (!file) return;
+                try {
+                    const obj = JSON.parse(await file.text());
+                    if (!ready() || cs().workspaceId !== workspaceId) return;
+                    const existing = cs().doc.presets.find((p) => p.id === obj?.id);
+                    if (existing && !await ui.confirm({ title: '칩 세트 바꾸기', message: `「${existing.name}」 세트가 이미 있어요. 파일의 세트로 바꿀까요?`, okLabel: '바꾸기' })) return;
+                    if (!ready() || cs().workspaceId !== workspaceId) return;
+                    cs().importPreset(obj, { replace: !!existing });
+                    ui.toast('칩 세트를 불러왔어요', { type: 'success' });
+                } catch (e) {
+                    ui.toast(e instanceof SyntaxError ? 'JSON 파일 형식을 확인해 주세요' : e.message, { type: 'warning' });
+                }
+            }, { once: true });
+            document.body.append(input);
+            input.click();
         },
     });
 

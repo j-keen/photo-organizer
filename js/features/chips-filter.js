@@ -6,7 +6,9 @@
  *   Ctrl+click   add / remove the chip to the condition — '모두 포함' (AND) or '하나라도' (OR)
  *   Alt+click    exclude the chip ("빼고")
  *   '모든 폴더에서 보기' turns the condition into a workspace-wide smart view (App.view.setEntries, type 'smart').
+ * File conditions include kept video-piece chips; piece-only matches open at the first contributing piece.
  * App.chipsFilter: { showChip(id), showUntagged(), clear(), stats() }
+ *   stats().chip / cat count files once; stats().pieces maps chip IDs to tagged kept-piece counts.
  */
 (() => {
     'use strict';
@@ -26,20 +28,70 @@
 
     const C = () => App.chipset;
 
+    let tagsCache = null;
+    const EMPTY_TAGS = { file: new Set(), all: new Set(), pieces: [] };
+
+    // Read saved metadata without requiring a loaded player or a known duration.
+    function tagsOf(path) {
+        if (!tagsCache) {
+            tagsCache = new Map();
+            for (const [p, e] of App.catalog.entries()) {
+                const file = new Set((e.chips || []).filter((id) => C()?.info(id)));
+                const all = new Set(file);
+                const pieces = [];
+                const edit = e.meta?.edit;
+                if (App.util.mediaType(p) === 'video' && edit?.pieces) {
+                    for (const [key, info] of Object.entries(edit.pieces)) {
+                        const start = Number(key);
+                        if (!Number.isFinite(start) || start < 0) continue;
+                        if ((edit.removed || []).some((r) => Array.isArray(r) && start >= r[0] && start < r[1])) continue;
+                        const chips = new Set((Array.isArray(info?.chips) ? info.chips : []).filter((id) => C()?.info(id)));
+                        if (!chips.size) continue;
+                        pieces.push({ start, chips });
+                        for (const id of chips) all.add(id);
+                    }
+                }
+                pieces.sort((a, b) => a.start - b.start);
+                tagsCache.set(p, { file, all, pieces });
+            }
+        }
+        return tagsCache.get(path) || EMPTY_TAGS;
+    }
+
+    function satisfies(chips, inc, exc, op) {
+        if (exc.some((id) => chips.has(id))) return false;
+        return !inc.length || (op === 'and' ? inc.every((id) => chips.has(id)) : inc.some((id) => chips.has(id)));
+    }
+
+    function matchingPieces(entry) {
+        if (entry.type !== 'video' || !F.ids.size) return [];
+        if (!(smart?.kind === 'chips' && App.view.source.owner === 'chips') && !App.view.filters.has('chips')) return [];
+        const tags = tagsOf(entry.path);
+        const inc = [...F.ids];
+        const exc = [...F.exclude];
+        if (!satisfies(tags.all, inc, exc, F.op) || satisfies(tags.file, inc, exc, F.op)) return [];
+        // AND can be satisfied across pieces; start with the earliest piece supplying a missing chip.
+        return tags.pieces.filter((piece) => inc.some((id) => !tags.file.has(id) && piece.chips.has(id)));
+    }
+
     // ---------- Stats ----------
     function stats() {
         if (statsCache) return statsCache;
         const cs = C();
         const chip = new Map();
         const cat = new Map();
+        const pieces = new Map();
         let tagged = 0;
         if (cs?.ready) {
             for (const [p, e] of App.catalog.entries()) {
-                if (!e.chips || !e.chips.length) continue;
                 if (App.index.ready && !App.index.get(p)) continue;
+                const tags = tagsOf(p);
+                for (const piece of tags.pieces) {
+                    for (const id of piece.chips) pieces.set(id, (pieces.get(id) || 0) + 1);
+                }
                 let known = false;
                 const cats = new Set();
-                for (const id of e.chips) {
+                for (const id of tags.all) {
                     const i = cs.info(id);
                     if (!i) continue;
                     known = true;
@@ -51,7 +103,7 @@
             }
         }
         const total = App.index.ready ? App.index.items.length : null;
-        statsCache = { chip, cat, tagged, total, untagged: total == null ? null : Math.max(0, total - tagged) };
+        statsCache = { chip, cat, pieces, tagged, total, untagged: total == null ? null : Math.max(0, total - tagged) };
         return statsCache;
     }
 
@@ -61,13 +113,7 @@
         const exc = [...F.exclude];
         if (!inc.length && !exc.length) return null;
         const op = F.op;
-        return (e) => {
-            const chips = App.catalog.peek(e.path)?.chips;
-            const has = (id) => !!chips && chips.includes(id);
-            if (exc.some(has)) return false;
-            if (!inc.length) return true;
-            return op === 'and' ? inc.every(has) : inc.some(has);
-        };
+        return (e) => satisfies(tagsOf(e.path).all, inc, exc, op);
     }
 
     function chipLabel() {
@@ -124,7 +170,7 @@
         let emptyTitle;
         let emptyText;
         if (kind === 'untagged') {
-            list = App.index.items.filter((e) => !cs.chipsOf(e.path).length);
+            list = App.index.items.filter((e) => !tagsOf(e.path).all.size);
             title = '미분류 — 칩이 없는 파일';
             emptyTitle = '모든 파일에 칩이 붙어 있어요';
             emptyText = '새로 들어온 파일이 생기면 여기에 모여요.';
@@ -287,7 +333,8 @@
             label: ch.name,
             count: st.chip.get(ch.id) || 0,
             data: { chip: ch.id },
-            tip: ex ? '빼고 보는 중 · Alt+클릭하면 다시 넣어요' : on ? '필터에 들어 있어요 · 다시 누르면 해제' : '클릭: 이 칩만 보기 · Ctrl+클릭: 더하기 · Alt+클릭: 빼기',
+            tip: (ex ? '빼고 보는 중 · Alt+클릭하면 다시 넣어요' : on ? '필터에 들어 있어요 · 다시 누르면 해제' : '클릭: 이 칩만 보기 · Ctrl+클릭: 더하기 · Alt+클릭: 빼기')
+                + (st.pieces.get(ch.id) ? ` · 조각 ${formatCount(st.pieces.get(ch.id))}` : ''),
         });
     }
 
@@ -308,10 +355,18 @@
 
     const renderSoon = debounce(render, 30);
 
-    const invalidate = debounce(() => {
-        statsCache = null;
+    const refreshSoon = debounce(() => {
         render();
+        if (App.view.filters.has('chips')) App.view.recompute('patch');
+        App.gallery?.refresh?.();
     }, 150);
+
+    function invalidate() {
+        // Drop synchronously: another catalog listener may recompute the view in this same event.
+        statsCache = null;
+        tagsCache = null;
+        refreshSoon();
+    }
 
     function onBodyClick(e) {
         const t = e.target;
@@ -446,6 +501,21 @@
 
     App.register('chips-filter', {
         init() {
+            App.nav.openHooks.push((entry) => {
+                const pieces = matchingPieces(entry);
+                return pieces.length ? { time: pieces[0].start } : null;
+            });
+            if (App.gallery?.cardDecorators) {
+                App.gallery.cardDecorators.push((card, entry) => {
+                    const pieces = matchingPieces(entry);
+                    if (!pieces.length) return;
+                    card.append(h('span', {
+                        class: 'chipf-piece-badge',
+                        text: `조각 ${formatCount(pieces.length)}`,
+                        'data-tip': '칩이 붙은 조각부터 재생해요',
+                    }));
+                });
+            }
             App.sidebar?.addSection({
                 id: 'chips',
                 title: '칩',
@@ -486,10 +556,12 @@
                 F.rating = 0;
                 F.labels.clear();
                 statsCache = null;
+                tagsCache = null;
                 renderSoon();
             });
             App.bus.on('workspace:closed', () => {
                 smart = null;
+                tagsCache = null;
                 statsCache = null;
                 renderSoon();
             });

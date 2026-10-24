@@ -1,6 +1,8 @@
 /*
  * Current view state:
  *   App.nav    — current folder (App.state.cwd), back/forward/up history, (re)loading.
+ *     openHooks: synchronous (entry) => ({ time } | null); first finite nonnegative time wins.
+ *     open(entry) emits 'item:open' { path, time? }; failed hooks do not prevent opening.
  *   App.view   — entries of the current source (folder or search) -> filters -> sort -> visible list.
  *   App.select — selection of paths within the visible list (+ anchor/focus for keyboard & shift-click).
  *
@@ -343,6 +345,8 @@
         fwd: [],
         /** async (path, entries, source) => ({ entries, source })? — may replace a folder listing before it's shown */
         loadHooks: [],
+        /** (entry) => ({ time } | null), in priority order; folders bypass these hooks */
+        openHooks: [],
 
         get cwd() {
             return App.state.cwd;
@@ -490,7 +494,19 @@
         open(entry) {
             if (!entry) return;
             if (entry.kind === 'dir') return nav.go(entry.path);
-            App.bus.emit('item:open', { path: entry.path });
+            const payload = { path: entry.path };
+            for (const hook of nav.openHooks) {
+                try {
+                    const result = hook(entry);
+                    if (result && Number.isFinite(result.time) && result.time >= 0) {
+                        payload.time = result.time;
+                        break;
+                    }
+                } catch (e) {
+                    console.error('[nav] open hook failed', e);
+                }
+            }
+            App.bus.emit('item:open', payload);
         },
     };
 

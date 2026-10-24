@@ -1518,3 +1518,16 @@
     font-weight: 700;
     color: var(--text-2);
 }
+
+/* Separate from file-chip badges so both remain readable. */
+.chipf-piece-badge {
+    position: absolute;
+    top: 7px;
+    left: 7px;
+    padding: 2px 7px;
+    border-radius: var(--r-full);
+    background: var(--bg-1);
+    color: var(--text-2);
+    font-size: var(--fs-xs);
+    pointer-events: none;
+}

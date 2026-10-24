@@ -2,8 +2,12 @@
  * Chipsets — the tagging model (no panel UI here; see chips-panel.js).
  *   presets → categories (mode 'select' shows every chip | 'search' for big lists like actor names)
  *           → chips → sub-chips (a sub-chip always brings its parent along).
- * Definitions live in <workspace>/.fluid-organizer/chipsets.json (+ an IndexedDB copy per workspace as a safety net):
- *   { version, activePreset, presets: [{ id, name, hotkeys: { '1': chipId }, categories: [{ id, name, mode,
+ * Definitions are shared through IndexedDB key chipsets.library; each workspace carries the full library and
+ * its own activePreset in .fluid-organizer/chipsets.json (+ a per-workspace IndexedDB rescue copy).
+ * Version 2 adds preset.updatedAt and deleted: [{ id, at }] tombstones; chip IDs survive merges and imports.
+ * exportPreset(id) -> independent plain preset object; importPreset(obj, { replace = false }) -> preset
+ * (throws on an existing ID unless replace is true). Import is ONE undo entry and selects the imported set.
+ *   { version, activePreset, deleted, presets: [{ id, name, updatedAt, hotkeys: { '1': chipId }, categories: [{ id, name, mode,
  *     color?, single?, chips: [{ id, name, children: [{ id, name }] }] }] }] }
  * Files carry chip IDs in App.catalog (entry.chips), so renaming a chip renames it everywhere.
  * A duplicated preset shares its chip IDs with the original (same tags on the files, like v1 name tokens);
@@ -41,6 +45,13 @@
     let doc = null;
     let wsId = null;
     let loadToken = 0;
+    let saves = Promise.resolve();
+    let clock = 0;
+
+    function tick() {
+        clock = Math.max(Date.now(), clock + 1);
+        return clock;
+    }
     let byId = new Map(); // chip id -> { preset, cat, chip, parent }  (active preset wins)
     let catById = new Map(); // category id -> { preset, cat }
     let orderOf = new Map(); // chip id -> structure position (active preset first)
@@ -145,7 +156,7 @@
     // ---------- Document ----------
     function emptyDoc() {
         const id = newId('p');
-        return { version: 1, activePreset: id, presets: [{ id, name: '기본', hotkeys: {}, categories: [] }] };
+        return { version: 2, activePreset: id, deleted: [], presets: [{ id, name: '기본', updatedAt: 0, hotkeys: {}, categories: [] }] };
     }
 
     function normalize(input) {
@@ -155,7 +166,7 @@
         const presets = [];
         for (const p of d.presets) {
             if (!p || typeof p !== 'object') continue;
-            const preset = { ...p, id: typeof p.id === 'string' && p.id ? p.id : newId('p'), name: cleanName(p.name) || '프리셋', categories: [], hotkeys: {} };
+            const preset = { ...p, id: typeof p.id === 'string' && p.id ? p.id : newId('p'), name: cleanName(p.name) || '세트', updatedAt: Number.isFinite(p.updatedAt) ? p.updatedAt : 0, categories: [], hotkeys: {} };
             const seenChips = new Set();
             for (const c of Array.isArray(p.categories) ? p.categories : []) {
                 if (!c || typeof c !== 'object') continue;
@@ -190,7 +201,72 @@
         }
         if (!presets.length) return emptyDoc();
         const activePreset = presets.some((p) => p.id === d.activePreset) ? d.activePreset : presets[0].id;
-        return { ...d, version: 1, activePreset, presets };
+        return { ...d, version: 2, activePreset, presets, deleted: Array.isArray(d.deleted) ? d.deleted.filter((x) => x && typeof x.id === 'string' && Number.isFinite(x.at)) : [] };
+    }
+
+    function uniqueName(name, siblings) {
+        const base = cleanName(name) || '세트';
+        let next = base;
+        for (let i = 2; siblings.some((p) => normKey(p.name) === normKey(next)); i++) {
+            const suffix = ` ${i}`;
+            next = base.slice(0, 60 - suffix.length) + suffix;
+        }
+        return next;
+    }
+
+    function mergeLibrary(inputs, preferred, lastActive) {
+        const items = new Map();
+        const deleted = new Map();
+        for (const input of inputs) {
+            if (!input || !Array.isArray(input.presets)) continue;
+            for (const x of Array.isArray(input.deleted) ? input.deleted : []) {
+                if (!x || typeof x.id !== 'string' || !Number.isFinite(x.at)) continue;
+                deleted.set(x.id, Math.max(deleted.get(x.id) ?? -Infinity, x.at));
+                clock = Math.max(clock, x.at);
+            }
+            if (!input.presets.length) continue;
+            for (const p of normalize(clone(input)).presets) {
+                clock = Math.max(clock, p.updatedAt);
+                if (!items.has(p.id) || p.updatedAt > items.get(p.id).updatedAt) items.set(p.id, p);
+            }
+        }
+        const presets = [];
+        for (const p of items.values()) {
+            if ((deleted.get(p.id) ?? -Infinity) > p.updatedAt) continue;
+            p.name = uniqueName(p.name, presets);
+            presets.push(p);
+        }
+        if (!presets.length) presets.push(emptyDoc().presets[0]);
+        const activePreset = [preferred, lastActive].find((id) => presets.some((p) => p.id === id)) || presets[0].id;
+        return { version: 2, activePreset, presets, deleted: [...deleted].map(([id, at]) => ({ id, at })) };
+    }
+
+    // Undo is a fresh library edit too: stale workspace files must never reverse it on the next merge.
+    function stampChanges(before) {
+        const at = tick();
+        const old = new Map(before.presets.map((p) => [p.id, p]));
+        const oldOrder = before.presets.map((p) => p.id);
+        doc.deleted = doc.deleted || [];
+        for (const p of doc.presets) {
+            if (JSON.stringify(old.get(p.id)) !== JSON.stringify(p) || oldOrder.indexOf(p.id) !== doc.presets.indexOf(p)) {
+                p.updatedAt = at;
+            }
+        }
+        for (const p of before.presets) {
+            if (doc.presets.some((x) => x.id === p.id)) continue;
+            doc.deleted = doc.deleted.filter((x) => x.id !== p.id);
+            doc.deleted.push({ id: p.id, at });
+        }
+        // Keep deletion history when undo restores an older whole-document snapshot.
+        for (const x of before.deleted || []) {
+            const existing = doc.deleted.find((y) => y.id === x.id);
+            if (!existing) doc.deleted.push(clone(x));
+            else existing.at = Math.max(existing.at, x.at);
+        }
+        for (const p of doc.presets) {
+            const tombstone = doc.deleted.find((x) => x.id === p.id);
+            if (tombstone && tombstone.at >= p.updatedAt) p.updatedAt = tick();
+        }
     }
 
     function active() {
@@ -233,18 +309,26 @@
         App.bus.emit('chipset:changed', { reason });
     }
 
-    async function persist() {
-        if (!doc || !App.fs.ready) return;
+    function persist() {
+        if (!doc || !App.fs.ready || App.state.workspace?.id !== wsId) return saves;
         const ws = wsId;
-        if (App.state.workspace?.id !== ws) return;
-        const json = JSON.stringify(doc);
-        try {
-            await App.wsdata.write('chipsets', doc);
-        } catch (e) {
-            console.error('[chipset] save failed', e);
-            ui.toast('칩셋을 저장하지 못했어요. 폴더 권한을 확인해 주세요.', { type: 'error' });
-        }
-        App.idb.set(`chipsets.${ws}`, JSON.parse(json)).catch(() => {});
+        const snapshot = clone(doc);
+        saves = saves.catch(() => {}).then(async () => {
+            // Capture snapshots at invocation and serialize writes so rapid edits cannot save out of order.
+            await Promise.all([
+                App.idb.set('chipsets.library', clone(snapshot)).catch(() => {}),
+                App.idb.set('chipsets.lastActive', snapshot.activePreset).catch(() => {}),
+                App.idb.set(`chipsets.${ws}`, clone(snapshot)).catch(() => {}),
+            ]);
+            if (App.state.workspace?.id !== ws) return;
+            try {
+                await App.wsdata.write('chipsets', snapshot);
+            } catch (e) {
+                console.error('[chipset] save failed', e);
+                ui.toast('칩 세트를 저장하지 못했어요. 폴더 권한을 확인해 주세요.', { type: 'error' });
+            }
+        });
+        return saves;
     }
 
     /**
@@ -252,9 +336,11 @@
      * preset on screen stays; preset create/duplicate/delete restore the snapshot's own active preset instead.
      */
     function restore(snapshot, reason = 'undo', { keepActive = true } = {}) {
+        const before = clone(doc);
         const current = doc?.activePreset;
         doc = clone(snapshot);
         if (keepActive && current && doc.presets.some((p) => p.id === current)) doc.activePreset = current;
+        stampChanges(before);
         rebuild();
         persist();
         emit(reason);
@@ -275,6 +361,8 @@
             rebuild();
             throw e;
         }
+        if (JSON.stringify(doc) === JSON.stringify(before)) return result;
+        stampChanges(before);
         rebuild();
         persist();
         emit(reason);
@@ -343,7 +431,10 @@
         }
         const structural = JSON.stringify(doc) !== beforeJson;
         const before = structural ? JSON.parse(beforeJson) : null;
-        if (structural) rebuild();
+        if (structural) {
+            stampChanges(before);
+            rebuild();
+        }
         for (const [p, f] of [...patches]) {
             const cur = App.catalog.peek(p) || {};
             if (Object.keys(f).every((k) => sameValue(cur[k], f[k]))) patches.delete(p);
@@ -926,7 +1017,7 @@
         const err = validateName(name, doc.presets);
         if (err) throw new Error(err);
         const n = cleanName(name);
-        return commit(duplicate ? `프리셋 복제 "${n}"` : `새 프리셋 "${n}"`, (d, cur) => {
+        return commit(duplicate ? `세트 복제 "${n}"` : `새 칩 세트 "${n}"`, (d, cur) => {
             const categories = duplicate ? clone(cur.categories).map((c) => ({ ...c, id: newId('c') })) : [];
             const preset = { id: newId('p'), name: n, hotkeys: duplicate ? { ...(cur.hotkeys || {}) } : {}, categories };
             d.presets.push(preset);
@@ -939,7 +1030,7 @@
         const i = doc ? doc.presets.findIndex((p) => p.id === id) : -1;
         const j = i + delta;
         if (i < 0 || j < 0 || j >= doc.presets.length) return;
-        commit(`프리셋 순서 바꾸기 "${doc.presets[i].name}"`, (d) => {
+        commit(`세트 순서 바꾸기 "${doc.presets[i].name}"`, (d) => {
             const [p] = d.presets.splice(i, 1);
             d.presets.splice(j, 0, p);
         });
@@ -952,7 +1043,7 @@
         if (err) throw new Error(err);
         const n = cleanName(name);
         if (n === p.name) return;
-        commit(`프리셋 이름 바꾸기 "${p.name}" → "${n}"`, (d) => {
+        commit(`세트 이름 바꾸기 "${p.name}" → "${n}"`, (d) => {
             d.presets.find((x) => x.id === id).name = n;
         });
     }
@@ -970,14 +1061,39 @@
     }
 
     function deletePreset(id) {
-        if (!doc || doc.presets.length <= 1) throw new Error('프리셋이 하나뿐이라 지울 수 없어요');
+        if (!doc || doc.presets.length <= 1) throw new Error('칩 세트가 하나뿐이라 지울 수 없어요');
         const p = doc.presets.find((x) => x.id === id);
         if (!p) return;
         const { orphans } = presetImpact(id);
-        transaction(`프리셋 삭제 "${p.name}"`, (tx) => {
+        transaction(`세트 삭제 "${p.name}"`, (tx) => {
             tx.doc.presets = tx.doc.presets.filter((x) => x.id !== id);
             if (tx.doc.activePreset === id) tx.doc.activePreset = tx.doc.presets[0].id;
             stripFromFiles(tx, [...orphans]);
+        }, { presetOp: true });
+    }
+
+    function exportPreset(id) {
+        const preset = doc?.presets.find((p) => p.id === id);
+        if (!preset) throw new Error('칩 세트를 찾을 수 없어요');
+        return clone(preset);
+    }
+
+    function importPreset(obj, { replace = false } = {}) {
+        if (!doc) throw new Error('작업 폴더를 먼저 열어 주세요');
+        if (!obj || typeof obj !== 'object' || Array.isArray(obj) || typeof obj.id !== 'string' || !obj.id || typeof obj.name !== 'string' || !cleanName(obj.name) || !Array.isArray(obj.categories)) {
+            throw new Error('칩 세트 파일 형식을 확인해 주세요');
+        }
+        const existing = doc.presets.find((p) => p.id === obj.id);
+        if (existing && !replace) throw new Error('같은 세트가 이미 있어요');
+        const preset = normalize({ presets: [clone(obj)] }).presets[0];
+        preset.name = uniqueName(preset.name, doc.presets.filter((p) => p.id !== preset.id));
+        return commit(`세트 불러오기 "${preset.name}"`, (d) => {
+            const i = d.presets.findIndex((p) => p.id === preset.id);
+            if (i < 0) d.presets.push(preset);
+            else d.presets[i] = preset;
+            preset.updatedAt = tick();
+            d.activePreset = preset.id;
+            return preset;
         }, { presetOp: true });
     }
 
@@ -1005,6 +1121,8 @@
     // ---------- Persistence lifecycle ----------
     async function load() {
         const token = ++loadToken;
+        await saves;
+        if (token !== loadToken) return;
         const ws = App.state.workspace?.id || null;
         wsId = ws;
         doc = null;
@@ -1021,7 +1139,7 @@
         if (!d && ws) {
             try {
                 const copy = await App.idb.get(`chipsets.${ws}`);
-                if (copy && Array.isArray(copy.presets) && copy.presets.some((p) => p.categories?.length)) {
+                if (copy && Array.isArray(copy.presets)) {
                     d = copy;
                     source = 'idb';
                 }
@@ -1030,14 +1148,20 @@
             }
         }
         if (token !== loadToken) return;
-        doc = normalize(d);
+        const [library, lastActive] = await Promise.all([
+            App.idb.get('chipsets.library').catch(() => null),
+            App.idb.get('chipsets.lastActive').catch(() => null),
+        ]);
+        if (token !== loadToken) return;
+        doc = mergeLibrary([library, d], d?.activePreset, lastActive);
         rebuild();
+        await persist();
+        if (token !== loadToken) return;
         chipset.ready = true;
         if (source === 'idb') {
-            persist();
-            ui.toast('칩셋 파일이 없어서 이 브라우저에 있던 사본으로 되살렸어요', { type: 'warning', duration: 7000 });
+            ui.toast('칩 세트 파일이 없어서 이 브라우저에 있던 사본으로 되살렸어요', { type: 'warning', duration: 7000 });
         } else if (d && doc.presets.some((p) => p.categories.length)) {
-            App.wsdata.backup('chipsets', doc);
+            App.wsdata.backup('chipsets', clone(doc));
         }
         App.bus.emit('chipset:loaded');
         emit('load');
@@ -1146,6 +1270,8 @@
         movePreset,
         deletePreset,
         presetImpact,
+        exportPreset,
+        importPreset,
         transaction,
         commit,
         validateName,
@@ -1159,6 +1285,7 @@
 
     App.register('chipset', {
         init() {
+            App.workspace.flushHooks?.push(() => saves);
             App.bus.on('workspace:opened', () => load());
             App.bus.on('workspace:closed', () => {
                 loadToken++;
