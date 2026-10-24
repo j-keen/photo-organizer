@@ -1,6 +1,40 @@
 /* Chipsets: chip panel (inspector + viewer drawer), '#' picker, HUD, sidebar chip filter, dialogs, card badge */
 
 /* ---------- Panel ---------- */
+.chip-cat.folded > :not(.chip-cat-head) {
+    display: none;
+}
+
+.chip-cat-head[data-cat-head] {
+    cursor: pointer;
+}
+
+.chip-cat-head:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+.chip-cat-chevron {
+    display: inline-flex;
+    flex: none;
+}
+
+.chip-preset-label {
+    flex: none;
+    color: var(--text-3);
+}
+
+.chip-head .chip-preset-btn {
+    max-width: 100%;
+    min-width: 0;
+    height: 32px;
+}
+
+.chip-done-btn {
+    margin: 0 14px 12px;
+    flex: none;
+}
+
 .chip-panel {
     display: flex;
     flex-direction: column;

@@ -7,6 +7,8 @@
  * Version 2 adds preset.updatedAt and deleted: [{ id, at }] tombstones; chip IDs survive merges and imports.
  * exportPreset(id) -> independent plain preset object; importPreset(obj, { replace = false }) -> preset
  * (throws on an existing ID unless replace is true). Import is ONE undo entry and selects the imported set.
+ * Incoming category IDs and their references are remapped on collisions; chip IDs stay unchanged.
+ * Equal-timestamp conflicts retain both presets; copies carry conflictOf/conflictKey for repeat-load deduplication.
  *   { version, activePreset, deleted, presets: [{ id, name, updatedAt, hotkeys: { '1': chipId }, categories: [{ id, name, mode,
  *     color?, single?, chips: [{ id, name, children: [{ id, name }] }] }] }] }
  * Files carry chip IDs in App.catalog (entry.chips), so renaming a chip renames it everywhere.
@@ -214,9 +216,57 @@
         return next;
     }
 
+    // Category references may also live in extension fields. Names and chip identities are never references.
+    function remapCategories(preset, remap) {
+        function visit(value) {
+            if (typeof value === 'string') return remap.get(value) || value;
+            if (Array.isArray(value)) return value.map(visit);
+            if (!value || typeof value !== 'object') return value;
+            for (const key of Object.keys(value)) {
+                if (key === 'id' || key === 'name' || key === 'hotkeys' || key === 'conflictKey' || key === 'conflictOf') continue;
+                value[key] = visit(value[key]);
+            }
+            return value;
+        }
+        visit(preset);
+        for (const cat of preset.categories) cat.id = remap.get(cat.id) || cat.id;
+    }
+
+    function reserveCategories(preset, used) {
+        const reserved = new Set([...used, ...preset.categories.map((c) => c.id)]);
+        const remap = new Map();
+        for (const cat of preset.categories) {
+            if (!used.has(cat.id)) continue;
+            let id;
+            do id = newId('c'); while (reserved.has(id));
+            reserved.add(id);
+            remap.set(cat.id, id);
+        }
+        remapCategories(preset, remap);
+        for (const cat of preset.categories) used.add(cat.id);
+    }
+
+    function presetKey(preset) {
+        const copy = clone(preset);
+        delete copy.id;
+        delete copy.updatedAt;
+        delete copy.conflictOf;
+        delete copy.conflictKey;
+        // Category IDs can change during a merge without changing the preset's definitions.
+        remapCategories(copy, new Map(copy.categories.map((c, i) => [c.id, `category:${i}`])));
+        function ordered(value) {
+            if (Array.isArray(value)) return value.map(ordered);
+            if (!value || typeof value !== 'object') return value;
+            return Object.fromEntries(Object.keys(value).sort().map((key) => [key, ordered(value[key])]));
+        }
+        return JSON.stringify(ordered(copy));
+    }
+
     function mergeLibrary(inputs, preferred, lastActive) {
         const items = new Map();
         const deleted = new Map();
+        const conflicts = [];
+        const reservedIds = new Set(inputs.flatMap((input) => Array.isArray(input?.presets) ? input.presets.map((p) => p?.id) : []));
         for (const input of inputs) {
             if (!input || !Array.isArray(input.presets)) continue;
             for (const x of Array.isArray(input.deleted) ? input.deleted : []) {
@@ -227,13 +277,32 @@
             if (!input.presets.length) continue;
             for (const p of normalize(clone(input)).presets) {
                 clock = Math.max(clock, p.updatedAt);
-                if (!items.has(p.id) || p.updatedAt > items.get(p.id).updatedAt) items.set(p.id, p);
+                const previous = items.get(p.id);
+                if (!previous || p.updatedAt > previous.updatedAt) items.set(p.id, p);
+                else if (p.updatedAt === previous.updatedAt && presetKey(p) !== presetKey(previous)) {
+                    conflicts.push({ source: p.id, key: presetKey(p), preset: p });
+                }
             }
         }
+        for (const { source, key, preset } of conflicts) {
+            if ((deleted.get(source) ?? -Infinity) > preset.updatedAt) continue;
+            if ([...items.values()].some((p) => p.conflictOf === source && p.conflictKey === key)) continue;
+            let id;
+            do id = newId('p'); while (reservedIds.has(id));
+            reservedIds.add(id);
+            preset.id = id;
+            preset.conflictOf = source;
+            preset.conflictKey = key;
+            const suffix = ' (다른 버전)';
+            preset.name = preset.name.slice(0, 60 - suffix.length) + suffix;
+            items.set(id, preset);
+        }
         const presets = [];
+        const usedCats = new Set();
         for (const p of items.values()) {
             if ((deleted.get(p.id) ?? -Infinity) > p.updatedAt) continue;
             p.name = uniqueName(p.name, presets);
+            reserveCategories(p, usedCats);
             presets.push(p);
         }
         if (!presets.length) presets.push(emptyDoc().presets[0]);
@@ -1086,7 +1155,9 @@
         const existing = doc.presets.find((p) => p.id === obj.id);
         if (existing && !replace) throw new Error('같은 세트가 이미 있어요');
         const preset = normalize({ presets: [clone(obj)] }).presets[0];
-        preset.name = uniqueName(preset.name, doc.presets.filter((p) => p.id !== preset.id));
+        const retained = doc.presets.filter((p) => p.id !== preset.id);
+        reserveCategories(preset, new Set(retained.flatMap((p) => p.categories.map((c) => c.id))));
+        preset.name = uniqueName(preset.name, retained);
         return commit(`세트 불러오기 "${preset.name}"`, (d) => {
             const i = d.presets.findIndex((p) => p.id === preset.id);
             if (i < 0) d.presets.push(preset);

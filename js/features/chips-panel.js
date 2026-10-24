@@ -7,6 +7,7 @@
  *
  * App.chipsPanel.render(host, { key, files, entries, compact, piece }) — render a panel into any element.
  *   piece: a chip target from App.chipset.pieceTarget() (the viewer's selected video piece) — clicks tag the piece.
+ * Both panels lead with the active set menu; category headings toggle persistent settings chips.folded.
  */
 (() => {
     'use strict';
@@ -28,6 +29,7 @@
         if (!a || !host.contains(a)) return null;
         if (a.dataset.search) return { sel: `[data-search="${CSS.escape(a.dataset.search)}"]`, start: a.selectionStart, end: a.selectionEnd };
         if (a.classList.contains('chip-add-input')) return { sel: `.chip-add-input[data-add="${CSS.escape(a.dataset.add)}"][data-parent="${CSS.escape(a.dataset.parent || '')}"]`, value: a.value, start: a.selectionStart, end: a.selectionEnd };
+        if (a.dataset.catHead) return { sel: `[data-cat-head="${CSS.escape(a.dataset.catHead)}"]` };
         if (a.dataset.chip) return { sel: `.chip[data-chip="${CSS.escape(a.dataset.chip)}"]` };
         if (a.dataset.action) return { sel: `[data-action="${CSS.escape(a.dataset.action)}"]` };
         return null;
@@ -93,7 +95,7 @@
                 return !n || !c ? 'off' : c === n ? 'on' : 'mixed';
             },
         };
-        if (!opts.compact) panel.append(renderHead(preset));
+        panel.append(renderHead(preset, opts.compact));
         const target = targetLine(ctx);
         if (target) panel.append(target);
         const legacy = piece ? null : legacyBanner(ctx);
@@ -109,22 +111,22 @@
         if (others) panel.append(others);
         if (opts.compact) {
             panel.append(h('div', { class: 'chip-compact-foot' },
-                h('button', { type: 'button', class: 'btn ghost sm', dataset: { action: 'preset-menu' }, html: `${icon('layers', 13)}<span class="truncate"></span>${icon('chevron-down', 12)}` }),
                 h('span', { class: 'grow' }),
                 h('button', { type: 'button', class: 'btn ghost sm', dataset: { action: 'add-category' }, 'data-tip': '분류 추가 (배우, 장르처럼)', html: `${icon('plus', 13)}<span>분류</span>` }),
                 h('button', { type: 'button', class: 'btn ghost sm', dataset: { action: 'picker' }, 'data-tip': '칩 찾기 · 없는 이름은 Enter로 새로 만들어요', 'data-tip-keys': '#', html: `${icon('hash', 13)}<span>찾기</span>` })));
-            panel.querySelector('.chip-compact-foot .truncate').textContent = preset.name;
+
         }
         return panel;
     }
 
-    function renderHead(preset) {
+    function renderHead(preset, compact = false) {
         const presetBtn = h('button', { type: 'button', class: 'chip-preset-btn', dataset: { action: 'preset-menu' }, 'data-tip': '칩 세트 바꾸기·관리', 'aria-haspopup': 'menu' },
             h('span', { class: 'chip-preset-ico', html: icon('layers', 14) }),
             h('span', { class: 'chip-preset-name truncate', text: preset.name }),
             h('span', { class: 'chip-preset-caret', html: icon('chevron-down', 12) }));
+        presetBtn.insertBefore(h('span', { class: 'chip-preset-label', text: '칩 세트 ·' }), presetBtn.querySelector('.chip-preset-name'));
+        if (compact) return h('div', { class: 'chip-head' }, presetBtn);
         return h('div', { class: 'chip-head' },
-            h('span', { class: 'chip-head-title', text: '칩' }),
             presetBtn,
             h('span', { class: 'grow' }),
             h('button', { type: 'button', class: 'btn ghost sm icon', dataset: { action: 'picker' }, 'aria-label': '칩 검색해서 고르기', 'data-tip': '칩 검색해서 고르기', 'data-tip-keys': '#', html: icon('hash', 15) }),
@@ -240,16 +242,21 @@
     function renderCategory(cat, ctx) {
         const el = h('div', { class: `chip-cat mode-${cat.mode}${cat.color ? ' colored' : ''}`, dataset: { cat: cat.id } });
         if (cat.color) el.style.setProperty('--cc', `var(--label-${cat.color})`);
+        const folded = App.settings.get('chips.folded', []).includes(cat.id);
+        el.classList.toggle('folded', folded);
         let on = 0;
-        if (ctx.n) for (const ch of cat.chips) if (ctx.counts.get(ch.id)) on++;
+        if (ctx.n) for (const ch of cat.chips) {
+            for (const id of ctx.C.idsUnder(ch)) if (ctx.counts.get(id)) on++;
+        }
         const badges = [];
         if (cat.mode === 'search') badges.push(h('span', { class: 'chip-cat-badge', text: `검색형 · ${formatCount(cat.chips.length)}` }));
         if (cat.single) badges.push(h('span', { class: 'chip-cat-badge', text: '하나만' }));
-        el.append(h('div', { class: 'chip-cat-head', dataset: { catHead: cat.id } },
+        el.append(h('div', { class: 'chip-cat-head', dataset: { catHead: cat.id }, role: 'button', tabindex: 0, 'aria-expanded': String(!folded), 'aria-label': `${cat.name} ${folded ? '펼치기' : '접기'}` },
+            h('span', { class: 'chip-cat-chevron', html: icon(folded ? 'chevron-right' : 'chevron-down', 12) }),
             h('span', { class: 'chip-cat-dot' }),
             h('span', { class: 'chip-cat-name', text: cat.name }),
             ...badges,
-            on ? h('span', { class: 'chip-cat-on', text: formatCount(on) }) : null,
+            on || folded ? h('span', { class: 'chip-cat-on', text: formatCount(on) }) : null,
             h('span', { class: 'grow' }),
             h('button', { type: 'button', class: 'chip-cat-more', dataset: { catMenu: cat.id }, 'aria-label': `${cat.name} 분류 메뉴`, 'data-tip': '분류 메뉴', html: icon('more', 14) })));
         if (cat.mode === 'search') renderSearchCategory(el, cat, ctx);
@@ -574,6 +581,11 @@
             ui.menu(categoryMenuItems(more.dataset.catMenu), { x: r.left, y: r.bottom + 4 });
             return;
         }
+        const head = e.target.closest('[data-cat-head]');
+        if (head) {
+            toggleCategory(head.dataset.catHead);
+            return;
+        }
         const add = e.target.closest('.chip-add');
         if (add) {
             st.adding = { catId: add.dataset.add, parentId: add.dataset.parent || null };
@@ -616,8 +628,27 @@
         ui.menu(items, { x: e.clientX, y: e.clientY });
     }
 
+    function toggleCategory(id) {
+        // Folding can beat the inspector's selection debounce; render counts for the current selection.
+        App.inspector?.flushPending?.();
+        const before = App.settings.get('chips.folded', []).slice();
+        const after = before.includes(id) ? before.filter((x) => x !== id) : [...before, id];
+        const write = (value) => {
+            App.settings.set('chips.folded', value.slice());
+            rerenderAll();
+        };
+        write(after);
+        App.undo.push({ label: '칩 분류 접기·펼치기', undo: () => write(before), redo: () => write(after) });
+    }
+
     function onKeyDown(e) {
         const t = e.target;
+        if (t.dataset?.catHead && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleCategory(t.dataset.catHead);
+            return;
+        }
         const panel = panelOf(t);
         if (!panel) return;
         const st = stateFor(panel.dataset.panel);
@@ -837,9 +868,12 @@
         const host = addHost();
         if (cat.mode === 'search' && !parentId) {
             // 검색형: the search box doubles as the "new chip" field
+            App.settings.set('chips.folded', App.settings.get('chips.folded', []).filter((id) => id !== catId));
+            rerenderAll();
             requestAnimationFrame(() => document.querySelector(`${host} [data-search="${CSS.escape(catId)}"]`)?.focus());
             return;
         }
+        App.settings.set('chips.folded', App.settings.get('chips.folded', []).filter((id) => id !== catId));
         for (const st of states.values()) st.adding = { catId, parentId };
         rerenderAll();
         // (one selector list would return the first match in document order — the inspector, hidden behind the viewer)

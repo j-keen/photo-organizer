@@ -7,7 +7,8 @@
  *   Alt+click    exclude the chip ("빼고")
  *   '모든 폴더에서 보기' turns the condition into a workspace-wide smart view (App.view.setEntries, type 'smart').
  * File conditions include kept video-piece chips; piece-only matches open at the first contributing piece.
- * App.chipsFilter: { showChip(id), showUntagged(), clear(), stats() }
+ * App.chipsFilter: { showChip(id), showUntagged(), showDone(), clear(), stats() }
+ * The 완료함 smart view includes every indexed file under App.chipsDone.FOLDER.
  *   stats().chip / cat count files once; stats().pieces maps chip IDs to tagged kept-piece counts.
  */
 (() => {
@@ -19,7 +20,7 @@
     const LABEL_NAMES = { red: '빨강', orange: '주황', yellow: '노랑', green: '초록', blue: '파랑', purple: '보라' };
 
     const F = { ids: new Set(), exclude: new Set(), op: App.settings.get('chips.filterOp', 'and'), rating: 0, labels: new Set() };
-    let smart = null; // { kind: 'chips' | 'untagged' } while our smart view is on screen
+    let smart = null; // { kind: 'chips' | 'untagged' | 'done' } while our smart view is on screen
     let body = null;
     let headEl = null;
     let statsCache = null;
@@ -169,7 +170,12 @@
         let title;
         let emptyTitle;
         let emptyText;
-        if (kind === 'untagged') {
+        if (kind === 'done') {
+            list = App.index.items.filter((e) => App.chipsDone?.isDone(e.path));
+            title = '완료함';
+            emptyTitle = '아직 완료한 파일이 없어요';
+            emptyText = '분류를 마친 파일을 완료 폴더로 옮기면 여기에 모여요.';
+        } else if (kind === 'untagged') {
             list = App.index.items.filter((e) => !tagsOf(e.path).all.size);
             title = '미분류 — 칩이 없는 파일';
             emptyTitle = '모든 파일에 칩이 붙어 있어요';
@@ -278,6 +284,15 @@
             tip: '칩이 하나도 없는 파일을 모든 폴더에서 모아 봐요',
         }));
 
+        wrap.append(row({
+            cls: `smart${smart?.kind === 'done' ? ' on' : ''}`,
+            iconName: 'check',
+            label: '완료함',
+            count: App.index.ready ? App.index.items.filter((e) => App.chipsDone?.isDone(e.path)).length : '…',
+            data: { smart: 'done' },
+            tip: '완료 폴더의 파일을 모든 하위 폴더에서 모아 봐요',
+        }));
+
         if (!preset.categories.length) {
             wrap.append(h('div', { class: 'chipf-note' }, h('span', { text: '아직 분류가 없어요. ' }), h('button', { type: 'button', class: 'chipf-link', dataset: { action: 'add-category' }, text: '분류 만들기' })));
         }
@@ -341,7 +356,7 @@
     function updateHead() {
         if (!headEl) return;
         let badge = headEl.querySelector('.chipf-badge');
-        const n = F.ids.size + F.exclude.size + (F.rating ? 1 : 0) + F.labels.size + (smart?.kind === 'untagged' ? 1 : 0);
+        const n = F.ids.size + F.exclude.size + (F.rating ? 1 : 0) + F.labels.size + (smart && smart.kind !== 'chips' ? 1 : 0);
         if (!n) {
             badge?.remove();
             return;
@@ -384,10 +399,10 @@
         }
         const s = t.closest('[data-smart]');
         if (s) {
-            if (smart?.kind === 'untagged') return exitSmart();
+            if (smart?.kind === s.dataset.smart) return exitSmart();
             F.ids.clear();
             F.exclude.clear();
-            return runSmart('untagged');
+            return runSmart(s.dataset.smart);
         }
         const c = t.closest('[data-cat]');
         if (c) {
@@ -445,6 +460,10 @@
     // but follows files that are trashed, moved or renamed.
     function followFs(c) {
         if (!smart || App.view.source.owner !== 'chips') return;
+        if (smart.kind === 'done') {
+            runSmart('done');
+            return;
+        }
         const list = App.view.entries;
         let changed = false;
         if (c.type === 'trash' || c.type === 'delete') {
@@ -571,6 +590,7 @@
     App.chipsFilter = {
         showChip,
         showUntagged: () => runSmart('untagged'),
+        showDone: () => runSmart('done'),
         clear,
         stats,
         get state() {
