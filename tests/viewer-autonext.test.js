@@ -23,48 +23,55 @@ async function finish(page) {
     await page.evaluate(() => App.viewer.player.play());
 }
 
-// Observe past the full countdown without timing-dependent negative assertions.
+// Sample after the media event and its synchronous navigation have settled.
 async function observe(page) {
-    await page.evaluate(() => new Promise((resolve) => {
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
         window.__autoNextSeen = !!document.querySelector('.vw-autonext');
-        const observer = new MutationObserver(() => {
-            if (document.querySelector('.vw-autonext')) window.__autoNextSeen = true;
-        });
-        observer.observe(document.getElementById('viewer'), { childList: true, subtree: true });
-        setTimeout(() => { observer.disconnect(); resolve(); }, 3300);
-    }));
+        resolve();
+    }))));
 }
 
 module.exports = [
     {
-        name: 'auto-next: natural end counts down, skips the photo, and plays the next video',
+        name: 'auto-next: natural end immediately skips the photo and plays the next video',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed });
             await openVideo(page);
             assert.equal(await page.evaluate(() => App.settings.get('viewer.autoNext', true)), true);
             await finish(page);
-            await page.waitForSelector('.vw-autonext');
-            assert.match(await page.textContent('.vw-autonext'), /다음 영상 · 01-03.webm · 3초/);
+            await page.waitForFunction(() => App.viewer.current?.path === '01-03.webm', null, { timeout: 2000 });
             await page.waitForFunction(() => App.viewer.current?.path === '01-03.webm' && App.viewer.player?.path === '01-03.webm' && App.viewer.player.playing);
             assert.equal(await page.locator('.vw-autonext').count(), 0);
         },
     },
     {
-        name: 'auto-next: cancel keeps the current video; Escape dismisses only the card',
+        name: 'auto-next: completion toast moves only the previous file and undo restores it',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed });
             await openVideo(page);
+            const before = await page.evaluate(() => App.undo.list().length);
             await finish(page);
-            await page.waitForSelector('.vw-autonext');
-            await page.click('.vw-autonext button:has-text("취소")');
-            await observe(page);
-            assert.equal(await page.evaluate(() => App.viewer.current.path), '01-01.webm');
-            assert.equal(await page.evaluate(() => window.__autoNextSeen), false);
+            await page.waitForFunction(() => App.viewer.player?.path === '01-03.webm');
+            await page.getByRole('button', { name: '완료로 옮기기', exact: true }).click();
+            await page.getByRole('button', { name: '완료하기', exact: true }).click();
+            await page.waitForFunction(async () => await window.__opfs.exists('_완료/01-01.webm'));
+            assert.equal(await page.evaluate(() => App.viewer.current.path), '01-03.webm');
+            assert.equal(await page.evaluate(() => App.undo.list().length), before + 1);
+            await page.evaluate(() => App.undo.undo());
+            await page.waitForFunction(async () => await window.__opfs.exists('01-01.webm'));
+        },
+    },
+    {
+        name: 'auto-next: automatic completion advances before moving the previous file',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed });
+            await openVideo(page);
+            await page.evaluate(() => App.settings.set('viewer.autoDoneOnEnd', true));
             await finish(page);
-            await page.waitForSelector('.vw-autonext');
-            await page.keyboard.press('Escape');
-            await page.waitForSelector('.vw-autonext', { state: 'detached' });
-            assert.ok(await page.evaluate(() => App.viewer.isOpen));
+            await page.getByRole('button', { name: '완료하기', exact: true }).click();
+            await page.waitForFunction(async () => await window.__opfs.exists('_완료/01-01.webm'));
+            assert.equal(await page.evaluate(() => App.viewer.current.path), '01-03.webm');
+            assert.equal(await page.getByRole('button', { name: '완료로 옮기기', exact: true }).count(), 0);
         },
     },
     {
@@ -114,7 +121,7 @@ module.exports = [
         },
     },
     {
-        name: 'auto-next: edited preview end offers next video despite its boundary seek',
+        name: 'auto-next: edited preview immediately advances despite its boundary seek',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed });
             await openVideo(page);
@@ -125,8 +132,7 @@ module.exports = [
             await page.evaluate(() => App.viewer.player.seek(0.7));
             await page.waitForFunction(() => !App.viewer.player.video.seeking);
             await page.evaluate(() => App.viewer.player.play());
-            await page.waitForSelector('.vw-autonext');
-            await page.keyboard.press('Enter');
+            await page.waitForFunction(() => App.viewer.current?.path === '01-03.webm', null, { timeout: 2000 });
             await page.waitForFunction(() => App.viewer.current?.path === '01-03.webm' && App.viewer.player?.path === '01-03.webm' && App.viewer.player.playing);
             assert.equal(await page.locator('.vw-autonext').count(), 0);
         },

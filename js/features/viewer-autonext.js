@@ -1,25 +1,40 @@
 /*
  * Viewer auto-next: viewer.autoNext (default true), persisted through App.settings.
- * Natural video/edit endings offer the next video in viewer.files without wrapping.
- * Contributes a checked viewer menu item and the shared 'viewer' settings page, including viewer.controlsBelow
- * (default true). No additional public viewer API.
+ * Natural video/edit endings immediately play the next video without wrapping.
+ * viewer.autoDoneOnEnd defaults false; completion delegates to App.chipsDone.move after the next file is shown.
+ * The shared 'viewer' settings page also configures resume, folder rates and controlsBelow (default true).
+ * No additional public viewer API.
  */
 (() => {
     'use strict';
-    const { h } = App.util;
     const V = App.viewer;
     const KEY = 'viewer.autoNext';
     let pending = null;
     let closing = false;
 
     function cancel() {
-        const rec = pending;
-        if (!rec) return;
         pending = null;
-        clearInterval(rec.timer);
-        rec.card.remove();
-        rec.cleanup();
     }
+
+    function complete(rec) {
+        if (!App.chipsDone?.move || App.state.workspace?.id !== rec.workspace) return;
+        // A toast can outlive navigation back to the previous file.
+        if (V.isOpen && (V.current?.path === rec.previous.path || V.player?.path === rec.previous.path)) return;
+        return App.chipsDone.move([rec.previous.path]);
+    }
+
+    App.bus.on('viewer:shown', ({ entry }) => {
+        const rec = pending;
+        if (!rec || entry.path !== rec.next.path || V.player?.path !== entry.path) return;
+        cancel();
+        V.osd(`다음 영상 · ${entry.name}`, { duration: 1200 });
+        if (!App.chipsDone?.move) return;
+        if (App.settings.get('viewer.autoDoneOnEnd', false)) complete(rec);
+        else App.ui.toast(`${rec.previous.name} 다 봤어요`, {
+            duration: 6000,
+            action: { label: '완료로 옮기기', run: () => complete(rec) },
+        });
+    });
 
     function allowed(p) {
         return !closing && V.isOpen && V.kind === 'video' && V.player === p &&
@@ -36,15 +51,6 @@
         return null;
     }
 
-    function advance() {
-        const rec = pending;
-        if (!rec) return;
-        const next = nextVideo();
-        const valid = allowed(rec.player) && !rec.player.playing && next?.entry.path === rec.next.path;
-        cancel();
-        // Resolve the index again because the visible file list can change during the countdown.
-        if (valid) V.step(next.index - V.index, { play: true });
-    }
 
     function ended(event, edited = false) {
         const p = V.player;
@@ -56,53 +62,10 @@
             V.osd('마지막 영상이에요', { duration: 1200 });
             return;
         }
-        if (!V.overlayEl) return;
-        const label = h('div', { class: 'vw-autonext-label' });
-        const card = h('div', { class: 'vw-autonext', role: 'group', 'aria-label': '다음 영상' },
-            label,
-            h('div', { class: 'vw-autonext-actions' },
-                h('button', { type: 'button', class: 'btn sm primary', text: '지금 보기', onclick: advance }),
-                h('button', { type: 'button', class: 'btn sm', text: '취소', onclick: cancel })));
-        // Card gestures must not reach the media's play/pause and fullscreen handlers.
-        for (const name of ['pointerdown', 'click', 'dblclick']) card.addEventListener(name, (e) => e.stopPropagation());
-        const initialTime = p.time;
-        let initialSeek = edited && p.video.seeking;
-        const onSeek = () => {
-            // checkSkip seeks to the edit boundary before emitting edit-ended.
-            if (initialSeek && Math.abs(p.time - initialTime) < 0.01) return;
-            cancel();
-        };
-        const onSeeked = () => { initialSeek = false; };
-        p.video.addEventListener('seeking', onSeek);
-        p.video.addEventListener('seeked', onSeeked);
-        p.video.addEventListener('play', cancel);
-        const rec = {
-            player: p,
-            next: next.entry,
-            card,
-            deadline: performance.now() + 3000,
-            timer: null,
-            cleanup: () => {
-                p.video.removeEventListener('seeking', onSeek);
-                p.video.removeEventListener('seeked', onSeeked);
-                p.video.removeEventListener('play', cancel);
-            },
-        };
-        pending = rec;
-        const tick = () => {
-            if (pending !== rec) return;
-            if (!allowed(p) || p.playing) return cancel();
-            const seconds = Math.max(0, Math.ceil((rec.deadline - performance.now()) / 1000));
-            label.textContent = `다음 영상 · ${rec.next.name} · ${seconds}초`;
-            const controls = V.overlayEl.querySelector('.vw-ctl:not([hidden])');
-            const bottom = controls ? V.overlayEl.getBoundingClientRect().bottom - controls.getBoundingClientRect().top + 12 : 100;
-            card.style.setProperty('--vw-autonext-bottom', `${Math.max(100, bottom)}px`);
-            if (!seconds) advance();
-        };
-        V.overlayEl.append(card);
-        V.poke();
-        tick();
-        rec.timer = setInterval(tick, 100);
+        p.resumeEnded = true;
+        p.saveResume?.(true);
+        pending = { previous: V.current, next: next.entry, workspace: App.state.workspace?.id };
+        V.step(next.index - V.index, { play: true, time: 0 });
     }
 
     function setEnabled(value) {
@@ -126,7 +89,10 @@
     App.bus.on('viewer:video-ended', (e) => ended(e));
     App.bus.on('viewer:edit-ended', (e) => ended(e, true));
     App.bus.on('viewer:segment-ended', cancel);
-    App.bus.on('viewer:entry', () => { closing = false; cancel(); });
+    App.bus.on('viewer:entry', ({ entry }) => {
+        closing = false;
+        if (pending?.next.path !== entry.path) cancel();
+    });
     App.bus.on('viewer:closing', () => { closing = true; cancel(); });
     App.bus.on('viewer:closed', cancel);
     App.bus.on('fs:changed', cancel);
@@ -135,24 +101,6 @@
         if (key === KEY && App.settings.get(KEY, true) === false) cancel();
     });
 
-    window.addEventListener('pointerdown', (e) => {
-        if (pending && !pending.card.contains(e.target)) cancel();
-    }, true);
-    window.addEventListener('click', (e) => {
-        if (pending && !pending.card.contains(e.target)) cancel();
-    }, true);
-    // Capture before document shortcuts so Escape dismisses only this card.
-    window.addEventListener('keydown', (e) => {
-        if (!pending || e.isComposing) return;
-        if (e.key === 'Escape' || e.key === 'Enter') {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            if (e.key === 'Enter') advance();
-            else cancel();
-        } else if (e.code === 'Space' || e.key === ' ') {
-            cancel();
-        }
-    }, true);
 
     App.bus.on('app:ready', () => {
         const S = App.settingsUI;
@@ -165,11 +113,11 @@
             desc: '영상 재생바와 이어 보기를 설정해요.',
             render(body, kit) {
                 const g = kit.group('영상 보기', '편하게 영상을 볼 수 있도록 설정해요.');
-                const toggle = (key, label, desc) => {
-                    const control = kit.toggle({ key, fallback: true });
+                const toggle = (key, label, desc, fallback = true) => {
+                    const control = kit.toggle({ key, fallback });
                     // The kit writes the setting; capture its previous value for one global undo step.
                     control.addEventListener('change', (event) => {
-                        const before = App.settings.get(key, true) !== false;
+                        const before = !!App.settings.get(key, fallback);
                         const after = !!event.target.checked;
                         if (before === after) return;
                         App.undo.push({
@@ -180,7 +128,10 @@
                     }, true);
                     g.body.append(kit.row({ label, desc, control }));
                 };
-                toggle(KEY, '다 보면 다음 영상', '영상을 다 보면 3초 뒤에 다음 영상을 재생해요.');
+                toggle(KEY, '다 보면 다음 영상', '영상을 다 보면 바로 다음 영상을 재생해요.');
+                toggle('viewer.autoDoneOnEnd', '다 본 영상은 바로 완료 폴더로', '다음 영상으로 넘어가면 이전 영상을 완료 폴더로 옮겨요.', false);
+                toggle('viewer.rememberResume', '이어 보기 위치 기억', '다시 열면 보던 위치부터 이어서 봐요.');
+                toggle('viewer.rememberFolderRate', '폴더별 재생 속도 기억', '같은 폴더의 영상은 선택한 속도로 재생해요.');
                 toggle('viewer.controlsBelow', '재생바를 영상 아래에 보여요', '일반 보기에서 재생바가 영상과 자막을 가리지 않아요.');
                 body.append(g.el);
             },

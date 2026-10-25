@@ -8,6 +8,10 @@
  *
  *   App.viewer.player — active player { playing, time, duration, fps, video, play(), pause(), toggle(), seek(t), seekBy(dt),
  *                        seekStep(dir), frameStep(dir), playRange(a, b), setRanges(key, ranges), markers() ... }
+ *   player.saveResume(clear = false) caches meta.resumeAt/resumeDur without undo and batches gallery refreshes.
+ *   viewer.rememberResume defaults true; gallery progress uses the saved checkpoint duration.
+ *   viewer.rememberFolderRate defaults true; viewer.rateByFolder maps parent paths to normal playback rates.
+ *   setRate(r, remember = true) retains its existing one-argument behavior; shuttle calls opt out of persistence.
  * Events: 'viewer:player' {player|null}, 'viewer:video-time' {time}, 'viewer:video-meta' {duration}, 'viewer:video-ended'
  */
 (() => {
@@ -55,6 +59,21 @@
         if (s && typeof s.streamUrl === 'function') return s.streamUrl(p);
         if (s && typeof s.mediaUrl === 'function') return s.mediaUrl(p, 'stream');
         return `${s?.base || ''}/api/media/stream?path=${encodeURIComponent(p)}`;
+    }
+
+    const resumeDirty = new Set();
+    let resumeRefreshTimer = null;
+
+    function refreshResumeCard(path) {
+        resumeDirty.add(path);
+        if (resumeRefreshTimer !== null) return;
+        // Cache writes emit no catalog event; batch card refreshes without delaying checkpoint storage.
+        resumeRefreshTimer = setTimeout(() => {
+            resumeRefreshTimer = null;
+            const paths = [...resumeDirty];
+            resumeDirty.clear();
+            App.gallery?.invalidate?.(paths);
+        }, 250);
     }
 
     // ---------- Player (one per video slot) ----------
@@ -278,6 +297,7 @@
             v.addEventListener('timeupdate', () => {
                 if (!isActive()) return;
                 if (!this.raf) bar.updateTime();
+                if (this.playing && performance.now() - (this.resumeSavedAt || 0) >= 5000) this.saveResume();
                 App.bus.emit('viewer:video-time', { time: this.time });
             });
             v.addEventListener('seeked', () => {
@@ -287,6 +307,7 @@
             });
             v.addEventListener('progress', () => isActive() && bar.updateBuffered());
             v.addEventListener('play', () => {
+                this.resumeEnded = false;
                 this.setState('none');
                 this.loop();
                 if (isActive()) bar.update();
@@ -317,6 +338,8 @@
                 }
                 if (isActive()) bar.update();
                 this.setState('ended');
+                this.resumeEnded = true;
+                this.saveResume(true);
                 App.bus.emit('viewer:video-ended', { path: this.path });
             });
             v.addEventListener('ratechange', () => isActive() && bar.update());
@@ -394,6 +417,29 @@
             const opts = this.ctx.opts || {};
             if (opts.time != null && isFinite(opts.time)) this.seek(opts.time);
             if (opts.segment) this.setSegment(opts.segment);
+            const savedRate = App.settings.get('viewer.rateByFolder', {})?.[P.parent(this.path)];
+            if (App.settings.get('viewer.rememberFolderRate', true) !== false && Number.isFinite(savedRate) && savedRate >= 0.0625 && savedRate <= 16) {
+                v.playbackRate = savedRate;
+                v.defaultPlaybackRate = savedRate;
+                if (this.ctx.active) V.osd(`${savedRate}배속 (이 폴더)`, { duration: 1200 });
+            }
+            const resumeAt = Number(App.catalog.peek(this.path)?.meta?.resumeAt);
+            if (opts.time == null && !opts.segment && !V.segment && !V.sequence &&
+                App.settings.get('viewer.rememberResume', true) !== false &&
+                Number.isFinite(resumeAt) && resumeAt >= 10 && d - resumeAt > 15) {
+                this.seek(resumeAt);
+                const card = h('div', { class: 'vw-resume', role: 'status' },
+                    h('span', { text: `${fmt(resumeAt)}부터 이어서 봐요 · ` }),
+                    h('button', { type: 'button', class: 'btn sm', text: '처음부터', onclick: () => {
+                        if (!this.ctx.active || this.destroyed) return;
+                        this.seek(0);
+                        this.saveResume(true);
+                        card.remove();
+                    } }));
+                for (const name of ['pointerdown', 'click', 'dblclick']) card.addEventListener(name, (e) => e.stopPropagation());
+                this.resumeCard = card;
+                this.slot.append(card);
+            }
             const auto = opts.play === true || (opts.play !== false && App.settings.get('viewer.autoplay', true) !== false);
             if (auto && (!V.slideshow?.running || V.slideshow.includeVideos)) this.play();
             else this.setState('paused');
@@ -542,11 +588,31 @@
             V.osd(dir > 0 ? '다음 프레임' : '이전 프레임', { icon: dir > 0 ? 'vw-frame-next' : 'vw-frame-prev', duration: 400 });
         }
 
-        setRate(r) {
+        setRate(r, remember = true) {
+            if (!Number.isFinite(r)) return;
             this.stopReverse();
             const rate = clamp(r, 0.0625, 16);
-            this.video.playbackRate = rate;
-            this.video.defaultPlaybackRate = rate;
+            const beforeRate = this.rate;
+            const before = { ...App.settings.get('viewer.rateByFolder', {}) };
+            const after = { ...before };
+            const folder = P.parent(this.path);
+            const persist = remember && App.settings.get('viewer.rememberFolderRate', true) !== false;
+            if (persist) {
+                if (rate === 1) delete after[folder];
+                else after[folder] = rate;
+            }
+            const write = (value, rates) => {
+                if (persist) App.settings.set('viewer.rateByFolder', rates);
+                if (!this.destroyed) {
+                    this.stopReverse();
+                    this.video.playbackRate = value;
+                    this.video.defaultPlaybackRate = value;
+                }
+            };
+            write(rate, after);
+            if (remember && (beforeRate !== rate || (persist && before[folder] !== after[folder]))) {
+                App.undo.push({ label: '재생 속도', undo: () => write(beforeRate, before), redo: () => write(rate, after) });
+            }
             V.osd(`${rate}×`, { icon: 'vw-gauge', duration: 600 });
         }
 
@@ -573,7 +639,7 @@
                     return;
                 }
                 const next = JKL_RATES.find((r) => r > this.rate + 1e-6) ?? JKL_RATES[JKL_RATES.length - 1];
-                this.setRate(next);
+                this.setRate(next, false);
                 return;
             }
             if (this.reverseRate) {
@@ -884,7 +950,24 @@
             ];
         }
 
+        saveResume(clear = false) {
+            if (!this.metaReady || this.failed || !this.ctx.shown) return;
+            if (!clear && App.settings.get('viewer.rememberResume', true) === false) return;
+            this.resumeSavedAt = performance.now();
+            const t = this.time;
+            const d = this.duration;
+            const resumeAt = !clear && !this.resumeEnded && Number.isFinite(t) && d > 0 && t >= 10 && d - t > 15
+                ? Math.round(t * 1000) / 1000 : null;
+            const resumeDur = resumeAt === null ? null : d;
+            const meta = App.catalog.peek(this.path)?.meta || {};
+            if ((meta.resumeAt ?? null) === resumeAt && (meta.resumeDur ?? null) === resumeDur) return;
+            App.catalog.setMeta(this.path, { resumeAt, resumeDur });
+            refreshResumeCard(this.path);
+        }
+
         deactivate() {
+            this.saveResume();
+            this.resumeCard?.remove();
             this.view.finish();
             this.stopReverse();
             this.stopAt = null;
@@ -1769,6 +1852,32 @@
         ];
         if (serverStreamReady() && p.source !== 'stream') items.push({ label: '서버로 재생', icon: 'server', command: 'video.serverStream' });
         return items;
+    });
+
+    function decorateResume(card, entry) {
+        card.querySelectorAll('.vw-resume-progress').forEach((el) => el.remove());
+        if (entry.type !== 'video' || App.settings.get('viewer.rememberResume', true) === false) return;
+        const meta = App.catalog.peek(entry.path)?.meta || {};
+        const t = Number(meta.resumeAt);
+        const savedDuration = Number(meta.resumeDur);
+        const d = Number.isFinite(savedDuration) && savedDuration > 0 ? savedDuration : Number(meta.duration);
+        if (!Number.isFinite(t) || !Number.isFinite(d) || t < 10 || d - t <= 15) return;
+        card.append(h('div', { class: 'vw-resume-progress', 'aria-label': `${fmt(t)}까지 봤어요` },
+            h('i', { style: { width: `${clamp(t / d, 0, 1) * 100}%` } })));
+    }
+
+    function registerResumeDecorator() {
+        const decorators = App.gallery?.cardDecorators;
+        if (!decorators || decorators.includes(decorateResume)) return;
+        decorators.push(decorateResume);
+        App.gallery.refresh();
+    }
+
+    // Register before initial rendering when gallery is available; ready covers alternate script ordering.
+    registerResumeDecorator();
+    App.bus.on('app:ready', registerResumeDecorator);
+    App.bus.on('settings:changed', ({ key }) => {
+        if (key === 'viewer.rememberResume') App.gallery?.refresh?.();
     });
 
     V.fmtTime = fmt;
