@@ -1,6 +1,6 @@
 /*
  * Viewer auto-next: viewer.autoNext (default true), persisted through App.settings.
- * Natural video/edit endings immediately play the next video without wrapping.
+ * Natural video/edit endings immediately show the next file without wrapping; videos start playing.
  * viewer.autoDoneOnEnd defaults false; completion delegates to App.chipsDone.move after the next file is shown.
  * The shared 'viewer' settings page also configures resume, folder rates and controlsBelow (default true).
  * No additional public viewer API.
@@ -25,9 +25,10 @@
 
     App.bus.on('viewer:shown', ({ entry }) => {
         const rec = pending;
-        if (!rec || entry.path !== rec.next.path || V.player?.path !== entry.path) return;
+        if (!rec || entry.path !== rec.next.path || V.current?.path !== entry.path ||
+            (entry.type === 'video' && V.player?.path !== entry.path)) return;
         cancel();
-        V.osd(`다음 영상 · ${entry.name}`, { duration: 1200 });
+        V.osd(`다음 파일 · ${entry.name}`, { duration: 1200 });
         if (!App.chipsDone?.move) return;
         if (App.settings.get('viewer.autoDoneOnEnd', false)) complete(rec);
         else App.ui.toast(`${rec.previous.name} 다 봤어요`, {
@@ -44,28 +45,20 @@
             !p.video.loop && !p.reverseRate && p.stopAt == null;
     }
 
-    function nextVideo() {
-        for (let i = V.index + 1; i < V.files.length; i++) {
-            if (V.files[i].type === 'video') return { index: i, entry: V.files[i] };
-        }
-        return null;
-    }
-
-
     function ended(event, edited = false) {
         const p = V.player;
         if (!p || event?.path !== p.path || !allowed(p)) return;
         if (edited ? (!p.skip || !p.editBounds || p.playing) : !p.video.ended) return;
         if (pending) return;
-        const next = nextVideo();
+        const next = V.files[V.index + 1];
         if (!next) {
-            V.osd('마지막 영상이에요', { duration: 1200 });
+            V.osd('마지막 파일이에요', { duration: 1200 });
             return;
         }
         p.resumeEnded = true;
         p.saveResume?.(true);
-        pending = { previous: V.current, next: next.entry, workspace: App.state.workspace?.id };
-        V.step(next.index - V.index, { play: true, time: 0 });
+        pending = { previous: V.current, next, workspace: App.state.workspace?.id };
+        V.step(1, { play: next.type === 'video', time: 0 });
     }
 
     function setEnabled(value) {
@@ -77,11 +70,11 @@
             if (!on) cancel();
         };
         write(after);
-        App.undo.push({ label: '다 보면 다음 영상', undo: () => write(before), redo: () => write(after) });
+        App.undo.push({ label: '다 보면 다음 파일로', undo: () => write(before), redo: () => write(after) });
     }
 
     V.contextItems.push((entry, kind) => kind === 'video' ? [{
-        label: '다 보면 다음 영상',
+        label: '다 보면 다음 파일로',
         checked: App.settings.get(KEY, true) !== false,
         action: () => setEnabled(App.settings.get(KEY, true) === false),
     }] : []);
@@ -128,8 +121,8 @@
                     }, true);
                     g.body.append(kit.row({ label, desc, control }));
                 };
-                toggle(KEY, '다 보면 다음 영상', '영상을 다 보면 바로 다음 영상을 재생해요.');
-                toggle('viewer.autoDoneOnEnd', '다 본 영상은 바로 완료 폴더로', '다음 영상으로 넘어가면 이전 영상을 완료 폴더로 옮겨요.', false);
+                toggle(KEY, '다 보면 다음 파일로', '영상을 다 보면 바로 다음 파일을 보여요. 영상이면 재생해요.');
+                toggle('viewer.autoDoneOnEnd', '다 본 영상은 바로 완료 폴더로', '다음 파일로 넘어가면 이전 영상을 완료 폴더로 옮겨요.', false);
                 toggle('viewer.rememberResume', '이어 보기 위치 기억', '다시 열면 보던 위치부터 이어서 봐요.');
                 toggle('viewer.rememberFolderRate', '폴더별 재생 속도 기억', '같은 폴더의 영상은 선택한 속도로 재생해요.');
                 toggle('viewer.controlsBelow', '재생바를 영상 아래에 보여요', '일반 보기에서 재생바가 영상과 자막을 가리지 않아요.');

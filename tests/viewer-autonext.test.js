@@ -33,14 +33,42 @@ async function observe(page) {
 
 module.exports = [
     {
-        name: 'auto-next: natural end immediately skips the photo and plays the next video',
+        name: 'auto-next: natural end shows the photo and keyboard round trip preserves file order',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed });
             await openVideo(page);
             assert.equal(await page.evaluate(() => App.settings.get('viewer.autoNext', true)), true);
             await finish(page);
-            await page.waitForFunction(() => App.viewer.current?.path === '01-03.webm', null, { timeout: 2000 });
-            await page.waitForFunction(() => App.viewer.current?.path === '01-03.webm' && App.viewer.player?.path === '01-03.webm' && App.viewer.player.playing);
+            await page.waitForFunction(() => App.viewer.current?.path === '01-02.png' &&
+                App.viewer.kind === 'image' && App.viewer.media instanceof HTMLImageElement &&
+                App.viewer.media.complete && App.viewer.media.naturalWidth > 0 && !App.viewer.player,
+            null, { timeout: 2000 });
+            await page.waitForFunction(() => document.querySelector('.vw-osd')?.textContent === '다음 파일 · 01-02.png');
+            assert.equal(await page.locator('.vw-autonext').count(), 0);
+            await page.keyboard.press('Control+ArrowRight');
+            await page.waitForFunction(() => App.viewer.current?.path === '01-03.webm' &&
+                App.viewer.player?.path === '01-03.webm' && App.viewer.player.metaReady);
+            await page.keyboard.press('Control+ArrowLeft');
+            await page.waitForFunction(() => App.viewer.current?.path === '01-02.png' &&
+                App.viewer.media instanceof HTMLImageElement && App.viewer.media.complete &&
+                App.viewer.media.naturalWidth > 0 && !App.viewer.player);
+            await page.keyboard.press('Control+ArrowLeft');
+            await page.waitForFunction(() => App.viewer.current?.path === '01-01.webm' &&
+                App.viewer.player?.path === '01-01.webm' && App.viewer.player.metaReady);
+        },
+    },
+    {
+        name: 'auto-next: an adjacent video starts playing',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: {
+                '01-01.webm': seed['01-01.webm'],
+                '01-03.webm': seed['01-03.webm'],
+            } });
+            await openVideo(page);
+            await finish(page);
+            await page.waitForFunction(() => App.viewer.current?.path === '01-03.webm' &&
+                App.viewer.player?.path === '01-03.webm' && App.viewer.player.playing);
+            await page.waitForFunction(() => document.querySelector('.vw-osd')?.textContent === '다음 파일 · 01-03.webm');
             assert.equal(await page.locator('.vw-autonext').count(), 0);
         },
     },
@@ -51,12 +79,12 @@ module.exports = [
             await openVideo(page);
             const before = await page.evaluate(() => App.undo.list().length);
             await finish(page);
-            await page.waitForFunction(() => App.viewer.player?.path === '01-03.webm');
+            await page.waitForFunction(() => App.viewer.current?.path === '01-02.png' && !App.viewer.player);
             await page.getByRole('button', { name: '완료로 옮기기', exact: true }).click();
             await page.getByRole('button', { name: '완료하기', exact: true }).click();
             await page.waitForFunction(async () => await window.__opfs.exists('_완료/01-01.webm'));
-            assert.equal(await page.evaluate(() => App.viewer.current.path), '01-03.webm');
-            assert.equal(await page.evaluate(() => App.undo.list().length), before + 1);
+            assert.equal(await page.evaluate(() => App.viewer.current.path), '01-02.png');
+            await page.waitForFunction((before) => App.undo.list().length === before + 1, before);
             await page.evaluate(() => App.undo.undo());
             await page.waitForFunction(async () => await window.__opfs.exists('01-01.webm'));
         },
@@ -70,7 +98,7 @@ module.exports = [
             await finish(page);
             await page.getByRole('button', { name: '완료하기', exact: true }).click();
             await page.waitForFunction(async () => await window.__opfs.exists('_완료/01-01.webm'));
-            assert.equal(await page.evaluate(() => App.viewer.current.path), '01-03.webm');
+            assert.equal(await page.evaluate(() => App.viewer.current.path), '01-02.png');
             assert.equal(await page.getByRole('button', { name: '완료로 옮기기', exact: true }).count(), 0);
         },
     },
@@ -81,7 +109,7 @@ module.exports = [
             await openVideo(page);
             const before = await page.evaluate(() => App.undo.list().length);
             await page.click('.vw-actions [data-act="more"]');
-            await page.click('.menu :text-is("다 보면 다음 영상")');
+            await page.click('.menu :text-is("다 보면 다음 파일로")');
             await page.waitForFunction(() => App.settings.get('viewer.autoNext', true) === false);
             assert.equal(await page.evaluate(() => App.undo.list().length), before + 1);
             await finish(page);
@@ -110,12 +138,12 @@ module.exports = [
         },
     },
     {
-        name: 'auto-next: last video shows only the last-video OSD',
+        name: 'auto-next: last file shows only the last-file OSD',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed });
             await openVideo(page, '01-03.webm');
             await finish(page);
-            await page.waitForFunction(() => document.querySelector('.vw-osd')?.textContent === '마지막 영상이에요');
+            await page.waitForFunction(() => document.querySelector('.vw-osd')?.textContent === '마지막 파일이에요');
             assert.equal(await page.locator('.vw-autonext').count(), 0);
             assert.equal(await page.evaluate(() => App.viewer.current.path), '01-03.webm');
         },
@@ -132,8 +160,10 @@ module.exports = [
             await page.evaluate(() => App.viewer.player.seek(0.7));
             await page.waitForFunction(() => !App.viewer.player.video.seeking);
             await page.evaluate(() => App.viewer.player.play());
-            await page.waitForFunction(() => App.viewer.current?.path === '01-03.webm', null, { timeout: 2000 });
-            await page.waitForFunction(() => App.viewer.current?.path === '01-03.webm' && App.viewer.player?.path === '01-03.webm' && App.viewer.player.playing);
+            await page.waitForFunction(() => App.viewer.current?.path === '01-02.png' &&
+                App.viewer.media instanceof HTMLImageElement && App.viewer.media.complete &&
+                App.viewer.media.naturalWidth > 0 && !App.viewer.player, null, { timeout: 2000 });
+            await page.waitForFunction(() => document.querySelector('.vw-osd')?.textContent === '다음 파일 · 01-02.png');
             assert.equal(await page.locator('.vw-autonext').count(), 0);
         },
     },
