@@ -1,0 +1,67 @@
+/* Annotation stays below App.ui dialogs so discard and text dialogs remain usable. */
+.capture-annotate {
+    position: fixed;
+    inset: 0;
+    z-index: calc(var(--z-dialog) - 1);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    outline: none;
+}
+
+.capture-annotate-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    flex-shrink: 0;
+    max-height: 40vh;
+    overflow: auto;
+}
+
+.capture-annotate-toolbar .select {
+    width: 90px;
+}
+
+.capture-annotate-color {
+    width: 30px;
+    padding: 6px;
+}
+
+.capture-annotate-color::before {
+    content: '';
+    width: 16px;
+    height: 16px;
+    border-radius: var(--r-full);
+    background: var(--annotation-color);
+}
+
+.capture-annotate-stage {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: var(--bg-2);
+    border: 1px solid var(--line-2);
+    border-radius: var(--r);
+}
+
+.capture-annotate-stage canvas {
+    display: block;
+    flex-shrink: 0;
+    touch-action: none;
+    cursor: crosshair;
+}
+
+.capture-annotate-hint {
+    flex-shrink: 0;
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+    text-align: center;
+}

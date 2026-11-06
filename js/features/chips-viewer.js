@@ -9,6 +9,8 @@
  * Commands: chips.drawer.viewer (Alt+C), chips.done.viewer (Ctrl+Enter, provided by chips-done.js).
  * The bottom button explicitly completes the whole file, including while a piece is selected.
  * A persistent memo textarea above it edits catalog.memo or the selected piece's memo, with autosave and coalesced undo.
+ * App.chipsViewer.memoEditor() returns { input, target, flush } for attachment integrations; target is a copy.
+ * Optional App.memoCaps.mount(section, editor) adds capture controls; sync() follows memo target changes.
  */
 (() => {
     'use strict';
@@ -22,6 +24,11 @@
     const memo = { input: null, targetEl: null, target: null, dirty: false };
     let memoBurst = 0;
     let syncingMemo = false;
+    let memoCapsMount = null;
+
+    function memoEditor() {
+        return { input: memo.input, target: memo.target ? { ...memo.target } : null, flush: flushMemo };
+    }
     const saveMemoSoon = App.util.debounce(flushMemo, 600);
 
     function memoValue(target) {
@@ -73,6 +80,7 @@
             memo.input.disabled = !target;
             memo.targetEl.textContent = piece ? piece.label : '파일';
             growMemo();
+            memoCapsMount?.sync();
         } finally {
             syncingMemo = false;
         }
@@ -95,18 +103,25 @@
             syncMemo(current(), App.chipset?.pieceTarget?.() || null);
         });
         memo.input.addEventListener('keydown', (e) => {
-            // Keep ordinary editing native; neither completion nor viewer navigation owns these keys here.
+            // Only capture escapes the typing guard; viewer navigation stays blocked.
             e.stopPropagation();
             if (e.isComposing || e.keyCode === 229) return;
+            if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'c') {
+                e.preventDefault();
+                App.commands.run('capture.toMemo');
+                return;
+            }
             if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
                 e.preventDefault();
                 memo.input.blur();
                 App.viewer.root?.focus({ preventScroll: true });
             }
         });
-        return h('section', { class: 'chip-dock-memo' },
+        const section = h('section', { class: 'chip-dock-memo' },
             h('div', { class: 'chip-dock-memo-head' }, h('span', { text: '메모' }), memo.targetEl),
             memo.input);
+        memoCapsMount = App.memoCaps?.mount?.(section, memoEditor) || null;
+        return section;
     }
 
     const wanted = () => !!App.settings.get('chips.drawer', false);
@@ -176,6 +191,8 @@
                     renderPanel();
                     return () => {
                         flushMemo();
+                        memoCapsMount?.destroy();
+                        memoCapsMount = null;
                         memoBurst++;
                         memo.target = null;
                         memo.input = null;
@@ -232,5 +249,5 @@
         },
     });
 
-    App.chipsViewer = { toggle, get isOpen() { return isOpen(); } };
+    App.chipsViewer = { toggle, memoEditor, get isOpen() { return isOpen(); } };
 })();

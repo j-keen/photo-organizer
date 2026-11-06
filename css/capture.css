@@ -1,0 +1,30 @@
+/* Region selection is separate from the media's pan gestures. */
+.cap-region {
+    position: fixed;
+    z-index: 10000;
+    overflow: hidden;
+    cursor: crosshair;
+    touch-action: none;
+    user-select: none;
+    outline: none;
+    background: color-mix(in srgb, var(--bg) 20%, transparent);
+}
+.cap-selection {
+    position: absolute;
+    pointer-events: none;
+    border: 2px solid var(--accent);
+    box-sizing: border-box;
+    box-shadow: 0 0 0 100vmax color-mix(in srgb, var(--bg) 50%, transparent);
+}
+.cap-help {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    pointer-events: none;
+    white-space: nowrap;
+}

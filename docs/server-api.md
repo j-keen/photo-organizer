@@ -57,6 +57,23 @@ server process is still running after an update → the app shows "서버를 새
 | `GET /api/media/probe` | `?path=` | `{width, height, duration, fps, vcodec, acodec, rotation, taken, camera}` (taken = EXIF DateTimeOriginal in ms) |
 | `GET /api/media/stream` | `?path=` | for formats the browser can't play (avi/wmv/ts/hevc mkv...): ffmpeg remux/transcode to fragmented MP4 (H.264/AAC) streamed |
 
+## OCR (optional Windows capability)
+
+`POST /api/ocr` with `{ "path": "사진/_캡처/장면.jpg" }` returns
+`{text, lines: [{text, box: {x, y, w, h}}]}` synchronously. Boxes are unions of each line's word rectangles,
+measured in decoded image pixels. Blank images return `{text: '', lines: []}`. This operation never changes files.
+Workspace tokens (`?ws=` or `X-FI-Workspace`) and all normal session/path security rules apply.
+
+Uses Windows PowerShell 5.1 and built-in `Windows.Media.Ocr`, with `ko-KR` preferred and user profile languages
+as fallback. No additional pip package is required. `/api/session` advertises `capabilities.ocr: true` and
+includes `ocr` in `supports` only when an OCR engine can be created. Other platforms return `ENOTSUP` (501).
+Missing files return `ENOENT`; folders, non-image files, undecodable or oversized images return `EINVAL`;
+a busy OCR worker returns `EBUSY`; processing timeout/failure returns `ESERVER`.
+
+Client: `App.server.supports('ocr')` and `App.server.ocr(path) → Promise<{text, lines}>`.
+The request is bounded to 60 seconds and one concurrent OCR worker. Paths are sent as JSON over stdin,
+never interpolated into PowerShell source. Images exceeding Windows OCR's maximum dimension are rejected.
+
 ## Video tools (async → job)
 Outputs are written next to the source with a unique name; the job result returns the workspace-relative path.
 | Method & path | Body | Notes |

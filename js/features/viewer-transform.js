@@ -8,6 +8,8 @@
  *
  *   new App.viewer.ViewTransform({ ctx, slot, path, upscale, pad, swipe, onTap, onDoubleTap, onPlainWheel })
  *   App.viewer.view — the transform of the file on screen (set by viewer.js)
+ *   view.restore({ crop, zoom, rot?, flipH?, flipV? }) -> bool: animate to an oriented source-pixel
+ *   rectangle, centred where pan bounds permit; reduce the recorded zoom if needed to show the whole crop.
  */
 (() => {
     'use strict';
@@ -238,6 +240,32 @@
             this.fitScale = this.computeFit();
             this.animateTo({ scale: this.fitScale, tx: 0, ty: 0 }, animate ? 220 : 0);
             if (!quiet) V.osd('화면에 맞춤', { icon: 'vw-fit' });
+        }
+
+        restore({ crop, zoom, rot, flipH, flipV } = {}) {
+            if (!this.nat || !crop || ![crop.x, crop.y, crop.w, crop.h, zoom].every(Number.isFinite) || crop.w <= 0 || crop.h <= 0 || zoom <= 0) return false;
+            this.finish();
+            const angle = rot == null ? this.angle : norm(rot);
+            const r = this.rotatedNat(angle);
+            const stage = this.stageSize();
+            if (stage.w <= 0 || stage.h <= 0) return false;
+            const x = clamp(crop.x, 0, r.w);
+            const y = clamp(crop.y, 0, r.h);
+            const w = Math.min(crop.w, r.w - x);
+            const hh = Math.min(crop.h, r.h - y);
+            if (w <= 0 || hh <= 0) return false;
+            this.fitScale = this.computeFit(angle);
+            const scale = Math.max(0.001, Math.min(zoom, this.maxScale, stage.w / w, stage.h / hh));
+            const pan = this.clampPan(scale, angle, {
+                tx: (r.w / 2 - x - w / 2) * scale,
+                ty: (r.h / 2 - y - hh / 2) * scale,
+            });
+            this.fit = false;
+            this.animateTo({ scale, angle, ...pan,
+                sx: flipH == null ? this.sx : flipH ? -1 : 1,
+                sy: flipV == null ? this.sy : flipV ? -1 : 1,
+            });
+            return true;
         }
 
         zoom100(point = null) {

@@ -5,7 +5,9 @@
  *
  * Entry shape (all fields optional):
  *   { chips: [chipId], rating: 0..5, label: 'red'|'orange'|'yellow'|'green'|'blue'|'purple'|null,
- *     memo: string, markers: [{ id, t, title, memo, color }], meta: { w, h, duration, taken, ... }, updatedAt }
+ *     memo: string, memoCaps: [{ path, t?, piece?, at, missing? }],
+ *     markers: [{ id, t, title, memo, color }], meta: { w, h, duration, taken, ... }, updatedAt }
+ * get(path) includes memoCaps, defaulting to an empty array.
  *
  * Events: 'catalog:loaded', 'catalog:changed' { paths }
  *
@@ -95,7 +97,7 @@
     let retryTimer = null;
 
     function isEmpty(e) {
-        return (!e.chips || !e.chips.length) && !e.rating && !e.label && !e.memo && (!e.markers || !e.markers.length) && (!e.meta || !Object.keys(e.meta).length) && !e.legacyImported;
+        return (!e.chips || !e.chips.length) && !e.rating && !e.label && !e.memo && (!e.memoCaps || !e.memoCaps.length) && (!e.markers || !e.markers.length) && (!e.meta || !Object.keys(e.meta).length) && !e.legacyImported;
     }
 
     // Visit keys equal to p or under p/
@@ -196,7 +198,7 @@
         /** Entry with defaults filled in (never undefined). Do not mutate — use update(). */
         get(p) {
             const e = data.items[p] || {};
-            return { chips: e.chips || [], rating: e.rating || 0, label: e.label || null, memo: e.memo || '', markers: e.markers || [], meta: e.meta || {} };
+            return { chips: e.chips || [], rating: e.rating || 0, label: e.label || null, memo: e.memo || '', memoCaps: e.memoCaps || [], markers: e.markers || [], meta: e.meta || {} };
         },
 
         /**

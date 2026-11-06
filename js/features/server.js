@@ -27,6 +27,7 @@
  *   App.server.API_VERSION / apiVersion / outdated / supports(feature) / restart() / handoffUrl()
  *   App.server.thumbs.pregenerate({dirs, size}, {onProgress, title}) → {made, cached, failed, total}
  *   App.server.media.probe(path) / streamUrl(path, start) / thumbUrl(entry, size)
+ *   App.server.ocr(path) → Promise<{text, lines: [{text, box: {x, y, w, h}}]}> (check supports('ocr'))
  *   App.server.reveal(path) / openDefault(path) / copyPath(paths)
  *   App.server.canDisplay(entryOrName)    browser can decode it, or the connected server can render/stream it
  *   App.server.openRoot(root) / pickWorkspace() / recents()
@@ -1383,6 +1384,11 @@
         thumbUrl: (entry, size) => requireBackend().thumbUrl(entry, size),
         video,
         dupes,
+        async ocr(path) {
+            requireBackend();
+            if (!server.supports('ocr')) throw failure('ENOTSUP', '이 서버에서는 글자를 추출할 수 없어요');
+            return request('POST', '/api/ocr', { path });
+        },
         API_VERSION,
         /** apiVersion of the connected/detected server (1 for round-1 servers), or 0 when there is none. */
         get apiVersion() {
@@ -1391,9 +1397,10 @@
         get outdated() {
             return outdated();
         },
-        /** Feature check for other teams: 'dupes-v2', 'job-pause', 'restart'. */
+        /** Feature check for other teams: 'dupes-v2', 'job-pause', 'restart', 'ocr'. */
         supports(feature) {
             const v = state === 'connected' && !!backend() && info ? apiVersionOf(info) : 0;
+            if (feature === 'ocr') return v > 0 && server.capabilities.ocr === true && !!info.supports?.includes('ocr');
             return ({ 'dupes-v2': 2, 'job-pause': 2, restart: 2 })[feature] <= v;
         },
         handoffUrl,
