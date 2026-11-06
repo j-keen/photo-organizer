@@ -1,8 +1,9 @@
 /*
- * Explicit completion — App.chipsDone: FOLDER, isDone(path), summary(path), move(paths).
- * Commands: chips.done (gallery selection), chips.done.viewer (Ctrl+Enter, whole viewer file).
- * Moves preserve relative folders and catalog data. One undo entry owns moves, origin metadata and
- * only the empty destination folders this action created. Partial successes remain undoable.
+ * Explicit completion — App.chipsDone: FOLDER, isDone(path), summary(path), mark(paths), move(paths),
+ * unmark(paths), migrateDone(). move is an alias of mark; completion keeps files in place.
+ * Commands: chips.done, chips.done.viewer, chips.undone, chips.migrateDone.
+ * Catalog flags and legacy _완료 paths count as done. Migration and each completion action own one undo entry.
+ * chips.hideDone defaults true; the done view filter exempts the 완료함 smart view.
  */
 (() => {
     'use strict';
@@ -11,7 +12,188 @@
     const ui = App.ui;
     let busy = false;
 
-    const isDone = (path) => path.startsWith(FOLDER + '/');
+    const legacy = (path) => path.startsWith(FOLDER + '/');
+    const isDone = (path) => !!App.catalog.peek(path)?.done || legacy(path);
+    const { h } = App.util;
+    let syncing = false;
+    let offeredWorkspace = null;
+
+    function refresh() {
+        if (syncing) return;
+        syncing = true;
+        try {
+            const hide = App.settings.get('chips.hideDone', true);
+            if (hide && !App.view.filters.has('done')) {
+                App.view.setFilter('done', {
+                    label: '완료 숨김',
+                    test: (entry) => App.view.source.smart === 'done' || !isDone(entry.path),
+                });
+            } else if (!hide && App.view.filters.has('done')) App.view.setFilter('done', null);
+            else App.view.recompute('patch');
+            App.topbar?.renderViewbar?.();
+            App.gallery?.refresh();
+        } finally {
+            syncing = false;
+        }
+    }
+
+    function completionFields(path) {
+        const entry = App.catalog.peek(path) || {};
+        return { done: entry.done, doneAt: entry.meta?.doneAt, doneFrom: entry.meta?.doneFrom };
+    }
+
+    function writeFields(path, fields) {
+        App.catalog.update(path, (entry) => {
+            if (fields.done === undefined) delete entry.done;
+            else entry.done = fields.done;
+            const meta = { ...(entry.meta || {}) };
+            for (const key of ['doneAt', 'doneFrom']) {
+                if (fields[key] === undefined) delete meta[key];
+                else meta[key] = fields[key];
+            }
+            entry.meta = meta;
+        }, { undoable: false });
+    }
+
+    async function changeMark(paths, done) {
+        if (!ready() || (App.lock?.canWrite && !App.lock.canWrite())) return [];
+        busy = true;
+        const workspace = App.state.workspace?.id;
+        try {
+            App.chipset.pieceTarget()?.flush?.();
+            const files = App.chipset.toFilePaths([...new Set(paths)]).filter((path) => done ? !isDone(path) : isDone(path));
+            if (!files.length) return [];
+            const summaries = files.map(summary);
+            if (done && summaries.some((s) => !s.tagged) && !await ui.confirm({ title: '완료로 표시하기', message: '칩이 하나도 없어요. 그래도 완료할까요?', okLabel: '완료하기' })) return [];
+            if (App.state.workspace?.id !== workspace) return [];
+            // Legacy paths cannot be unmarked in place because their location still denotes completion.
+            if (!done && files.some(legacy)) return await migrate(files, false, workspace);
+            const viewer = App.viewer;
+            const current = viewer?.isOpen ? viewer.current?.path : null;
+            const candidates = current && files.includes(current)
+                ? viewer.files.slice(viewer.index + 1).concat(viewer.files.slice(0, viewer.index)).filter((e) => !files.includes(e.path)) : [];
+            const before = files.map(completionFields);
+            const at = Date.now();
+            const after = before.map((fields) => ({ ...fields, done: done ? true : undefined, doneAt: done ? at : undefined }));
+            const apply = (values) => {
+                if (App.state.workspace?.id !== workspace) throw new Error('원래 작업 폴더를 열어 주세요');
+                files.forEach((path, i) => writeFields(path, values[i]));
+            };
+            apply(after);
+            App.undo.push({ label: `${done ? '완료 표시' : '완료 취소'} (${files.length}개)`, undo: () => apply(before), redo: () => apply(after) });
+            if (done && current && files.includes(current) && viewer.isOpen) {
+                const next = candidates.find((e) => App.view.visible.some((v) => v.path === e.path));
+                viewer.close();
+                if (next) viewer.open(next.path);
+            }
+            const text = [...new Set(summaries.map((s) => s.text))].join(' / ');
+            ui.toast(done ? `완료로 표시했어요 · ${text}` : '완료 표시를 취소했어요', {
+                type: 'success', action: { label: '되돌리기', run: () => App.undo.undo() },
+            });
+            return files.map((path) => ({ from: path, to: path }));
+        } catch (error) {
+            ui.toast(error.message, { type: 'error' });
+            return [];
+        } finally {
+            busy = false;
+        }
+    }
+
+    const mark = (paths) => changeMark(paths, true);
+    const unmark = (paths) => changeMark(paths, false);
+
+    async function migrate(paths, done, workspace) {
+        const records = [];
+        const created = [];
+        const removed = [];
+        const check = () => {
+            if (App.state.workspace?.id !== workspace) throw new Error('원래 작업 폴더를 열어 주세요');
+        };
+        const relocate = async (record, target, fields) => {
+            check();
+            await ensureFolder(P.parent(target), created);
+            if (record.current !== target) await transfer(record, P.parent(target), P.base(target));
+            writeFields(record.current, fields);
+        };
+        let failure = null;
+        try {
+            for (const path of paths) {
+                check();
+                const before = completionFields(path);
+                const relative = legacy(path) ? path.slice(FOLDER.length + 1) : path;
+                const folder = typeof before.doneFrom === 'string' ? before.doneFrom : P.parent(relative);
+                // Reject malformed origins instead of creating paths outside the workspace or inside completion again.
+                if (folder.split('/').some((part) => part === '..' || part === '.') || folder.startsWith('/') || folder.includes('\\') || folder === FOLDER || legacy(folder)) throw new Error('원래 폴더 경로를 확인해 주세요');
+                const record = { from: path, current: path, before, after: { done: done ? true : undefined, doneAt: done ? Date.now() : undefined, doneFrom: undefined } };
+                if (legacy(path)) {
+                    await ensureFolder(folder, created);
+                    await transfer(record, folder, P.base(relative));
+                }
+                records.push(record);
+                record.target = record.current;
+                writeFields(record.current, record.after);
+            }
+            const folders = new Set();
+            for (const record of records) {
+                if (!legacy(record.from)) continue;
+                for (let folder = P.parent(record.from); folder; folder = P.parent(folder)) folders.add(folder);
+            }
+            for (const folder of [...folders].sort((a, b) => b.split('/').length - a.split('/').length)) {
+                if (await App.fs.exists(folder) && !(await App.fs.backend.list(folder, { stat: false })).length) {
+                    await App.fs.removePermanently([folder]);
+                    removed.push(folder);
+                }
+            }
+        } catch (error) {
+            failure = error;
+        } finally {
+            // Commit once after cleanup, including any files restored before a partial failure.
+            if (records.length) {
+                App.undo.push({
+                    label: done ? '예전 완료 파일 돌리기' : '완료 취소',
+                    undo: async () => {
+                        check();
+                        for (const folder of [...removed].reverse()) await ensureFolder(folder, created);
+                        for (const record of [...records].reverse()) await relocate(record, record.from, record.before);
+                        await cleanFolders(created.filter((folder) => !removed.includes(folder)));
+                    },
+                    redo: async () => {
+                        check();
+                        for (const record of records) await relocate(record, record.target, record.after);
+                        await cleanFolders([...removed].reverse());
+                    },
+                });
+                refresh();
+            }
+        }
+        if (failure) ui.toast(`일부 파일을 돌리지 못했어요: ${failure.message}`, { type: 'warning' });
+        return records.map((record) => ({ from: record.from, to: record.current }));
+    }
+
+    async function migrateDone() {
+        if (!ready() || (App.lock?.canWrite && !App.lock.canWrite())) return [];
+        busy = true;
+        const workspace = App.state.workspace?.id;
+        try {
+            await App.index.whenReady();
+            if (App.state.workspace?.id !== workspace) return [];
+            return await migrate(App.index.items.filter((entry) => legacy(entry.path)).map((entry) => entry.path), true, workspace);
+        } finally {
+            busy = false;
+        }
+    }
+
+    function offerMigration() {
+        const workspace = App.state.workspace?.id;
+        if (!workspace || !App.index.ready || !App.catalog.loaded || offeredWorkspace === workspace) return;
+        const count = App.index.items.filter((entry) => legacy(entry.path)).length;
+        if (!count) return;
+        offeredWorkspace = workspace;
+        ui.toast(`예전 방식으로 완료 폴더에 옮긴 파일 ${count}개가 있어요`, {
+            duration: 10000,
+            action: { label: '원래 자리로 돌리기', run: () => App.state.workspace?.id === workspace && migrateDone() },
+        });
+    }
     const ready = () => App.fs.ready && App.chipset?.ready && !busy;
     const selected = () => App.select.entries().filter((e) => e.kind === 'file').map((e) => e.path);
 
@@ -66,17 +248,6 @@
         }
     }
 
-    function restoreOrigin(path, origin) {
-        App.catalog.update(path, (entry) => {
-            const meta = { ...(entry.meta || {}) };
-            for (const key of ['doneFrom', 'doneAt']) {
-                if (origin[key] === undefined) delete meta[key];
-                else meta[key] = origin[key];
-            }
-            entry.meta = meta;
-        }, { undoable: false });
-    }
-
     async function transfer(record, destination, name) {
         const result = await App.fs.move([record.current], destination, { undoable: false });
         if (!result[0]) throw result.failed?.[0]?.error || new Error('파일을 옮기지 못했어요');
@@ -86,102 +257,56 @@
         }
     }
 
-    async function move(paths) {
-        if (!ready()) return [];
-        busy = true;
-        const records = [];
-        const created = [];
-        const workspace = App.state.workspace?.id;
-        let failure = null;
-        try {
-            App.chipset.pieceTarget()?.flush?.();
-            const files = App.chipset.toFilePaths([...new Set(paths)]).filter((path) => !isDone(path));
-            if (!files.length) return [];
-            const summaries = files.map(summary);
-            if (summaries.some((s) => !s.tagged) && !await ui.confirm({ title: '완료 폴더로 옮기기', message: '칩이 하나도 없어요. 그래도 완료할까요?', okLabel: '완료하기' })) return [];
-            if (App.state.workspace?.id !== workspace) return [];
-            const text = [...new Set(summaries.map((s) => s.text))].join(' / ');
-            App.chipset.hud(text, { kind: 'info', sub: '완료 폴더로 옮겨요' });
-            const viewer = App.viewer;
-            const current = viewer?.isOpen ? viewer.current?.path : null;
-            const advance = current && files.includes(current);
-            const candidates = advance ? viewer.files.slice(viewer.index + 1).concat(viewer.files.slice(0, viewer.index)).filter((e) => !files.includes(e.path)) : [];
-            try {
-                for (const path of files) {
-                    const folder = P.parent(path);
-                    const destination = P.join(FOLDER, folder);
-                    await ensureFolder(destination, created);
-                    const meta = App.catalog.peek(path)?.meta || {};
-                    const origin = { doneFrom: meta.doneFrom, doneAt: meta.doneAt };
-                    const result = await App.fs.move([path], destination, { undoable: false });
-                    if (!result[0]) {
-                        failure = result.failed?.[0]?.error || new Error('파일을 옮기지 못했어요');
-                        continue;
-                    }
-                    const record = { from: path, current: result[0].to, origin, doneAt: Date.now() };
-                    records.push(record);
-                    App.catalog.setMeta(record.current, { doneFrom: folder, doneAt: record.doneAt });
-                }
-            } catch (error) {
-                failure = error;
-            }
-            if (records.length) {
-                const checkWorkspace = () => {
-                    if (App.state.workspace?.id !== workspace) throw new Error('원래 작업 폴더를 열어 주세요');
-                };
-                App.undo.push({
-                    label: `완료 폴더로 이동 (${records.length}개)`,
-                    undo: async () => {
-                        checkWorkspace();
-                        for (const record of [...records].reverse()) {
-                            // Publish restored metadata only after relocation owns the final path.
-                            if (isDone(record.current)) await transfer(record, P.parent(record.from), P.base(record.from));
-                            restoreOrigin(record.current, record.origin);
-                        }
-                        await cleanFolders(created);
-                    },
-                    redo: async () => {
-                        checkWorkspace();
-                        for (const record of records) {
-                            if (!isDone(record.current)) {
-                                const destination = P.join(FOLDER, P.parent(record.from));
-                                await ensureFolder(destination, created);
-                                await transfer(record, destination, P.base(record.from));
-                            }
-                            App.catalog.setMeta(record.current, { doneFrom: P.parent(record.from), doneAt: record.doneAt });
-                        }
-                    },
-                });
-                if (advance && records.some((r) => r.from === current) && viewer.isOpen) {
-                    // The shell deliberately retains moved files; reopen against the updated folder list.
-                    const next = candidates.find((e) => App.view.visible.some((v) => v.path === e.path));
-                    viewer.close();
-                    if (next) viewer.open(next.path);
-                }
-                ui.toast(`완료 폴더로 옮겼어요 · ${text}`, { type: 'success', action: { label: '되돌리기', run: () => App.undo.undo() } });
-            } else {
-                await cleanFolders(created);
-            }
-            if (failure) ui.toast(`일부 파일을 옮기지 못했어요: ${failure.message}`, { type: 'warning' });
-            return records.map((r) => ({ from: r.from, to: r.current }));
-        } catch (error) {
-            ui.toast(error.message, { type: 'error' });
-            return [];
-        } finally {
-            busy = false;
-        }
-    }
-
-    App.commands.register({ id: 'chips.done', title: '완료 폴더로 옮기기', group: '칩', icon: 'check', when: () => ready() && selected().some((path) => !isDone(path)), run: () => move(selected()) });
+    const move = mark;
+    App.commands.register({ id: 'chips.done', title: '완료로 표시하기', group: '칩', icon: 'check', when: () => ready() && selected().some((path) => !isDone(path)), run: () => mark(selected()) });
+    const undonePaths = () => App.viewer?.isOpen ? [App.viewer.current?.path].filter(Boolean) : selected();
+    App.commands.register({ id: 'chips.undone', title: '완료 취소', group: '칩', icon: 'check', when: () => ready() && undonePaths().some(isDone), run: () => unmark(undonePaths()) });
+    App.commands.register({ id: 'chips.migrateDone', title: '예전 완료 파일을 원래 자리로 돌리기', group: '칩', icon: 'folder', when: () => ready() && App.index.ready && App.index.items.some((entry) => legacy(entry.path)), run: migrateDone });
     App.commands.register({ id: 'chips.done.viewer', title: '완료하고 다음', group: '칩', icon: 'check', keys: 'Ctrl+Enter', scope: 'viewer', when: () => ready() && !!App.viewer?.isOpen && App.viewer.current?.kind === 'file' && !isDone(App.viewer.current.path), run: () => move([App.viewer.current.path]) });
 
     App.register('chips-done', {
         init() {
+            App.topbar?.addViewbarItem?.(() => {
+                if (!App.fs.ready) return null;
+                const hide = App.settings.get('chips.hideDone', true);
+                const count = App.view.entries.filter((entry) => entry.kind === 'file' && isDone(entry.path)).length;
+                return h('button', {
+                    type: 'button', class: 'btn sm chip-done-toggle',
+                    text: hide ? `완료 ${count}개 숨김 · 보기` : '완료 보기 중 · 숨기기',
+                    'aria-pressed': String(!hide),
+                    onclick: () => {
+                        const before = App.settings.get('chips.hideDone', true);
+                        App.settings.set('chips.hideDone', !before);
+                        App.undo.push({ label: '완료 파일 보기', undo: () => App.settings.set('chips.hideDone', before), redo: () => App.settings.set('chips.hideDone', !before) });
+                    },
+                });
+            });
+            App.gallery?.cardDecorators.push((card, entry) => {
+                if (entry.kind !== 'file' || !isDone(entry.path)) return;
+                card.append(h('span', { class: 'chip-done-badge', text: '완료' }));
+            });
+            App.viewer?.contextItems.push((entry) => entry?.kind === 'file' && isDone(entry.path)
+                ? [{ label: '완료 취소', icon: 'check', action: () => unmark([entry.path]) }] : []);
+            App.bus.on('catalog:changed', refresh);
+            App.bus.on('catalog:loaded', () => { refresh(); offerMigration(); });
+            App.bus.on('index:ready', () => { refresh(); offerMigration(); });
+            App.bus.on('index:changed', refresh);
+            App.bus.on('workspace:opened', () => { refresh(); offerMigration(); });
+            App.bus.on('workspace:closed', () => { offeredWorkspace = null; });
+            App.bus.on('settings:changed', ({ key }) => { if (key === 'chips.hideDone') refresh(); });
+            App.bus.on('view:filters', () => {
+                if (!syncing && App.settings.get('chips.hideDone', true) && !App.view.filters.has('done')) refresh();
+            });
+            refresh();
             App.gallery?.contextMenuItems.push((entries) => {
                 const files = entries.filter((e) => e.kind === 'file' && !isDone(e.path)).map((e) => e.path);
-                return files.length ? [{ label: '완료 폴더로 옮기기', icon: 'check', action: () => move(files) }] : [];
+                const done = entries.filter((e) => e.kind === 'file' && isDone(e.path)).map((e) => e.path);
+                return [
+                    ...(files.length ? [{ label: '완료로 표시하기', icon: 'check', action: () => mark(files) }] : []),
+                    ...(done.length ? [{ label: '완료 취소', icon: 'check', action: () => unmark(done) }] : []),
+                ];
             });
         },
     });
-    App.chipsDone = { FOLDER, isDone, summary, move };
+    App.chipsDone = { FOLDER, isDone, summary, mark, move, unmark, migrateDone };
 })();

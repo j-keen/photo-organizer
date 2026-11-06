@@ -14,7 +14,25 @@ async function setup(page, paths = []) {
 
 module.exports = [
     {
-        name: 'chips done: viewer shortcut moves, advances, summarizes and undoes once',
+        name: 'chips done: done-only catalog entries persist without timestamp metadata',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: { 'a.png': { image: { color: '#a33' } } } });
+            await page.waitForFunction(() => App.catalog.loaded && App.index.ready);
+            const before = await page.evaluate(() => App.undo.list().length);
+            await page.evaluate(async () => {
+                App.catalog.update('a.png', { done: true });
+                await App.catalog.flush();
+            });
+            await page.waitForFunction(() => App.catalog.peek('a.png')?.done === true);
+            assert.ok(await page.evaluate(() => !App.catalog.peek('a.png').meta?.doneAt));
+            assert.equal(await page.evaluate(async () => JSON.parse(await window.__opfs.read('.fluid-organizer/catalog.json')).items['a.png'].done), true);
+            assert.equal(await page.evaluate(() => App.undo.list().length), before + 1);
+            await page.evaluate(() => App.undo.undo());
+            await page.waitForFunction(() => !App.catalog.peek('a.png')?.done);
+        },
+    },
+    {
+        name: 'chips done: viewer shortcut marks, advances, summarizes and undoes once',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: {
                 'sub/a.png': { image: { color: '#a33' } },
@@ -74,15 +92,18 @@ module.exports = [
             await page.click('.vw-title');
             await page.keyboard.press('Control+Enter');
             await page.waitForFunction(() => App.viewer.current?.path === 'sub/b.png');
-            await page.waitForSelector('.toast:has-text("완료 폴더로 옮겼어요 · 배우 쓰담")');
+            await page.waitForSelector('.toast:has-text("완료로 표시했어요 · 배우 쓰담")');
             assert.equal(await page.evaluate(() => window.__donePushes), 1);
-            assert.ok(await page.evaluate(() => window.__opfs.exists('_완료/sub/a.png')));
-            assert.equal(await page.evaluate(() => App.catalog.peek('_완료/sub/a.png').meta.doneFrom), 'sub');
+            assert.ok(await page.evaluate(() => window.__opfs.exists('sub/a.png')));
+            assert.equal(await page.evaluate(() => App.catalog.peek('sub/a.png').done), true);
+            assert.ok(await page.evaluate(() => App.catalog.peek('sub/a.png').meta.doneAt > 0));
+            assert.equal(await page.evaluate(() => App.view.visible.some((e) => e.path === 'sub/a.png')), false);
             await page.evaluate(() => { window.__doneOriginWrites = []; });
             await page.keyboard.press('Control+z');
             await page.waitForFunction(() => window.__doneUndoFinished);
             assert.equal(await page.evaluate(() => window.__doneUndoError), null);
-            assert.deepEqual(await page.evaluate(() => window.__doneOriginWrites), [{ path: 'sub/a.png', movedBack: true }]);
+            assert.deepEqual(await page.evaluate(() => window.__doneOriginWrites), [{ path: 'sub/a.png', movedBack: false }]);
+            assert.equal(await page.evaluate(() => App.catalog.peek('sub/a.png').done), undefined);
             assert.deepEqual(await page.evaluate(() => window.__doneMissing), []);
             assert.equal(await page.evaluate(() => window.__donePushes), 1);
             await page.waitForFunction(async (chip) => {
@@ -115,7 +136,8 @@ module.exports = [
             await page.waitForSelector('.dialog');
             await page.click('.dialog .btn.primary');
             await page.waitForSelector('#viewer', { state: 'hidden' });
-            await page.waitForFunction(() => window.__opfs.exists('_완료/a.png'));
+            await page.waitForFunction(() => App.catalog.peek('a.png')?.done === true && !App.view.visible.some((e) => e.path === 'a.png'));
+            assert.ok(await page.evaluate(() => window.__opfs.exists('a.png')));
         },
     },
     {
@@ -128,15 +150,72 @@ module.exports = [
             await setup(page, ['a.png', 'b.png']);
             await page.evaluate(() => App.select.set(['a.png', 'b.png']));
             await page.evaluate(() => App.commands.run('chips.done'));
-            await page.waitForFunction(async () => await window.__opfs.exists('_완료/a.png') && await window.__opfs.exists('_완료/b.png'));
+            await page.waitForFunction(() => App.catalog.peek('a.png')?.done && App.catalog.peek('b.png')?.done && App.view.visible.length === 0);
             await page.waitForSelector('.chipf-row[data-smart="done"]');
             await page.click('.chipf-row[data-smart="done"]');
             await page.waitForFunction(() => App.view.source.smart === 'done' && App.view.visible.length === 2);
-            assert.deepEqual(await page.evaluate(() => App.view.visible.map((e) => e.path).sort()), ['_완료/a.png', '_완료/b.png']);
+            assert.deepEqual(await page.evaluate(() => App.view.visible.map((e) => e.path).sort()), ['a.png', 'b.png']);
             await page.keyboard.press('Control+z');
             await page.waitForFunction(() => App.view.source.smart === 'done' && App.view.visible.length === 0);
             assert.ok(await page.evaluate(() => window.__opfs.exists('a.png')));
             assert.ok(await page.evaluate(() => window.__opfs.exists('b.png')));
+        },
+    },
+    {
+        name: 'chips done: toggle, badge, gallery and viewer cancellation remain undoable',
+        async run({ openApp, assert, card }) {
+            const { page } = await openApp({ seed: { 'a.png': { image: { color: '#a33' } } } });
+            await setup(page, ['a.png']);
+            await page.evaluate(() => App.chipsDone.mark(['a.png']));
+            await page.waitForFunction(() => App.view.visible.length === 0);
+            await page.click('.chip-done-toggle');
+            await page.waitForFunction(() => App.view.visible.some((e) => e.path === 'a.png'));
+            await page.waitForSelector('.card[data-path="a.png"] .chip-done-badge');
+            await (await card(page, 'a.png')).click({ button: 'right' });
+            await page.click('.menu :text-is("완료 취소")');
+            await page.waitForFunction(() => !App.chipsDone.isDone('a.png'));
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => App.chipsDone.isDone('a.png'));
+            await page.evaluate(() => App.viewer.open('a.png'));
+            await page.waitForSelector('#viewer:not([hidden]) .vw-media');
+            await page.keyboard.press('Alt+c');
+            await page.waitForSelector('.chip-done-btn:has-text("완료 취소")');
+            await page.click('.chip-done-btn');
+            await page.waitForFunction(() => !App.chipsDone.isDone('a.png'));
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(() => App.chipsDone.isDone('a.png'));
+            await page.click('.vw-actions [data-act="more"]');
+            await page.click('.menu :text-is("완료 취소")');
+            await page.waitForFunction(() => !App.chipsDone.isDone('a.png'));
+            assert.ok(await page.evaluate(() => window.__opfs.exists('a.png')));
+        },
+    },
+    {
+        name: 'chips done: legacy migration restores folders and metadata in one undo step',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: {
+                '_완료/sub/a.png': { image: { color: '#a33' } },
+                '.fluid-organizer/catalog.json': JSON.stringify({ version: 1, items: {
+                    '_완료/sub/a.png': { memo: '보존해요', meta: { doneFrom: 'sub', doneAt: 12 } },
+                } }),
+            } });
+            await setup(page);
+            await page.waitForSelector('.toast:has-text("예전 방식으로 완료 폴더에 옮긴 파일 1개가 있어요")');
+            const before = await page.evaluate(() => App.undo.list().length);
+            await page.getByRole('button', { name: '원래 자리로 돌리기', exact: true }).click();
+            await page.waitForFunction(async () => App.catalog.peek('sub/a.png')?.done && !await window.__opfs.exists('_완료'));
+            await page.waitForFunction((count) => App.undo.list().length === count + 1, before);
+            assert.equal(await page.evaluate(() => App.undo.list().length), before + 1);
+            assert.equal(await page.evaluate(() => App.catalog.peek('sub/a.png').memo), '보존해요');
+            await page.evaluate(() => App.undo.undo());
+            await page.waitForFunction(async () => await window.__opfs.exists('_완료/sub/a.png') && !await window.__opfs.exists('sub/a.png'));
+            assert.deepEqual(await page.evaluate(() => {
+                const meta = App.catalog.peek('_완료/sub/a.png').meta;
+                return { doneFrom: meta?.doneFrom, doneAt: meta?.doneAt };
+            }), { doneFrom: 'sub', doneAt: 12 });
+            assert.equal(await page.evaluate(() => App.catalog.peek('_완료/sub/a.png').done), undefined);
+            assert.equal(await page.evaluate(() => App.catalog.peek('_완료/sub/a.png').memo), '보존해요');
+            assert.ok(await page.evaluate(() => !App.catalog.peek('sub/a.png')));
         },
     },
     {

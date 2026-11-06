@@ -8,7 +8,7 @@
  *   '모든 폴더에서 보기' turns the condition into a workspace-wide smart view (App.view.setEntries, type 'smart').
  * File conditions include kept video-piece chips; piece-only matches open at the first contributing piece.
  * App.chipsFilter: { showChip(id), showUntagged(), showDone(), clear(), stats() }
- * The 완료함 smart view includes every indexed file under App.chipsDone.FOLDER.
+ * The 완료함 smart view includes every indexed file marked done or under App.chipsDone.FOLDER.
  *   stats().chip / cat count files once; stats().pieces maps chip IDs to tagged kept-piece counts.
  */
 (() => {
@@ -174,7 +174,7 @@
             list = App.index.items.filter((e) => App.chipsDone?.isDone(e.path));
             title = '완료함';
             emptyTitle = '아직 완료한 파일이 없어요';
-            emptyText = '분류를 마친 파일을 완료 폴더로 옮기면 여기에 모여요.';
+            emptyText = '분류를 마친 파일을 완료로 표시하면 여기에 모여요.';
         } else if (kind === 'untagged') {
             list = App.index.items.filter((e) => !tagsOf(e.path).all.size);
             title = '미분류 — 칩이 없는 파일';
@@ -290,7 +290,7 @@
             label: '완료함',
             count: App.index.ready ? App.index.items.filter((e) => App.chipsDone?.isDone(e.path)).length : '…',
             data: { smart: 'done' },
-            tip: '완료 폴더의 파일을 모든 하위 폴더에서 모아 봐요',
+            tip: '완료한 파일을 모든 폴더에서 모아 봐요',
         }));
 
         if (!preset.categories.length) {
@@ -372,6 +372,7 @@
 
     const refreshSoon = debounce(() => {
         render();
+        if (smart?.kind === 'done' && App.view.source.owner === 'chips') runSmart('done');
         if (App.view.filters.has('chips')) App.view.recompute('patch');
         App.gallery?.refresh?.();
     }, 150);

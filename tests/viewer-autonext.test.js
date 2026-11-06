@@ -73,33 +73,37 @@ module.exports = [
         },
     },
     {
-        name: 'auto-next: completion toast moves only the previous file and undo restores it',
+        name: 'auto-next: completion toast marks only the previous file and undo restores it',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed });
             await openVideo(page);
             const before = await page.evaluate(() => App.undo.list().length);
             await finish(page);
             await page.waitForFunction(() => App.viewer.current?.path === '01-02.png' && !App.viewer.player);
-            await page.getByRole('button', { name: '완료로 옮기기', exact: true }).click();
+            await page.getByRole('button', { name: '완료로 표시', exact: true }).click();
             await page.getByRole('button', { name: '완료하기', exact: true }).click();
-            await page.waitForFunction(async () => await window.__opfs.exists('_완료/01-01.webm'));
+            await page.waitForFunction(() => App.catalog.peek('01-01.webm')?.done === true && !App.view.visible.some((e) => e.path === '01-01.webm'));
+            assert.ok(await page.evaluate(() => window.__opfs.exists('01-01.webm')));
+            assert.equal(await page.evaluate(() => App.catalog.peek('01-02.png')?.done), undefined);
             assert.equal(await page.evaluate(() => App.viewer.current.path), '01-02.png');
             await page.waitForFunction((before) => App.undo.list().length === before + 1, before);
             await page.evaluate(() => App.undo.undo());
-            await page.waitForFunction(async () => await window.__opfs.exists('01-01.webm'));
+            await page.waitForFunction(() => !App.catalog.peek('01-01.webm')?.done && App.view.visible.some((e) => e.path === '01-01.webm'));
+            assert.ok(await page.evaluate(() => window.__opfs.exists('01-01.webm')));
         },
     },
     {
-        name: 'auto-next: automatic completion advances before moving the previous file',
+        name: 'auto-next: automatic completion advances before marking the previous file',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed });
             await openVideo(page);
             await page.evaluate(() => App.settings.set('viewer.autoDoneOnEnd', true));
             await finish(page);
             await page.getByRole('button', { name: '완료하기', exact: true }).click();
-            await page.waitForFunction(async () => await window.__opfs.exists('_완료/01-01.webm'));
+            await page.waitForFunction(() => App.catalog.peek('01-01.webm')?.done === true && !App.view.visible.some((e) => e.path === '01-01.webm'));
+            assert.ok(await page.evaluate(() => window.__opfs.exists('01-01.webm')));
             assert.equal(await page.evaluate(() => App.viewer.current.path), '01-02.png');
-            assert.equal(await page.getByRole('button', { name: '완료로 옮기기', exact: true }).count(), 0);
+            assert.equal(await page.getByRole('button', { name: '완료로 표시', exact: true }).count(), 0);
         },
     },
     {

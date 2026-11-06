@@ -7,7 +7,7 @@
  * and follows ←/→ to the next file. Digits 1–9 and '#' also work in the viewer (see chipset.js / chips-picker.js).
  * While a video piece is selected on the seek bar (App.chipset.pieceTarget()), the panel tags that piece instead.
  * Commands: chips.drawer.viewer (Alt+C), chips.done.viewer (Ctrl+Enter, provided by chips-done.js).
- * The bottom button explicitly completes the whole file, including while a piece is selected.
+ * The bottom button marks the whole file done, including while a piece is selected, or cancels completion.
  * A persistent memo textarea above it edits catalog.memo or the selected piece's memo, with autosave and coalesced undo.
  * App.chipsViewer.memoEditor() returns { input, target, flush } for attachment integrations; target is a copy.
  * Optional App.memoCaps.mount(section, editor) adds capture controls; sync() follows memo target changes.
@@ -138,6 +138,8 @@
         const piece = cur ? App.chipset?.pieceTarget?.() || null : null;
         syncMemo(cur, piece);
         nameEl.textContent = cur ? (piece ? `${cur.name} · ${piece.label}` : cur.name) : '';
+        const doneButton = host.querySelector('.chip-done-btn');
+        if (doneButton) doneButton.textContent = cur && App.chipsDone?.isDone(cur.path) ? '완료 취소' : '완료하고 다음';
         App.chipsPanel.render(bodyEl, { key: 'drawer', files: cur ? [cur.path] : [], entries: cur ? [cur] : [], compact: true, piece });
     }
 
@@ -185,7 +187,7 @@
                         h('div', { class: 'chip-dock-target', html: ui.icon('file', { size: 13 }) }, nameEl),
                         bodyEl,
                         buildMemo(),
-                        h('button', { type: 'button', class: 'btn primary chip-done-btn', text: '완료하고 다음', 'data-tip-keys': 'Ctrl+Enter', onclick: () => App.commands.run('chips.done.viewer') }),
+                        h('button', { type: 'button', class: 'btn primary chip-done-btn', text: '완료하고 다음', 'data-tip-keys': 'Ctrl+Enter', onclick: () => App.commands.run(current() && App.chipsDone?.isDone(current().path) ? 'chips.undone' : 'chips.done.viewer') }),
                         h('div', { class: 'chip-dock-foot', html: '<span class="kbd">1</span>–<span class="kbd">9</span> 칩 단축키 · <span class="kbd">#</span> 찾기·만들기 · <span class="kbd">←</span><span class="kbd">→</span> 다음 파일' }));
                     body.append(host);
                     renderPanel();

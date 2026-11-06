@@ -291,6 +291,7 @@
         },
 
         close() {
+            resetArrowGestures();
             if (!viewer.isOpen) return;
             const cur = viewer.current;
             if (openPanel) closePanel({ reason: 'viewer' });
@@ -475,6 +476,8 @@
     }
 
     function show(opts = {}) {
+        // A seek can only be corrected while its original file is still active.
+        for (const gesture of arrowGestures.values()) gesture.seek = null;
         const entry = files[index];
         if (!entry) return;
         const token = ++loadToken;
@@ -995,14 +998,57 @@
     const isImage = () => viewer.isOpen && viewer.kind === 'image';
     const isMedia = () => isImage() || isVideo();
 
-    // ←/→ change file for photos; for videos they seek (viewer-player.js), Ctrl+←/→ and PageUp/PageDown always change file.
+    const arrowGestures = new Map();
+    const ARROW_CHORD_MS = 150;
+
+    function resetArrowGestures() {
+        arrowGestures.clear();
+    }
+
+    // Keep file navigation latched until this arrow is released, even if Ctrl is released first.
     function arrowStep(delta, event) {
-        const plainArrow = event && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !event.ctrlKey && !event.metaKey;
-        if (plainArrow && isVideo() && viewer.player && !viewer.player.failed) {
+        const arrow = event && (event.key === 'ArrowLeft' || event.key === 'ArrowRight');
+        let gesture = arrow && arrowGestures.get(event.key);
+        if (arrow && !gesture) {
+            gesture = { navigation: false, seek: null };
+            arrowGestures.set(event.key, gesture);
+        }
+        if (arrow && (event.ctrlKey || event.metaKey)) {
+            gesture.navigation = true;
+            gesture.seek = null;
+        }
+        if (arrow && !gesture.navigation && isVideo() && viewer.player && !viewer.player.failed) {
+            if (!gesture.seek) {
+                gesture.seek = {
+                    at: performance.now(),
+                    time: viewer.player.time,
+                    player: viewer.player,
+                    token: loadToken,
+                    delta,
+                };
+            }
             viewer.player.seekStep(delta);
             return;
         }
         viewer.step(delta);
+    }
+
+    function correctArrowChord(event) {
+        if (event.key !== 'Control' && event.key !== 'Meta') return;
+        if (event.repeat || event.defaultPrevented || event.isComposing || !isVideo()) return;
+        if (App.layers.top() !== 'viewer' || App.util.isTypingTarget(event.target)) return;
+        const now = performance.now();
+        for (const gesture of arrowGestures.values()) {
+            const seek = gesture.seek;
+            if (!seek || gesture.navigation || now - seek.at > ARROW_CHORD_MS) continue;
+            if (seek.token !== loadToken || seek.player !== viewer.player || seek.player.failed) continue;
+            gesture.navigation = true;
+            gesture.seek = null;
+            // Restore before stepping: the old player may save its position when deactivated.
+            seek.player.seek(seek.time);
+            viewer.step(seek.delta);
+            break;
+        }
     }
 
     App.commands.register({
@@ -1226,9 +1272,15 @@
 
             root.addEventListener('mousemove', poke, { passive: true });
             root.addEventListener('pointerdown', poke, { passive: true });
-            document.addEventListener('keydown', () => {
+            document.addEventListener('keydown', (e) => {
                 if (viewer.isOpen) poke();
+                correctArrowChord(e);
             }, true);
+            document.addEventListener('keyup', (e) => {
+                arrowGestures.delete(e.key);
+            }, true);
+            // Focus loss can swallow keyup; never carry a held gesture into another visit.
+            window.addEventListener('blur', resetArrowGestures);
             // Slideshow and fullscreen both change the available fit area through root classes.
             new MutationObserver(resizeAll).observe(root, { attributes: true, attributeFilter: ['class'] });
             new ResizeObserver(() => {

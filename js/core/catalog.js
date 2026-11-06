@@ -5,7 +5,7 @@
  *
  * Entry shape (all fields optional):
  *   { chips: [chipId], rating: 0..5, label: 'red'|'orange'|'yellow'|'green'|'blue'|'purple'|null,
- *     memo: string, memoCaps: [{ path, t?, piece?, at, missing? }],
+ *     done: boolean, memo: string, memoCaps: [{ path, t?, piece?, at, missing? }],
  *     markers: [{ id, t, title, memo, color }], meta: { w, h, duration, taken, ... }, updatedAt }
  * get(path) includes memoCaps, defaulting to an empty array.
  *
@@ -97,7 +97,7 @@
     let retryTimer = null;
 
     function isEmpty(e) {
-        return (!e.chips || !e.chips.length) && !e.rating && !e.label && !e.memo && (!e.memoCaps || !e.memoCaps.length) && (!e.markers || !e.markers.length) && (!e.meta || !Object.keys(e.meta).length) && !e.legacyImported;
+        return !e.done && (!e.chips || !e.chips.length) && !e.rating && !e.label && !e.memo && (!e.memoCaps || !e.memoCaps.length) && (!e.markers || !e.markers.length) && (!e.meta || !Object.keys(e.meta).length) && !e.legacyImported;
     }
 
     // Visit keys equal to p or under p/

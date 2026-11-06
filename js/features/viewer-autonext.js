@@ -1,7 +1,7 @@
 /*
  * Viewer auto-next: viewer.autoNext (default true), persisted through App.settings.
  * Natural video/edit endings immediately show the next file without wrapping; videos start playing.
- * viewer.autoDoneOnEnd defaults false; completion delegates to App.chipsDone.move after the next file is shown.
+ * viewer.autoDoneOnEnd defaults false; completion marks the previous file in place through App.chipsDone.move.
  * The shared 'viewer' settings page also configures resume, folder rates and controlsBelow (default true).
  * No additional public viewer API.
  */
@@ -33,7 +33,7 @@
         if (App.settings.get('viewer.autoDoneOnEnd', false)) complete(rec);
         else App.ui.toast(`${rec.previous.name} 다 봤어요`, {
             duration: 6000,
-            action: { label: '완료로 옮기기', run: () => complete(rec) },
+            action: { label: '완료로 표시', run: () => complete(rec) },
         });
     });
 
@@ -122,7 +122,7 @@
                     g.body.append(kit.row({ label, desc, control }));
                 };
                 toggle(KEY, '다 보면 다음 파일로', '영상을 다 보면 바로 다음 파일을 보여요. 영상이면 재생해요.');
-                toggle('viewer.autoDoneOnEnd', '다 본 영상은 바로 완료 폴더로', '다음 파일로 넘어가면 이전 영상을 완료 폴더로 옮겨요.', false);
+                toggle('viewer.autoDoneOnEnd', '다 본 영상은 바로 완료로 표시', '다음 파일로 넘어가면 이전 영상을 완료로 표시해요.', false);
                 toggle('viewer.rememberResume', '이어 보기 위치 기억', '다시 열면 보던 위치부터 이어서 봐요.');
                 toggle('viewer.rememberFolderRate', '폴더별 재생 속도 기억', '같은 폴더의 영상은 선택한 속도로 재생해요.');
                 toggle('viewer.controlsBelow', '재생바를 영상 아래에 보여요', '일반 보기에서 재생바가 영상과 자막을 가리지 않아요.');

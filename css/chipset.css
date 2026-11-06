@@ -1596,3 +1596,15 @@
     resize: none;
     overflow-y: auto;
 }
+
+.chip-done-badge {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    padding: 2px 7px;
+    border-radius: 8px;
+    background: var(--bg-3);
+    color: var(--text-1);
+    font-size: 11px;
+    pointer-events: none;
+}
