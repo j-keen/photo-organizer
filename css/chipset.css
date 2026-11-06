@@ -1565,3 +1565,34 @@
     font-size: var(--fs-xs);
     pointer-events: none;
 }
+
+/* Keep the memo outside the category subtree so chip refreshes preserve its caret. */
+.chip-dock-memo {
+    flex: none;
+    margin: 0 14px 12px;
+}
+
+.chip-dock-memo-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+}
+
+.chip-dock-memo-target {
+    color: var(--text-3);
+}
+
+.chip-dock-memo-input {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 60px;
+    max-height: 188px;
+    padding: 9px 10px;
+    line-height: 21px;
+    resize: none;
+    overflow-y: auto;
+}

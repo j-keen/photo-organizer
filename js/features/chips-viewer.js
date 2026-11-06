@@ -8,6 +8,7 @@
  * While a video piece is selected on the seek bar (App.chipset.pieceTarget()), the panel tags that piece instead.
  * Commands: chips.drawer.viewer (Alt+C), chips.done.viewer (Ctrl+Enter, provided by chips-done.js).
  * The bottom button explicitly completes the whole file, including while a piece is selected.
+ * A persistent memo textarea above it edits catalog.memo or the selected piece's memo, with autosave and coalesced undo.
  */
 (() => {
     'use strict';
@@ -18,6 +19,95 @@
     let host = null; // the panel's content while it is in the dock
     let bodyEl = null;
     let nameEl = null;
+    const memo = { input: null, targetEl: null, target: null, dirty: false };
+    let memoBurst = 0;
+    let syncingMemo = false;
+    const saveMemoSoon = App.util.debounce(flushMemo, 600);
+
+    function memoValue(target) {
+        const entry = App.catalog.peek(target.path);
+        return target.start == null ? entry?.memo || '' : entry?.meta?.edit?.pieces?.[String(target.start)]?.memo || '';
+    }
+
+    function growMemo() {
+        if (!memo.input) return;
+        memo.input.style.height = 'auto';
+        memo.input.style.height = `${memo.input.scrollHeight + 2}px`;
+    }
+
+    function flushMemo() {
+        saveMemoSoon.cancel();
+        if (!memo.dirty || !memo.target || !memo.input) return;
+        const target = memo.target;
+        const value = memo.input.value;
+        memo.dirty = false;
+        if (memoValue(target) === value) return;
+        if (target.start != null) {
+            App.videoEdit.setPieceInfo(target.path, target.start, { memo: value }, {
+                coalesceKey: `pmemo:${target.path}:${target.start}`, label: '조각 메모',
+            });
+        } else {
+            App.catalog.update(target.path, (entry) => {
+                if (value.trim()) entry.memo = value;
+                else delete entry.memo;
+            }, { label: `메모 고치기 · ${App.util.path.base(target.path)}`, coalesceKey: `memo:${target.path}#viewer:${memoBurst}` });
+        }
+    }
+
+    function syncMemo(cur, piece) {
+        if (!memo.input || syncingMemo) return;
+        syncingMemo = true;
+        try {
+            const target = cur ? { path: cur.path, start: piece ? piece.start : null } : null;
+            const changed = target?.path !== memo.target?.path || target?.start !== memo.target?.start;
+            if (changed) {
+                // Save against the old target before replacing its identity or displayed text.
+                flushMemo();
+                memoBurst++;
+                memo.target = target;
+                memo.input.value = target ? memoValue(target) : '';
+            } else if (target && !memo.dirty && document.activeElement !== memo.input) {
+                const value = memoValue(target);
+                if (memo.input.value !== value) memo.input.value = value;
+            }
+            memo.input.disabled = !target;
+            memo.targetEl.textContent = piece ? piece.label : '파일';
+            growMemo();
+        } finally {
+            syncingMemo = false;
+        }
+    }
+
+    function buildMemo() {
+        memo.targetEl = h('span', { class: 'chip-dock-memo-target' });
+        memo.input = h('textarea', {
+            class: 'textarea chip-dock-memo-input', rows: 2, spellcheck: 'false',
+            'aria-label': '메모', placeholder: '이 파일 메모 · #태그로 나중에 찾기',
+        });
+        memo.input.addEventListener('input', () => {
+            memo.dirty = true;
+            growMemo();
+            saveMemoSoon();
+        });
+        memo.input.addEventListener('blur', () => {
+            flushMemo();
+            memoBurst++;
+            syncMemo(current(), App.chipset?.pieceTarget?.() || null);
+        });
+        memo.input.addEventListener('keydown', (e) => {
+            // Keep ordinary editing native; neither completion nor viewer navigation owns these keys here.
+            e.stopPropagation();
+            if (e.isComposing || e.keyCode === 229) return;
+            if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
+                e.preventDefault();
+                memo.input.blur();
+                App.viewer.root?.focus({ preventScroll: true });
+            }
+        });
+        return h('section', { class: 'chip-dock-memo' },
+            h('div', { class: 'chip-dock-memo-head' }, h('span', { text: '메모' }), memo.targetEl),
+            memo.input);
+    }
 
     const wanted = () => !!App.settings.get('chips.drawer', false);
     const isOpen = () => !!App.viewer?.isPanelOpen?.(PANEL);
@@ -31,6 +121,7 @@
         if (!host || !host.isConnected) return;
         const cur = current();
         const piece = cur ? App.chipset?.pieceTarget?.() || null : null;
+        syncMemo(cur, piece);
         nameEl.textContent = cur ? (piece ? `${cur.name} · ${piece.label}` : cur.name) : '';
         App.chipsPanel.render(bodyEl, { key: 'drawer', files: cur ? [cur.path] : [], entries: cur ? [cur] : [], compact: true, piece });
     }
@@ -78,11 +169,17 @@
                     host = h('div', { class: 'chip-dock' },
                         h('div', { class: 'chip-dock-target', html: ui.icon('file', { size: 13 }) }, nameEl),
                         bodyEl,
+                        buildMemo(),
                         h('button', { type: 'button', class: 'btn primary chip-done-btn', text: '완료하고 다음', 'data-tip-keys': 'Ctrl+Enter', onclick: () => App.commands.run('chips.done.viewer') }),
                         h('div', { class: 'chip-dock-foot', html: '<span class="kbd">1</span>–<span class="kbd">9</span> 칩 단축키 · <span class="kbd">#</span> 찾기·만들기 · <span class="kbd">←</span><span class="kbd">→</span> 다음 파일' }));
                     body.append(host);
                     renderPanel();
                     return () => {
+                        flushMemo();
+                        memoBurst++;
+                        memo.target = null;
+                        memo.input = null;
+                        memo.targetEl = null;
                         host = null;
                         bodyEl = null;
                         nameEl = null;
@@ -106,6 +203,10 @@
             // Open it before the file loads, so the media lays out once next to it
             App.bus.on('viewer:entry', () => {
                 if (wanted() && App.viewer.isOpen && !App.viewer.isPanelOpen()) App.viewer.togglePanel(PANEL, true);
+            });
+            App.bus.on('viewer:closed', () => {
+                flushMemo();
+                memoBurst++;
             });
             App.bus.on('viewer:shown', () => syncButtons());
             App.bus.on('viewer:panel', ({ id, reason }) => {
