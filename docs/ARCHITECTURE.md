@@ -413,3 +413,47 @@ Everything about chips works without leaving the viewer, and a selected video pi
   `App.settings` array of folded category IDs, shared by both panels. Headings toggle via click or Enter/Space, expose
   `aria-expanded` and retain selection counts while folded. Each manual toggle pushes ONE undo entry; adding a chip
   unfolds its category.
+
+## 12. Capture to memo (2026-11-07)
+
+- **Capture** (`capture.js`, `capture.css`): `App.capture.available()` → bool;
+  `grab({region?})` → Promise of `{blob, w, h, ext, mime, name, dir, source}` or null. Region rectangles use viewport CSS
+  pixels; output crops the visible media at source resolution, including zoom/pan/rotation/flips.
+  `source = {path, t?, crop: {x, y, w, h}, zoom, rot, flipH, flipV, kind: 'video'|'image'}`; crop coordinates are
+  source pixels after orientation. `pickRegion()` → rect|null (Esc cancels); `copy(shot)` → Promise<boolean>.
+  `startInterval(seconds, onShot)` / `stopInterval()` / `intervalRunning` capture only while the current video plays.
+- **Storage**: `save(shot, {undoable = true, label})` creates `<source folder>/_캡처/` as needed, uses
+  `App.fs.createFile` for numbered clashes, copies source-file chips and records `meta.capture = source` plus `meta.w/h`.
+  Names are `<stem>_<MM>m<SS>s.jpg` for video and `<stem>_캡처.jpg` for photos (PNG uses `.png`). Default return is a path
+  with ONE undo entry; `{undoable:false}` returns `{path, createdDir}` without pushing undo.
+  Settings page `capture`: `capture.format` (`jpg` default or `png`), `capture.quality` (0.92),
+  `capture.pauseOnCapture` (false), `capture.intervalSeconds` (10). Existing C full-frame capture is independent.
+  Server-streamed/undrawable videos use the raw `App.server.media.frame` or `App.server.video.frame` fallback.
+- **Attachments** (`memo-caps.js`, `memo-caps.css`): SOURCE catalog entries hold
+  `memoCaps: [{path, t?, piece?, at, missing?}]`; `piece` is the numeric piece start. `App.catalog.get()` defaults this to `[]`.
+  `App.memoCaps.list(path, {piece})` returns copies for that memo (omitting piece selects the file memo);
+  `attach(path, cap, {piece})`, `detach(path, capPath, {trash})`, `captureToMemo({region})`,
+  `mount(section, editorGetter)`, `showAll()`, `exportFolder(folder?)` are the public API.
+  Capture/paste combines `save({undoable:false})`, attachment and caret token insertion into ONE undo entry;
+  undo trashes the image, detaches it, restores memo text and removes only an empty folder created by that action.
+  Redo restores the image and attachment. Attachment paths follow filesystem relocation; trash/delete marks them missing,
+  restore clears it. Detach keeps the file unless `trash:true`.
+- **Memo UI**: `App.chipsViewer.memoEditor()` → `{input, target, flush}` (target is a copy);
+  optional `App.memoCaps.mount()` returns `{sync, destroy}` and follows file/piece target changes.
+  `capture.toMemo` is viewer-scoped Ctrl+Shift+C and works in the memo input. The capture menu offers visible/selected
+  region, interval capture and clipboard copy. Image paste saves and attaches; `[캡처 1:23]` / `[캡처]` tokens become
+  scene links outside editing. Thumbnails open a lightbox with original-size viewing, scene navigation, detach/delete,
+  and feature-detected annotation/OCR actions. `capture.showAll` uses `App.view.setEntries` for a `meta.capture` smart view.
+  `capture.exportNotes` writes/downloads `강의노트.md` for the current folder, including file/piece memos and relative
+  capture links; the filesystem write owns ONE undo entry.
+- **Scene restoration** (`viewer-transform.js`): `App.viewer.view.restore({crop, zoom, rot?, flipH?, flipV?})` → bool.
+  After opening/seeking and waiting for media readiness, memo navigation restores the oriented crop, reducing zoom if
+  needed to show it and centring where pan bounds permit.
+- **Annotation** (`capture-annotate.js`, `capture-annotate.css`): `App.captureAnnotate.open(path)` → Promise<boolean>
+  indicating whether the JPEG/PNG editor opened. Pen, arrow, rectangle, ellipse and text use six label colors and stroke
+  widths. Editor undo/redo stays local; save uses `App.fs.overwrite` for ONE global undo entry with the original in app
+  trash. Esc/cancel asks through `App.ui.confirm` when there are unsaved changes.
+- **OCR** (`server/ocr.py`): `POST /api/ocr {path}` → `{text, lines: [{text, box: {x, y, w, h}}]}` (pixel boxes).
+  Windows PowerShell 5.1 uses Windows.Media.Ocr, preferring ko-KR then user-profile languages; no new pip packages.
+  Check `App.server.supports('ocr')`; `App.server.ocr(path)` returns the response. The lightbox appends extracted text to
+  the target memo with its own undo entry. OCR requires the local server and an available Windows OCR language pack.
