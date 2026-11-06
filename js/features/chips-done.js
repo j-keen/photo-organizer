@@ -3,7 +3,8 @@
  * unmark(paths), migrateDone(). move is an alias of mark; completion keeps files in place.
  * Commands: chips.done, chips.done.viewer, chips.undone, chips.migrateDone.
  * Catalog flags and legacy _완료 paths count as done. Migration and each completion action own one undo entry.
- * chips.hideDone defaults true; the done view filter exempts the 완료함 smart view.
+ * chips.hideDone defaults true; a non-user App.view hider exempts directories and the 완료함 smart view.
+ * Clearing user filters leaves completion hiding enabled.
  */
 (() => {
     'use strict';
@@ -23,12 +24,9 @@
         syncing = true;
         try {
             const hide = App.settings.get('chips.hideDone', true);
-            if (hide && !App.view.filters.has('done')) {
-                App.view.setFilter('done', {
-                    label: '완료 숨김',
-                    test: (entry) => App.view.source.smart === 'done' || !isDone(entry.path),
-                });
-            } else if (!hide && App.view.filters.has('done')) App.view.setFilter('done', null);
+            if (hide && !App.view.hiders.has('done')) {
+                App.view.setHider('done', (entry) => entry.kind === 'file' && App.view.source.smart !== 'done' && isDone(entry.path));
+            } else if (!hide && App.view.hiders.has('done')) App.view.setHider('done', null);
             else App.view.recompute('patch');
             App.topbar?.renderViewbar?.();
             App.gallery?.refresh();
@@ -294,9 +292,6 @@
             App.bus.on('workspace:opened', () => { refresh(); offerMigration(); });
             App.bus.on('workspace:closed', () => { offeredWorkspace = null; });
             App.bus.on('settings:changed', ({ key }) => { if (key === 'chips.hideDone') refresh(); });
-            App.bus.on('view:filters', () => {
-                if (!syncing && App.settings.get('chips.hideDone', true) && !App.view.filters.has('done')) refresh();
-            });
             refresh();
             App.gallery?.contextMenuItems.push((entries) => {
                 const files = entries.filter((e) => e.kind === 'file' && !isDone(e.path)).map((e) => e.path);

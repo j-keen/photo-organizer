@@ -14,6 +14,57 @@ async function setup(page, paths = []) {
 
 module.exports = [
     {
+        name: 'chips done: hiding survives clearing user filters and preserves visible selection',
+        async run({ openApp, assert }) {
+            const { page } = await openApp({ seed: {
+                'a.png': { image: { color: '#a33' } },
+                'b.png': { image: { color: '#3a3' } },
+            } });
+            await setup(page, ['b.png']);
+            await page.evaluate(() => App.chipsDone.mark(['b.png']));
+            await page.waitForFunction(() => App.view.visible.length === 1 && App.view.hiders.has('done'));
+            await page.evaluate(() => App.view.setFilter('test-empty', { label: '테스트', test: () => false }));
+            await page.waitForSelector('.gallery-empty-action');
+            await page.click('.gallery-empty-action');
+            await page.waitForFunction(() => App.view.filters.size === 0 && App.view.visible.length === 1);
+            assert.equal(await page.evaluate(() => App.view.hiders.has('done')), true);
+            await page.evaluate(() => {
+                App.select.set(['a.png']);
+                App.catalog.update('a.png', { memo: '선택을 유지해요' });
+            });
+            assert.deepEqual(await page.evaluate(() => App.select.list()), ['a.png']);
+            assert.equal(await page.evaluate(() => App.select.focus), 'a.png');
+            assert.equal(await page.evaluate(() => App.select.anchor), 'a.png');
+            await page.evaluate(() => App.view.clearFilters());
+            assert.equal(await page.evaluate(() => App.view.filters.size), 0);
+            assert.deepEqual(await page.evaluate(() => App.view.visible.map((e) => e.path)), ['a.png']);
+        },
+    },
+    {
+        name: 'chips done: F2 rename retains selection for Delete and undo',
+        async run({ openApp, assert, card }) {
+            const { page } = await openApp({ seed: { 'a.png': { image: { color: '#a33' } } } });
+            await setup(page, ['a.png']);
+            await (await card(page, 'a.png')).click();
+            await page.keyboard.press('F2');
+            await page.waitForSelector('.dialog .input');
+            await page.fill('.dialog .input', 'renamed.png');
+            await page.keyboard.press('Enter');
+            await page.waitForFunction(() => App.view.index.has('renamed.png'));
+            assert.deepEqual(await page.evaluate(() => App.select.list()), ['renamed.png']);
+            assert.equal(await page.evaluate(() => App.select.focus), 'renamed.png');
+            assert.equal(await page.evaluate(() => App.select.anchor), 'renamed.png');
+            await page.evaluate(() => App.catalog.update('renamed.png', { memo: '이름을 바꿨어요' }));
+            assert.deepEqual(await page.evaluate(() => App.select.list()), ['renamed.png']);
+            await page.keyboard.press('Delete');
+            await page.waitForFunction(async () => !await window.__opfs.exists('renamed.png') && !App.view.index.has('renamed.png'));
+            await page.waitForFunction(() => App.undo.list()[0]?.label === '"renamed.png" 삭제');
+            await page.keyboard.press('Control+z');
+            await page.waitForFunction(async () => await window.__opfs.exists('renamed.png') && App.view.index.has('renamed.png'));
+            await page.waitForFunction(() => App.catalog.peek('renamed.png')?.memo === '이름을 바꿨어요');
+        },
+    },
+    {
         name: 'chips done: done-only catalog entries persist without timestamp metadata',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: { 'a.png': { image: { color: '#a33' } } } });

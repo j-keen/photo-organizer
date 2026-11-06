@@ -3,7 +3,11 @@
  *   App.nav    — current folder (App.state.cwd), back/forward/up history, (re)loading.
  *     openHooks: synchronous (entry) => ({ time } | null); first finite nonnegative time wins.
  *     open(entry) emits 'item:open' { path, time? }; failed hooks do not prevent opening.
- *   App.view   — entries of the current source (folder or search) -> filters -> sort -> visible list.
+ *   App.view   — entries of the current source (folder or search) -> filters -> hiders -> sort -> visible list.
+ *     hiders: Map of (entry) => bool; true hides an entry, including directories.
+ *     setHider(id, predicate | null) recomputes without changing user filters or emitting 'view:filters'.
+ *     clearFilters() leaves hiders intact. Recomputes prune only items that are no longer visible.
+ *     Filesystem renames rebase folder entries and selection together before catalog refreshes can prune them.
  *   App.select — selection of paths within the visible list (+ anchor/focus for keyboard & shift-click).
  *
  * Events: 'folder:loading' {path}, 'folder:loaded' {path, entries}, 'view:changed' {reason},
@@ -23,6 +27,7 @@
         source: { type: 'none', path: null, title: '' },
         sort: App.settings.get('view.sort', { key: 'name', dir: 'asc' }),
         filters: new Map(),
+        hiders: new Map(),
 
         /** registerSortKey('rating', '별점', (entry) => number|string) */
         registerSortKey(key, label, get) {
@@ -54,6 +59,13 @@
             App.bus.emit('view:filters');
         },
 
+        /** A non-user visibility rule: true hides the entry. null removes the rule. */
+        setHider(id, predicate) {
+            if (predicate) view.hiders.set(id, predicate);
+            else view.hiders.delete(id);
+            view.recompute('patch');
+        },
+
         clearFilters() {
             view.filters.clear();
             view.recompute('filter');
@@ -65,6 +77,7 @@
             for (const f of view.filters.values()) {
                 list = list.filter((e) => (e.kind === 'dir' && !f.includeDirs ? true : f.test(e)));
             }
+            for (const hide of view.hiders.values()) list = list.filter((e) => !hide(e));
             const sk = sortKeys.get(view.sort.key) || sortKeys.get('name');
             const dir = view.sort.dir === 'desc' ? -1 : 1;
             list = [...list].sort((a, b) => {
@@ -537,6 +550,18 @@
                 if (moved.length) select.paths = new Set([...select.paths].map((p) => map.get(p) ?? p));
                 if (select.focus && map.has(select.focus)) select.focus = map.get(select.focus);
                 if (select.anchor && map.has(select.anchor)) select.anchor = map.get(select.anchor);
+                // Catalog listeners may recompute before the debounced reload; publish matching paths now.
+                let changed = false;
+                view.entries = view.entries.map((entry) => {
+                    for (let i = 0; i < change.from.length; i++) {
+                        const path = P.rebase(entry.path, change.from[i], change.to[i]);
+                        if (path == null || path === entry.path) continue;
+                        changed = true;
+                        return { ...entry, path, name: P.base(path) };
+                    }
+                    return entry;
+                });
+                if (changed) view.recompute('patch');
             }
         }
 
