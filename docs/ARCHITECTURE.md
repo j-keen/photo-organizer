@@ -393,17 +393,16 @@ Everything about chips works without leaving the viewer, and a selected video pi
 - **Opening files**: `App.nav.openHooks` is an ordered array of synchronous `(entry) => ({ time } | null)` callbacks.
   `open(entry)` bypasses hooks for folders; for files, the first finite nonnegative `time` wins and is emitted in
   `item:open {path, time?}`. A throwing hook is logged and does not prevent opening or later hooks.
-- **Completion** (`chips-done.js`): `App.chipsDone = { FOLDER, isDone, summary, move }`, with `FOLDER = '_완료'`.
-  `isDone(path)` tests the `_완료/` prefix; `summary(path)` returns `{tagged, text}` from file and kept-piece chips.
-  Async `move(paths)` resolves files, skips completed paths, flushes the selected piece and confirms untagged files.
-  It returns successful `[{from, to}]` moves (or `[]`), preserving relative folders and catalog data under `_완료/`.
-  Catalog `meta.doneFrom` stores the original parent and `meta.doneAt` the completion timestamp. ONE undo entry owns all
-  successful moves, origin metadata and cleanup of only empty destination folders created by this action; partial successes
-  remain undoable. Undo/redo require the original workspace. If the current viewer file moved, open the next remaining
-  visible candidate (wrapping around), or close the viewer when none remains.
-- **Completion commands**: `chips.done` completes gallery-selected files (also in the context menu);
-  `chips.done.viewer` (`Ctrl+Enter`, viewer scope) and the dock's '완료하고 다음' button complete the whole file even when
-  a piece is selected. `App.chipsFilter.showDone()` opens '완료함', a smart view of every indexed file under `_완료/`.
+- **Completion** (`chips-done.js`): `App.chipsDone.mark/unmark` update catalog completion metadata in place;
+  `move` is a backward-compatible alias for `mark`. `App.view.hiders` hides completed files by default without moving them.
+  `isDone(path)` identifies completed files; `summary(path)` returns `{tagged, text}` from file and kept-piece chips.
+  Each mark/unmark action owns ONE undo entry. The gallery's '완료 n개 숨김 · 보기' toggle reveals hidden completed files.
+  Legacy files from `_완료/` have a one-time '원래 자리로 돌리기' migration action.
+- **Completion commands**: `chips.done` marks gallery-selected files (also in the context menu);
+  `chips.done.viewer` (`Ctrl+Enter`, viewer scope) and the dock's '완료하고 다음' button mark the whole file even when
+  a piece is selected, then advance to the next file. '완료 취소' is available in the gallery menu, viewer and chip panel.
+  `App.chipsFilter.showDone()` opens '완료함', a smart view of completed files. The viewer's auto-next toast offers
+  '완료로 표시'; the setting is '다 본 영상은 바로 완료로 표시'.
 - **Piece-aware filter** (`chips-filter.js`): conditions use the union of known file chips and kept video-piece chips.
   Piece starts must be finite and nonnegative; starts inside removed ranges are excluded. AND may be satisfied across
   pieces. `App.chipsFilter.stats().chip` / `.cat` count each file once; `.pieces` maps chip IDs to tagged kept-piece counts.
