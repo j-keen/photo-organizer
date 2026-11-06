@@ -7,7 +7,6 @@
  *     hiders: Map of (entry) => bool; true hides an entry, including directories.
  *     setHider(id, predicate | null) recomputes without changing user filters or emitting 'view:filters'.
  *     clearFilters() leaves hiders intact. Recomputes prune only items that are no longer visible.
- *     Filesystem renames rebase folder entries and selection together before catalog refreshes can prune them.
  *   App.select — selection of paths within the visible list (+ anchor/focus for keyboard & shift-click).
  *
  * Events: 'folder:loading' {path}, 'folder:loaded' {path, entries}, 'view:changed' {reason},
@@ -550,18 +549,6 @@
                 if (moved.length) select.paths = new Set([...select.paths].map((p) => map.get(p) ?? p));
                 if (select.focus && map.has(select.focus)) select.focus = map.get(select.focus);
                 if (select.anchor && map.has(select.anchor)) select.anchor = map.get(select.anchor);
-                // Catalog listeners may recompute before the debounced reload; publish matching paths now.
-                let changed = false;
-                view.entries = view.entries.map((entry) => {
-                    for (let i = 0; i < change.from.length; i++) {
-                        const path = P.rebase(entry.path, change.from[i], change.to[i]);
-                        if (path == null || path === entry.path) continue;
-                        changed = true;
-                        return { ...entry, path, name: P.base(path) };
-                    }
-                    return entry;
-                });
-                if (changed) view.recompute('patch');
             }
         }
 

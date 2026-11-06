@@ -27,7 +27,20 @@
             if (hide && !App.view.hiders.has('done')) {
                 App.view.setHider('done', (entry) => entry.kind === 'file' && App.view.source.smart !== 'done' && isDone(entry.path));
             } else if (!hide && App.view.hiders.has('done')) App.view.setHider('done', null);
-            else App.view.recompute('patch');
+            else if (hide) {
+                // Rename selection already follows the new path while the listing awaits its reload.
+                // Only prune it when completion actually changes which entries are visible.
+                const view = App.view;
+                const expected = view.entries.filter((entry) => {
+                    for (const filter of view.filters.values()) {
+                        if (entry.kind === 'dir' && !filter.includeDirs) continue;
+                        if (!filter.test(entry)) return false;
+                    }
+                    for (const predicate of view.hiders.values()) if (predicate(entry)) return false;
+                    return true;
+                });
+                if (expected.length !== view.visible.length || expected.some((entry) => !view.index.has(entry.path))) view.recompute('patch');
+            }
             App.topbar?.renderViewbar?.();
             App.gallery?.refresh();
         } finally {
