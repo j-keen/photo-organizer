@@ -14,7 +14,7 @@
 
 ## 켜는 방법
 
-1. Python 3.10 이상을 설치해 주세요 ([python.org](https://www.python.org/downloads/)). 설치 첫 화면에서 **Add python.exe to PATH**를 꼭 체크해 주세요.
+1. Python 3.12 이상을 설치해 주세요 ([python.org](https://www.python.org/downloads/)). 설치 첫 화면에서 **Add python.exe to PATH**를 꼭 체크해 주세요.
 2. `server\start.bat`을 **한 번** 더블클릭해요. 처음에는 준비하느라 1~2분 걸려요(인터넷 필요). 다 되면 브라우저에서 앱이 저절로 열려요.
 3. 처음 켜지는 순간 바탕화면과 시작 메뉴에 **사진영상정리기** 아이콘이 생겨요.
 4. **다음부터는 그 아이콘만 누르면 돼요.** 검은 창 없이 서버가 켜지고, 앱이 마지막에 보던 작업 폴더로 바로 열려요.
@@ -27,6 +27,10 @@
 - `사진영상정리기.html`을 파일로 열어 쓰다가 서버가 켜지면 **서버로 계속하기** 한 번으로 넘어가요. 보던 폴더와 설정을 그대로 가져가요.
 
 구성 요소는 `requirements.txt`가 바뀌었을 때만 다시 설치해요.
+
+Windows 명령창에서 실행 파일이 깨지지 않도록 `start.bat`은 주석까지 ASCII로만 유지해요.
+Python을 찾기 전에는 영어로 안내하고, 찾은 뒤에는 `bootmsg.py`가 한국어 안내를 UTF-8로 출력해요.
+시작 안내와 배치 파일의 ASCII 검사는 `python -m unittest server.tests.test_bootmsg`로 실행해요.
 
 ## 중복 검사 v2 (서버 엔진)
 
@@ -90,7 +94,7 @@ server\.venv\Scripts\python.exe -m server --open --workspace "D:\사진 보관�
 
 | 상황 | 이렇게 해 보세요 |
 | --- | --- |
-| Python을 찾을 수 없다고 나와요 | python.org에서 3.10 이상을 설치하고 **Add python.exe to PATH**를 체크한 뒤 `start.bat`을 다시 실행해요. |
+| Python을 찾을 수 없다고 나와요 | python.org에서 Python 3.12 이상을 설치하고 **Add python.exe to PATH**를 체크한 뒤 `start.bat`을 다시 실행해요. |
 | 구성 요소 설치에 실패했어요 | 인터넷 연결과 디스크 공간을 확인하고 다시 실행해요. 계속 실패하면 `server\.venv` 폴더를 지우고 처음부터 설치해요. |
 | 포트를 쓸 수 없다고 나와요 | Windows가 예약했거나 다른 프로그램이 쓰는 번호예요. `--port 8790`처럼 다른 번호로 실행해요. |
 | 방화벽 경고가 떠요 | 서버는 내 PC 안에서만 쓰여요. 공용 네트워크 허용은 필요 없어요. |

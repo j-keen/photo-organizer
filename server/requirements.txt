@@ -1,4 +1,4 @@
-# Fluid Identity local server — tested versions (Python 3.10–3.13 on Windows; macOS/Linux work too)
+# Fluid Identity local server - tested versions (Python 3.12-3.13 on Windows; macOS/Linux work too)
 fastapi==0.146.0
 uvicorn[standard]==0.54.0
 numpy==2.5.4
