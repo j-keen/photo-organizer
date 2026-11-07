@@ -1,7 +1,7 @@
 'use strict';
 
 async function openVideo(page) {
-    await page.evaluate(() => App.viewer.open('a-clip.webm'));
+    await page.evaluate(() => App.viewer.open('b-clip.webm'));
     await page.waitForFunction(() => App.viewer.player?.metaReady && App.viewer.player.duration > 2);
     await page.evaluate(() => {
         App.viewer.player.pause();
@@ -12,8 +12,9 @@ async function openVideo(page) {
 }
 
 const seed = {
-    'a-clip.webm': { video: { seconds: 3 } },
-    'b-photo.png': { image: { color: '#336699' } },
+    'a-photo.png': { image: { color: '#663399' } },
+    'b-clip.webm': { video: { seconds: 3 } },
+    'c-photo.png': { image: { color: '#336699' } },
 };
 
 module.exports = [
@@ -24,10 +25,10 @@ module.exports = [
             await openVideo(page);
             await page.keyboard.down('Control');
             await page.keyboard.down('ArrowRight');
-            await page.waitForFunction(() => App.viewer.current.path === 'b-photo.png');
+            await page.waitForFunction(() => App.viewer.current.path === 'c-photo.png');
             await page.keyboard.up('Control');
-            await page.keyboard.down('ArrowRight');
-            await page.waitForFunction(() => App.viewer.current.path === 'a-clip.webm' && App.viewer.player?.metaReady);
+            await page.keyboard.down('ArrowLeft');
+            await page.waitForFunction(() => App.viewer.current.path === 'b-clip.webm' && App.viewer.player?.metaReady);
             await page.evaluate(() => {
                 window.__arrowSeeks = 0;
                 const player = App.viewer.player;
@@ -38,11 +39,12 @@ module.exports = [
                 };
             });
             await page.keyboard.down('ArrowRight');
-            await page.waitForFunction(() => App.viewer.current.path === 'b-photo.png');
+            await page.waitForFunction(() => App.viewer.current.path === 'c-photo.png');
             assert.equal(await page.evaluate(() => window.__arrowSeeks), 0);
+            await page.keyboard.up('ArrowLeft');
             await page.keyboard.up('ArrowRight');
             await page.keyboard.press('ArrowLeft');
-            await page.waitForFunction(() => App.viewer.current.path === 'a-clip.webm' && App.viewer.player?.metaReady);
+            await page.waitForFunction(() => App.viewer.current.path === 'b-clip.webm' && App.viewer.player?.metaReady);
             await page.evaluate(() => {
                 App.viewer.player.pause();
                 App.viewer.player.seek(0.5);
@@ -50,7 +52,7 @@ module.exports = [
             await page.waitForFunction(() => Math.abs(App.viewer.player.time - 0.5) < 0.05);
             await page.keyboard.press('ArrowRight');
             await page.waitForFunction(() => Math.abs(App.viewer.player.time - 1.5) < 0.12);
-            assert.equal(await page.evaluate(() => App.viewer.current.path), 'a-clip.webm');
+            assert.equal(await page.evaluate(() => App.viewer.current.path), 'b-clip.webm');
         },
     },
     ...['Control', 'Meta'].flatMap((modifier) => ['ArrowLeft', 'ArrowRight'].map((arrow) => ({
@@ -76,7 +78,8 @@ module.exports = [
             });
             await page.keyboard.down(arrow);
             await page.keyboard.down(modifier);
-            await page.waitForFunction(() => App.viewer.current.path === 'b-photo.png');
+            const target = arrow === 'ArrowLeft' ? 'a-photo.png' : 'c-photo.png';
+            await page.waitForFunction((path) => App.viewer.current.path === path, target);
             const result = await page.evaluate(() => {
                 performance.now = window.__arrowNow;
                 return {
@@ -99,7 +102,7 @@ module.exports = [
             await page.keyboard.press('ArrowRight');
             await page.waitForFunction(() => Math.abs(App.viewer.player.time - 2.25) < 0.12);
             await page.keyboard.press('Control');
-            assert.equal(await page.evaluate(() => App.viewer.current.path), 'a-clip.webm');
+            assert.equal(await page.evaluate(() => App.viewer.current.path), 'b-clip.webm');
             await page.keyboard.press('ArrowLeft');
             await page.waitForFunction(() => Math.abs(App.viewer.player.time - 1.25) < 0.12);
         },

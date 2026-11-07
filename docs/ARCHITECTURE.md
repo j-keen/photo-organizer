@@ -456,3 +456,18 @@ Everything about chips works without leaving the viewer, and a selected video pi
   Windows PowerShell 5.1 uses Windows.Media.Ocr, preferring ko-KR then user-profile languages; no new pip packages.
   Check `App.server.supports('ocr')`; `App.server.ocr(path)` returns the response. The lightbox appends extracted text to
   the target memo with its own undo entry. OCR requires the local server and an available Windows OCR language pack.
+
+## 13. Escape navigation, viewer edges & external players
+
+- `nav.escape` handles one applicable gallery step per press: cancel cut → clear search/filters → clear selection →
+  go up and focus the folder just left. At workspace root, show '최상위 폴더예요' with '작업 폴더 바꾸기'.
+  Holding Esc goes to workspace root; this behavior can be disabled in settings. Closing the viewer with Esc then
+  pressing Esc again within 0.6 s goes up.
+- Viewer file navigation stops once at either edge; another press in the same direction within 3 s wraps to the
+  opposite edge. Wrapping to the first file shows '처음 파일이에요 (1/n)'. The last-file toast offers '다음 폴더로';
+  folder completion shows '이 폴더 n개 다 봤어요'.
+- `App.server.openWith`, `App.server.players`, `App.server.addPlayer` support opening files with the default app or
+  a chosen player, listing detected players (PotPlayer, VLC, etc.) and adding a player. Server routes:
+  `/api/fs/open-with` and `/api/apps/players`. File context menus expose reveal/default app/named player/other program;
+  unplayable-video screens also offer external opening. These actions require the local server and show startup
+  guidance when it is unavailable.
