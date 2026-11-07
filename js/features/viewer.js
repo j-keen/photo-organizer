@@ -7,6 +7,8 @@
  *
  * Public API (App.viewer):
  *   open(path, {time, play}), close(), step(±1), go(index), reload(), current, index, files, count, isOpen, kind, media
+ *     — step warns at either edge; repeating the same edge within 3 seconds wraps.
+ *   osd(text, {icon, duration, actions?: Element[], detail?: string}) — transient feedback with optional actions
  *   toolbarItems.push((entry) => [Element...])      — add buttons to the viewer top bar
  *   contextItems.push((entry, kind) => menuItems)   — add items to the viewer's "더 보기"/right-click menu
  *   hintProviders.push((kind) => [{keys, label}])   — add items to the shortcut hint row
@@ -193,6 +195,11 @@
     let lastFsExit = 0;
     let idleTimer = null;
     let osdTimer = null;
+    let osdVersion = 0;
+    let edge = null;
+    let escapeClosedAt = null;
+    let sessionId = 0;
+    const openedPaths = new Set();
 
     const renderers = new Map();
     const panels = new Map();
@@ -259,6 +266,12 @@
         /** Open a file. opts: { time (seconds, videos), play (bool) } */
         open(p, opts = {}) {
             if (!root) return;
+            if (!viewer.isOpen) {
+                sessionId++;
+                openedPaths.clear();
+            }
+            escapeClosedAt = null;
+            edge = null;
             syncList();
             let i = files.findIndex((e) => e.path === p);
             if (i < 0) {
@@ -291,6 +304,9 @@
         },
 
         close() {
+            edge = null;
+            escapeClosedAt = null;
+            osdVersion++;
             resetArrowGestures();
             if (!viewer.isOpen) return;
             const cur = viewer.current;
@@ -318,13 +334,31 @@
         },
 
         step(delta, opts = {}) {
-            if (!files.length) return;
-            lastDirection = delta < 0 ? -1 : 1;
-            index = (index + delta + files.length) % files.length;
+            if (!files.length || !delta) return;
+            const direction = delta < 0 ? -1 : 1;
+            const next = index + delta;
+            if (next < 0 || next >= files.length) {
+                const now = performance.now();
+                if (edge && edge.path === viewer.current.path && edge.direction === direction && now - edge.at < 3000) {
+                    edge = null;
+                    lastDirection = direction;
+                    index = direction > 0 ? 0 : files.length - 1;
+                    show(opts);
+                    osd(direction > 0 ? `처음 파일이에요 (1/${files.length})` : `마지막 파일이에요 (${files.length}/${files.length})`, { duration: 1800 });
+                } else {
+                    edge = { path: viewer.current.path, direction, at: now };
+                    warnEdge(direction);
+                }
+                return;
+            }
+            edge = null;
+            lastDirection = direction;
+            index = next;
             show(opts);
         },
 
         go(i, opts = {}) {
+            edge = null;
             if (!files.length) return;
             const next = clamp(i, 0, files.length - 1);
             lastDirection = next < index ? -1 : 1;
@@ -481,6 +515,11 @@
         const entry = files[index];
         if (!entry) return;
         const token = ++loadToken;
+        openedPaths.add(entry.path);
+        osdVersion++;
+        clearTimeout(osdTimer);
+        osdEl.classList.remove('vw-osd-in', 'vw-osd-out');
+        osdEl.replaceChildren();
         updateChrome(entry);
         App.select.set([entry.path]);
         // a panel made for another kind of file (메모 목록 → a photo) steps out; another panel may take the dock
@@ -905,9 +944,12 @@
     }
 
     // ---------- On-screen display (feedback bubble) ----------
-    function osd(text, { icon: ic = null, duration = 750 } = {}) {
+    function osd(text, { icon: ic = null, duration = 750, actions = [], detail = '' } = {}) {
         if (!osdEl) return;
+        osdVersion++;
         osdEl.innerHTML = `${ic ? icon(ic, { size: 22 }) : ''}<span>${escapeHtml(text)}</span>`;
+        if (detail) osdEl.append(h('span', { class: 'vw-edge-detail', text: detail }));
+        for (const action of actions) osdEl.append(action);
         osdEl.classList.remove('vw-osd-out');
         osdEl.classList.add('vw-osd-in');
         clearTimeout(osdTimer);
@@ -915,6 +957,64 @@
             osdEl.classList.remove('vw-osd-in');
             osdEl.classList.add('vw-osd-out');
         }, duration);
+    }
+
+    async function nextSibling(folder) {
+        if (!folder) return null;
+        const siblings = (await App.fs.list(P.parent(folder)))
+            .filter((entry) => entry.kind === 'dir')
+            .sort((a, b) => App.util.compareNames(a.name, b.name));
+        const at = siblings.findIndex((entry) => entry.path === folder);
+        return at < 0 ? null : siblings[at + 1] || null;
+    }
+
+    function warnEdge(direction) {
+        const folder = P.parent(viewer.current.path);
+        const session = sessionId;
+        const warning = edge;
+        const text = direction > 0 ? '마지막 파일이에요 · 한 번 더 누르면 처음으로' : '첫 파일이에요 · 한 번 더 누르면 마지막으로';
+        const folderFiles = files.filter((entry) => P.parent(entry.path) === folder);
+        const detail = direction > 0 && folderFiles.length && folderFiles.every((entry) => openedPaths.has(entry.path))
+            ? `이 폴더 ${folderFiles.length}개 다 봤어요` : '';
+        osd(text, { duration: 3000, detail });
+        const version = osdVersion;
+        stage.classList.remove('vw-edge-left', 'vw-edge-right');
+        void stage.offsetWidth;
+        stage.classList.add(direction > 0 ? 'vw-edge-right' : 'vw-edge-left');
+        if (direction < 0) return;
+        nextSibling(folder).then((sibling) => {
+            if (!sibling || !viewer.isOpen || session !== sessionId || edge !== warning || version !== osdVersion) return;
+            const button = h('button', {
+                class: 'btn sm vw-edge-folder',
+                text: '다음 폴더로',
+                onclick: async () => {
+                    if (button.disabled || edge !== warning || session !== sessionId) return;
+                    button.disabled = true;
+                    try {
+                        const entries = await App.fs.list(sibling.path);
+                        if (!viewer.isOpen || edge !== warning || session !== sessionId) return;
+                        const media = entries.filter((entry) => entry.kind === 'file' && (entry.type === 'image' || entry.type === 'video'))
+                            .sort((a, b) => App.util.compareNames(a.name, b.name));
+                        if (!media.length) {
+                            ui.toast('다음 폴더에 사진이나 영상이 없어요');
+                            return;
+                        }
+                        await App.nav.go(sibling.path);
+                        if (!viewer.isOpen || session !== sessionId || App.state.cwd !== sibling.path) return;
+                        // Replace the old folder's retained file before opening the new one.
+                        files = [];
+                        index = -1;
+                        edge = null;
+                        viewer.open(media[0].path);
+                    } catch (e) {
+                        ui.toast(`다음 폴더를 열 수 없어요: ${e.message}`, { type: 'error' });
+                    } finally {
+                        button.disabled = false;
+                    }
+                },
+            });
+            osdEl.append(button);
+        }).catch(() => {});
     }
 
     // ---------- Mouse wheel: previous/next file (photos; when not zoomed in) ----------
@@ -1058,7 +1158,7 @@
         icon: 'x',
         scope: 'viewer',
         keys: ['Escape'],
-        run: () => {
+        run: (args) => {
             if (document.fullscreenElement) {
                 document.exitFullscreen().catch(() => {});
                 return;
@@ -1074,6 +1174,7 @@
                 return;
             }
             viewer.close();
+            if (args?.event?.key === 'Escape' && !args.event.repeat) escapeClosedAt = performance.now();
         },
     });
     App.commands.register({ id: 'viewer.prev', title: '이전 파일', group: '보기', icon: 'chevron-left', scope: 'viewer', keys: ['PageUp', 'Mod+ArrowLeft', 'ArrowLeft'], when: isOpen, run: (a) => arrowStep(-1, a && a.event) });
@@ -1251,6 +1352,18 @@
             hintsEl = h('div', { class: 'vw-hints', 'aria-hidden': 'true' });
             bottomEl = h('div', { class: 'vw-bottom' }, h('div', { class: 'vw-strip-host' }), hintsEl);
             root.append(topEl, mainEl, bottomEl);
+            // Animate the stage so renderer zoom and orientation transforms stay intact.
+            root.append(h('style', { text: `
+                @keyframes vw-edge-right { 0%, 100% { translate: 0; } 40% { translate: 14px; } 70% { translate: -3px; } }
+                @keyframes vw-edge-left { 0%, 100% { translate: 0; } 40% { translate: -14px; } 70% { translate: 3px; } }
+                .vw-stage.vw-edge-right { animation: vw-edge-right 220ms ease-out; }
+                .vw-stage.vw-edge-left { animation: vw-edge-left 220ms ease-out; }
+                .vw-osd:has(.vw-edge-folder) { pointer-events: auto; }
+                .vw-edge-detail { display: block; font-size: 0.85em; }
+                @media (prefers-reduced-motion: reduce) {
+                    .vw-stage.vw-edge-right, .vw-stage.vw-edge-left { animation: none; }
+                }
+            ` }));
 
             // Right-click menu on the media area
             stageWrap.addEventListener('contextmenu', (e) => {
@@ -1273,6 +1386,19 @@
             root.addEventListener('mousemove', poke, { passive: true });
             root.addEventListener('pointerdown', poke, { passive: true });
             document.addEventListener('keydown', (e) => {
+                if (!viewer.isOpen && escapeClosedAt !== null) {
+                    const elapsed = performance.now() - escapeClosedAt;
+                    escapeClosedAt = null;
+                    if (e.key === 'Escape' && !e.repeat && !e.defaultPrevented && !e.isComposing && elapsed < 600 &&
+                        App.layers.top() === 'main' && !App.util.isTypingTarget(e.target)) {
+                        e.preventDefault();
+                        e.stopImmediatePropagation();
+                        if (App.nav.canUp()) App.commands.run('nav.up');
+                        else if (typeof ui.hud === 'function') ui.hud('최상위 폴더예요');
+                        else ui.toast('최상위 폴더예요');
+                        return;
+                    }
+                }
                 if (viewer.isOpen) poke();
                 correctArrowChord(e);
             }, true);

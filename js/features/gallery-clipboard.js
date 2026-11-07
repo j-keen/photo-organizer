@@ -2,7 +2,8 @@
  * File clipboard (team: gallery): Mod+C / Mod+X / Mod+V copy, cut and paste files between folders.
  *   App.gallery.clipboard — { mode: 'copy'|'cut'|null, paths, count, has(p), set(mode, paths), clear() }
  * Paste goes through App.gallery.transfer (App.fs.copy / App.fs.move: one undo entry, toast with [실행 취소]).
- * Cut items stay dimmed until they're pasted; Esc cancels a cut when nothing is selected.
+ * Cut items stay dimmed until they're pasted; nav.escape cancels a cut before clearing selection.
+ * Command clipboard.cancel remains available without its own Escape binding.
  * When the file clipboard is empty, Ctrl+V pastes images from the system clipboard (e.g. screenshots) into the folder.
  * Event: 'clipboard:changed' { mode, count }
  */
@@ -94,8 +95,7 @@
         id: 'clipboard.cancel',
         title: '잘라내기 취소',
         group: '편집',
-        keys: ['Escape'],
-        when: () => clip.mode === 'cut' && App.select.count === 0,
+        when: () => clip.mode === 'cut',
         run: () => {
             clipboard.clear();
             ui.toast('잘라내기를 취소했어요', { type: 'info', duration: 1800, id: 'gallery-clipboard' });

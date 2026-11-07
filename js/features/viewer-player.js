@@ -254,7 +254,7 @@
             this.video.hidden = true;
             this.setState('none');
             const server = serverStreamReady();
-            const actions = [];
+            const actions = App.server?.externalButtons?.(e) || [];
             if (server) actions.push(h('button', { class: 'btn primary sm', html: `${ui.icon('server', { size: 14 })}<span>서버로 재생</span>`, onclick: () => this.useServerStream() }));
             this.slot.append(V.card({
                 icon: 'film',
@@ -284,7 +284,7 @@
                 tone: 'is-error',
                 title: '이 영상을 열 수 없어요',
                 text: escapeHtml(err?.message || '파일을 읽지 못했어요.'),
-                actions: [h('button', { class: 'btn sm', text: '다시 시도', onclick: () => V.open(this.path) })],
+                actions: [h('button', { class: 'btn sm', text: '다시 시도', onclick: () => V.open(this.path) }), ...(App.server?.externalButtons?.(this.entry) || [])],
             }));
         }
 

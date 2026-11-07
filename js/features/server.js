@@ -29,6 +29,9 @@
  *   App.server.media.probe(path) / streamUrl(path, start) / thumbUrl(entry, size)
  *   App.server.ocr(path) → Promise<{text, lines: [{text, box: {x, y, w, h}}]}> (check supports('ocr'))
  *   App.server.reveal(path) / openDefault(path) / copyPath(paths)
+ *   App.server.openWith(path, appId?) / players() / addPlayer(exe)
+ *   App.server.externalItems(entry) / externalButtons(entry) — shared menus and failure-card actions;
+ *     player actions require supports('open-with'), with setup hints offline and update hints on older servers.
  *   App.server.canDisplay(entryOrName)    browser can decode it, or the connected server can render/stream it
  *   App.server.openRoot(root) / pickWorkspace() / recents()
  *   App.server.showSetup()                '로컬 서버 켜기' sheet — call it from any disabled "needs the server" state
@@ -523,6 +526,121 @@
         forgetRoot: (root) => request('POST', '/api/dupes/roots/forget', { root }),
         isExternal,
     };
+
+    // ---------- External programs ----------
+    let playerList = [];
+    let playerLoad = null;
+
+    async function players() {
+        const result = await request('GET', '/api/apps/players');
+        playerList = result;
+        return result;
+    }
+
+    async function addPlayer(exe) {
+        const result = await request('POST', '/api/apps/players', { exe });
+        await players();
+        return result;
+    }
+
+    async function openWith(path, appId) {
+        requireBackend();
+        let player = null;
+        if (appId) {
+            player = (await players()).find((item) => item.id === appId);
+            if (!player) throw failure('EINVAL', '플레이어를 찾을 수 없어요. 다시 골라 주세요');
+        }
+        const result = await request('POST', '/api/fs/open-with', { path, ...(player ? { app: player.exe } : {}) });
+        if (player) {
+            const key = `external.player.${App.util.mediaType(P.base(path))}`;
+            const before = App.settings.get(key, null);
+            const after = { id: player.id, name: player.name };
+            if (before?.id !== after.id || before?.name !== after.name) {
+                App.settings.set(key, after);
+                App.undo.push({ label: '기억한 플레이어', undo: () => App.settings.set(key, before), redo: () => App.settings.set(key, after) });
+            }
+        }
+        return result;
+    }
+
+    function externalReady(needsPlayer = false) {
+        const server = App.server;
+        return server.available && !!server.backend && (!needsPlayer || server.supports('open-with'));
+    }
+
+    function externalHint(needsPlayer = false) {
+        if (!externalReady()) return '로컬 서버를 켜면 돼요';
+        return needsPlayer && !externalReady(true) ? '로컬 서버를 업데이트해 주세요' : '';
+    }
+
+    function externalAction(fn, needsPlayer = false) {
+        return async () => {
+            if (!externalReady()) return App.server.showSetup();
+            if (!externalReady(needsPlayer)) return ui.toast(externalHint(needsPlayer), { type: 'warning' });
+            try {
+                return await fn();
+            } catch (err) {
+                reportError(err);
+            }
+        };
+    }
+
+    function externalItems(entry) {
+        if (!entry) return [];
+        const server = App.server;
+        const ready = externalReady();
+        if (ready && server.supports('open-with') && !playerLoad) {
+            playerLoad = server.players().catch(reportError).finally(() => { playerLoad = null; });
+        }
+        const item = (label, fn, icon = 'external', needsPlayer = false) => {
+            const hint = externalHint(needsPlayer);
+            return {
+                label: hint ? `${label} · ${hint}` : label,
+                icon,
+                action: externalAction(fn, needsPlayer),
+            };
+        };
+        const playerItem = (label, fn) => item(label, fn, 'external', true);
+        const items = [item(entry.kind === 'dir' ? '탐색기에서 열기' : '탐색기에서 보기', () => server.reveal(entry.path), 'folder-open')];
+        if (entry.kind === 'dir') return items;
+        items.push(item('기본 앱으로 열기', () => server.openDefault(entry.path)));
+        const remembered = App.settings.get(`external.player.${entry.type || App.util.mediaType(entry.name)}`, null);
+        if (remembered?.id) items.push(playerItem(`${remembered.name}로 열기`, () => server.openWith(entry.path, remembered.id)));
+        items.push({
+            ...playerItem('다른 프로그램으로 열기', () => {}),
+            submenu: () => [
+                ...playerList.map((player) => playerItem(`${player.name}로 열기`, () => server.openWith(entry.path, player.id))),
+                playerItem('목록에서 고르기…', () => server.openWith(entry.path)),
+                playerItem('플레이어 추가…', async () => {
+                    const exe = await ui.prompt({ title: '플레이어 추가', message: '플레이어 실행 파일의 전체 경로를 입력해 주세요 (.exe).', value: '', okLabel: '추가' });
+                    if (exe?.trim()) {
+                        const player = await server.addPlayer(exe.trim());
+                        await server.openWith(entry.path, player.id);
+                    }
+                }),
+            ],
+        });
+        return items;
+    }
+
+    function externalButtons(entry) {
+        const items = externalItems(entry);
+        const chosen = items.filter((item) => item.label.includes('로 열기') && !item.label.startsWith('기본 앱'));
+        const more = items[items.length - 1];
+        return [...chosen.filter((item) => item !== more), more, items[0]].filter(Boolean).map((item) => h('button', {
+            type: 'button',
+            class: 'btn sm srv-external',
+            style: externalHint(item !== items[0]) ? 'opacity:0.55' : '',
+            title: externalHint(item !== items[0]) || item.label,
+            text: item.label,
+            onclick: (event) => {
+                event.stopPropagation();
+                if (!externalReady(item !== items[0])) return item.action();
+                if (item.submenu) ui.menu(item.submenu(), { anchor: event.currentTarget });
+                else item.action();
+            },
+        }));
+    }
 
     // ---------- Paths & clipboard ----------
     function absolutePath(root, rel) {
@@ -1065,13 +1183,10 @@
         if (!G) return;
         if (Array.isArray(G.contextMenuItems)) {
             G.contextMenuItems.push((entries) => {
-                if (!backend()) return [];
-                if (!entries.length) return [{ label: '탐색기에서 이 폴더 보기', icon: 'folder-open', command: 'server.reveal', args: { path: App.state.cwd || '' } }];
-                const one = entries.length === 1 ? entries[0] : null;
+                const entry = entries[0] || { kind: 'dir', path: App.state.cwd || '' };
                 return [
-                    { label: '탐색기에서 보기', icon: 'folder-open', command: 'server.reveal', args: { path: entries[0].path } },
-                    one && one.kind === 'file' ? { label: '기본 앱으로 열기', icon: 'external', command: 'server.openDefault', args: { path: one.path } } : null,
-                    { label: '전체 경로 복사', icon: 'copy', command: 'server.copyPath', args: { paths: entries.map((e) => e.path) } },
+                    ...externalItems(entry),
+                    backend() ? { label: '전체 경로 복사', icon: 'copy', command: 'server.copyPath', args: { paths: entries.length ? entries.map((e) => e.path) : [entry.path] } } : null,
                 ].filter(Boolean);
             });
         }
@@ -1400,6 +1515,7 @@
         /** Feature check for other teams: 'dupes-v2', 'job-pause', 'restart', 'ocr'. */
         supports(feature) {
             const v = state === 'connected' && !!backend() && info ? apiVersionOf(info) : 0;
+            if (feature === 'open-with') return v > 0 && server.capabilities['open-with'] === true && !!info.supports?.includes('open-with');
             if (feature === 'ocr') return v > 0 && server.capabilities.ocr === true && !!info.supports?.includes('ocr');
             return ({ 'dupes-v2': 2, 'job-pause': 2, restart: 2 })[feature] <= v;
         },
@@ -1416,6 +1532,11 @@
         reveal: (path = primaryTarget()) => requireBackend().reveal(path),
         openDefault: (path = primaryTarget()) => requireBackend().openDefault(path),
         copyPath,
+        openWith,
+        players,
+        addPlayer,
+        externalItems,
+        externalButtons,
         canDisplay(value) {
             const entry = typeof value === 'string' ? { kind: 'file', name: P.base(value), path: value } : value;
             if (!entry || entry.kind === 'dir') return false;
@@ -1545,6 +1666,11 @@
             installViewerBridge();
             installInspector();
             installGallery();
+            App.viewer?.contextItems?.push((entry) => externalItems(entry));
+            App.bus.on('server:status', () => {
+                playerList = [];
+                if (externalReady() && server.supports('open-with')) server.players().catch(reportError);
+            });
             if (typeof App.statusbar?.addItem === 'function') {
                 statusEl = h('button', { class: 'sb-btn srv-status', type: 'button', onclick: onStatusClick });
                 App.statusbar.addItem('server', statusEl, { side: 'right' });

@@ -1,4 +1,4 @@
-"""FastAPI application factory: security, routes, static files, and session capabilities/supports (including OCR)."""
+"""FastAPI factory: security, routes, static files, OCR and Open With capabilities/supports."""
 from __future__ import annotations
 
 import logging
@@ -71,6 +71,7 @@ def capabilities() -> dict:
         from . import ocr
 
         caps['ocr'] = ocr.available()
+        caps['open-with'] = os.name == 'nt'
         if caps['ffmpeg']:
             caps['x264'] = ffmpeg.has_encoder('libx264')
         _caps = caps
@@ -123,7 +124,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             'port': settings.port,
             'appRoot': os.path.realpath(str(settings.app_root)),
             'capabilities': capabilities(),
-            'supports': ['dupes-v2', 'job-pause', 'restart'] + (['ocr'] if capabilities().get('ocr') else []),
+            'supports': ['dupes-v2', 'job-pause', 'restart'] + (['ocr'] if capabilities().get('ocr') else []) + (['open-with'] if capabilities().get('open-with') else []),
             'workspace': ws.to_dict() if ws else None,
         }
         resp = JSONResponse(body, headers={'Cache-Control': 'no-store'})
@@ -168,10 +169,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {'created': created}
 
     # ---------- feature routes ----------
-    from . import dupes, dupes2, media, ocr, quarantine, routes_fs, routes_jobs, routes_workspace, video
+    from . import apps, dupes, dupes2, media, ocr, quarantine, routes_fs, routes_jobs, routes_workspace, video
 
     # dupes2 first: its POST /api/dupes/scan handles v2 bodies and hands v1 bodies to dupes.scan_route
-    for mod in (routes_workspace, routes_fs, media, video, ocr, dupes2, dupes, quarantine, routes_jobs):
+    for mod in (routes_workspace, routes_fs, apps, media, video, ocr, dupes2, dupes, quarantine, routes_jobs):
         app.include_router(mod.router)
 
     # ---------- static app files (registered last) ----------

@@ -10,6 +10,7 @@
  * Search: name/memo/tags plus Hangul initials (ㄱㅅㅎ → 김수현) and chip names (via App.chipset.nameOf when present),
  * scope 전체/현재 폴더, result count, clear button, suggestions (folders → go there, chips → show that chip's files),
  * recent searches. Esc: leaves the suggestion list → clears the text → returns to the gallery.
+ * Event consumed: nav:escape-up { child } briefly shows the departed folder name in the path bar.
  */
 (() => {
     'use strict';
@@ -920,6 +921,24 @@
                 });
             }).observe(center);
 
+            let escapeTrail = null;
+            let escapeTrailTimer = 0;
+            App.bus.on('nav:escape-up', ({ child }) => {
+                clearTimeout(escapeTrailTimer);
+                escapeTrail?.remove();
+                // The child is no longer a crumb after going up; show its name beside the parent path.
+                escapeTrail = h('span', { class: 'crumb escape-trail', role: 'status', text: label(child) });
+                center.append(escapeTrail);
+                escapeTrailTimer = setTimeout(() => {
+                    escapeTrail?.remove();
+                    escapeTrail = null;
+                }, 800);
+            });
+            App.bus.on('workspace:closed', () => {
+                clearTimeout(escapeTrailTimer);
+                escapeTrail?.remove();
+                escapeTrail = null;
+            });
             App.bus.on('nav:changed', () => {
                 renderCrumbs();
                 updateNavButtons();

@@ -11,7 +11,8 @@
  *   App.help.open(query?) — the shortcut sheet; App.help.render(container, { query }) renders it anywhere.
  *
  * Preference keys owned here: theme.followSystem, workspace.autoReopen, workspace.restoreView, trash.confirm,
- * trash.retentionDays, thumbs.cacheLimitMB, thumbs.autoPregenerate, layout.autoCollapse (read by their modules).
+ * trash.retentionDays, thumbs.cacheLimitMB, thumbs.autoPregenerate, layout.autoCollapse,
+ * gallery.escapeUp (default true; read by gallery).
  */
 (() => {
     'use strict';
@@ -202,6 +203,12 @@
                     desc: '창 너비가 1100px보다 좁으면 정보 패널을, 820px보다 좁으면 사이드바를 접어서 사진을 크게 보여 줘요.',
                     control: k.toggle({ key: 'layout.autoCollapse', fallback: true, label: '패널 자동 접기', onChange: () => App.layout?.apply?.() }),
                 }));
+
+            look.body.append(k.row({
+                label: '갤러리에서 Esc로 상위 폴더',
+                desc: '잘라내기·필터·선택을 먼저 해제해요. 길게 누르면 작업 폴더 처음으로 이동해요.',
+                control: k.toggle({ key: 'gallery.escapeUp', fallback: true, label: '갤러리에서 Esc로 상위 폴더' }),
+            }));
 
             const start = k.group('시작');
             start.body.append(

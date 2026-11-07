@@ -23,6 +23,8 @@
  * Drag data type for internal drags: 'application/x-fi-paths' (JSON array of paths).
  * Events: 'gallery:zoom' {size}, 'gallery:mode' {mode}, 'gallery:fit' {fit}, 'gallery:folders' (folder stats refreshed).
  * Settings: gallery.size, gallery.mode, gallery.fit, gallery.scrub (hover preview on/off), gallery.hoverPlay (play vs. scrub).
+ *   gallery.escapeUp (default true): Escape clears pending state before navigating up; holding jumps to root.
+ * Command: nav.escape (main scope); select.clear remains available without a keyboard binding.
  */
 (() => {
     'use strict';
@@ -2653,6 +2655,96 @@
         return wrap;
     }
 
+    // ---------- Escape ----------
+    let escapeAt = null;
+    let escapeHeld = false;
+    let escapeJob = Promise.resolve();
+    let rootNotice = null;
+
+    function escapeAllowed() {
+        const active = document.activeElement;
+        return App.fs.ready && App.layers.top() === 'main'
+            && !App.util.isTypingTarget(active)
+            && !active?.closest('[role="tree"], .tree-row');
+    }
+
+    async function clearEscapeView() {
+        const filtered = App.view.filters.size > 0;
+        const otherSource = App.view.source.type !== 'folder';
+        const searched = App.topbar?.clearSearch?.();
+        if (!filtered && !otherSource && !searched) return false;
+        if (App.commands.isEnabled('chips.clearFilter')) await App.commands.run('chips.clearFilter');
+        App.topbar?.setTypeFilter?.('all');
+        App.view.clearFilters();
+        // Reload explicitly: smart views can have no search text to clear.
+        await App.nav.go(App.state.cwd ?? '');
+        return true;
+    }
+
+    async function escapeStep(root = false) {
+        if (!escapeAllowed()) return;
+        if (root) {
+            await clearEscapeView();
+            await App.nav.goHome();
+            if (App.state.cwd === '' && App.view.source.type === 'folder') {
+                const first = App.view.visible[0]?.path;
+                if (first) {
+                    App.select.set([first], { focus: first, anchor: first });
+                    gallery.scrollTo(first);
+                } else App.select.clear();
+            }
+            return;
+        }
+        if (gallery.clipboard?.mode === 'cut') {
+            await App.commands.run('clipboard.cancel');
+            return;
+        }
+        if (await clearEscapeView()) return;
+        if (App.select.count || App.select.focus) {
+            App.select.clear();
+            return;
+        }
+        if (!App.settings.get('gallery.escapeUp', true)) return;
+        if (App.nav.canUp()) {
+            const child = App.state.cwd;
+            await App.nav.goUp();
+            if (App.state.cwd === P.parent(child)) App.bus.emit('nav:escape-up', { child });
+        } else {
+            rootNotice?.close();
+            rootNotice = ui.toast('최상위 폴더예요', {
+                type: 'info', duration: 800, id: 'gallery-escape-root',
+                action: { label: '작업 폴더 바꾸기', run: () => App.commands.run('workspace.open') },
+            });
+        }
+    }
+
+    function runEscape({ event } = {}) {
+        if (event && (App.util.isTypingTarget(event.target) || event.target.closest?.('[role="tree"], .tree-row'))) return;
+        if (event?.repeat) {
+            if (escapeAt == null || escapeHeld || performance.now() - escapeAt < 600) return;
+            escapeHeld = true;
+            if (!App.settings.get('gallery.escapeUp', true)) return;
+            escapeJob = escapeJob.then(() => escapeStep(true));
+        } else {
+            escapeAt = event ? performance.now() : null;
+            escapeHeld = false;
+            escapeJob = escapeJob.then(() => escapeStep());
+        }
+        // Keep the queue usable even when a navigation backend fails.
+        escapeJob = escapeJob.catch((e) => console.error('[gallery] Escape failed', e));
+        return escapeJob;
+    }
+
+    function resetEscape() {
+        escapeAt = null;
+        escapeHeld = false;
+    }
+    window.addEventListener('keyup', (e) => {
+        if (e.key === 'Escape') resetEscape();
+    }, true);
+    window.addEventListener('blur', resetEscape);
+    App.bus.on('workspace:closed', resetEscape);
+
     // ---------- Commands ----------
     const hasSelection = () => App.select.count > 0;
     const inFolder = () => App.fs.ready && App.view.source.type === 'folder';
@@ -2754,7 +2846,8 @@
     });
 
     App.commands.register({ id: 'select.all', title: '모두 선택', group: '선택', icon: 'check-circle', keys: ['Mod+A'], when: () => App.view.visible.length > 0, run: () => App.select.all() });
-    App.commands.register({ id: 'select.clear', title: '선택 해제', group: '선택', icon: 'x', keys: ['Escape'], when: hasSelection, run: () => App.select.clear() });
+    App.commands.register({ id: 'select.clear', title: '선택 해제', group: '선택', icon: 'x', when: hasSelection, run: () => App.select.clear() });
+    App.commands.register({ id: 'nav.escape', title: '선택·필터 해제 후 상위 폴더로', group: '이동', keys: ['Escape'], scope: 'main', when: escapeAllowed, run: runEscape });
     App.commands.register({ id: 'gallery.zoomIn', title: '썸네일 크게', group: '보기', icon: 'zoom-in', keys: ['Mod+='], run: () => gallery.setZoom(gallery.zoom * 1.15) });
     App.commands.register({ id: 'gallery.zoomOut', title: '썸네일 작게', group: '보기', icon: 'zoom-out', keys: ['Mod+-'], run: () => gallery.setZoom(gallery.zoom / 1.15) });
     App.commands.register({
@@ -2821,6 +2914,16 @@
     // ---------- Init ----------
     App.register('gallery', {
         init() {
+            // Overlay dismissal shares this command so the shortcut registry has one main Escape owner.
+            const overlay = App.commands.get('layout.closeOverlay');
+            if (overlay?.keys.includes('Escape')) {
+                App.commands.register({ ...overlay, keys: overlay.keys.filter((key) => key !== 'Escape') });
+                const escape = App.commands.get('nav.escape');
+                App.commands.register({ ...escape, run: (args) => {
+                    if (!args?.event?.repeat && App.commands.isEnabled('layout.closeOverlay')) return App.commands.run('layout.closeOverlay', args);
+                    return runEscape(args);
+                } });
+            }
             scroller = document.getElementById('gallery-scroll');
             canvas = document.getElementById('gallery');
             content = document.getElementById('content');

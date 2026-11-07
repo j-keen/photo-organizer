@@ -1,4 +1,4 @@
-"""Workspace file operations and streaming HTTP transfers."""
+"""Workspace operations, streaming transfers, and allow-listed Open With launches."""
 from __future__ import annotations
 
 import os
@@ -14,7 +14,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 
-from . import config, deps, ffmpeg, fsutil, http_utils, paths
+from . import apps, config, deps, ffmpeg, fsutil, http_utils, paths
 from .errors import ApiError, from_os_error
 from .workspaces import Workspace
 
@@ -45,6 +45,25 @@ def _not_busy(abs_path: str, rel: str) -> None:
 class PathBody(BaseModel):
     model_config = ConfigDict(extra='ignore')
     path: str
+
+
+class OpenWithBody(PathBody):
+    app: str | None = None
+
+
+@router.post('/api/fs/open-with')
+def open_with(request: Request, body: OpenWithBody, ws: Workspace = Depends(deps.workspace)):
+    target, st = _stat(ws, body.path)
+    if not stat.S_ISREG(st.st_mode) or config.media_type(target) == 'other':
+        raise ApiError('EINVAL', '사진과 영상 파일만 열 수 있어요')
+    if body.app is not None:
+        exe = apps.allowed_exe(request.app.state.data_dir, body.app)
+        return _launch(request, [exe, target])
+    if os.name != 'nt':
+        raise ApiError('EINVAL', '프로그램 선택 창은 Windows에서 쓸 수 있어요')
+    system_root = os.environ.get('SystemRoot', r'C:\Windows')
+    return _launch(request, [os.path.join(system_root, 'System32', 'rundll32.exe'),
+                             'shell32.dll,OpenAs_RunDLL', target])
 
 
 class RemoveBody(PathBody):

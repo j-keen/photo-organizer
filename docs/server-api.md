@@ -50,6 +50,22 @@ server process is still running after an update → the app shows "서버를 새
 | `POST /api/fs/remove` | `{path}` | `{ok}` — permanent (the app uses it only to purge its own trash) |
 | `POST /api/fs/reveal` | `{path}` | opens Explorer with the item selected (`explorer /select,`) |
 
+## Open With
+
+`POST /api/fs/open-with` takes `{path, app?}`. The workspace-relative path must name a photo or video file.
+Without `app`, Windows opens its program chooser using `rundll32 shell32.dll,OpenAs_RunDLL`.
+With `app`, the absolute executable must appear in the server's detected or registered player list; otherwise it returns `EPERM`.
+Arguments are passed separately without a shell. `FI_DRY_SHELL=1` returns `{ok: true, command: [...]}` without launching.
+`POST /api/fs/open` takes `{path}` and opens a media file with its default application.
+
+`GET /api/apps/players` returns `[{id, name, exe}]`, detecting PotPlayer, VLC, MPC-HC/BE, KMPlayer and GOM
+in standard installation directories and Windows registry App Paths. `POST /api/apps/players` takes `{exe}`,
+validates an existing absolute `.exe` file, persists it atomically in the server data directory's `players.json`,
+and returns the registered player. Both endpoints require the normal session and mutation headers.
+Windows sessions advertise capability and support `open-with`; clients must feature-detect it.
+Client wrappers: `App.server.openWith(path, appId?)`, `.players()`, `.addPlayer(exe)`.
+The client resolves IDs to allow-listed executable paths and remembers the last successful player separately for images and videos.
+
 ## Media
 | Method & path | Body / query | Returns |
 |---|---|---|
