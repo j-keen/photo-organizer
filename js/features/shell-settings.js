@@ -418,7 +418,7 @@
                 feats.body.append(k.row({ label, desc, control: h('span', { class: `badge ${connected && on ? 'shs-ok' : ''}`, text: connected ? (on ? '사용 가능' : '설치 필요') : '서버 필요' }) }));
             }
             const how = k.group('켜는 방법');
-            how.body.append(k.note(h('span', { html: '이 앱이 들어 있는 폴더에서 <b>server\\start.bat</b>을 실행하면 브라우저에 <b>http://127.0.0.1:8765</b> 주소로 앱이 열려요. 서버는 내 PC 안에서만 동작하고 인터넷으로 아무것도 보내지 않아요.' }), { icon: 'info' }));
+            how.body.append(k.note(h('span', { html: '이 앱이 들어 있는 폴더에서 <b>server\\start.bat</b>을 실행하면 브라우저에 로컬 서버 주소로 앱이 열려요. 서버는 내 PC 안에서만 동작하고 인터넷으로 아무것도 보내지 않아요.' }), { icon: 'info' }));
             body.append(status.el, feats.el, how.el);
         },
     });

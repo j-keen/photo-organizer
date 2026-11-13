@@ -54,8 +54,8 @@
     const portOverride = new URLSearchParams(location.search).get('fiServerPort');
     const mode = meta ? 'served' : location.protocol === 'file:' ? 'file' : 'web';
     const port = (() => {
-        const n = Number(portOverride || meta?.dataset.port || 8765);
-        return Number.isInteger(n) && n > 0 && n < 65536 ? n : 8765;
+        const n = Number(portOverride || meta?.dataset.port || 18765);
+        return Number.isInteger(n) && n > 0 && n < 65536 ? n : 18765;
     })();
     const serverUrl = mode === 'served' ? location.origin + '/' : `http://127.0.0.1:${port}/`;
     const probesNetwork = mode === 'file' || (mode === 'web' && !!portOverride);

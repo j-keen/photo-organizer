@@ -1,4 +1,4 @@
-"""python -m server [--port 8765] [--open] [--workspace D:\\Photos]"""
+"""python -m server [--port 18765] [--open] [--workspace D:\\Photos]"""
 from __future__ import annotations
 
 import argparse

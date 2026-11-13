@@ -8,7 +8,7 @@
     'open'    our server, same (or newer) apiVersion → only open the browser
     'replace' our server, older apiVersion → ask it to shut down, wait for the port, start the new one
     'busy'    another program → explain (the launcher never hops to another port: the browser origin, and with it the
-              app's saved settings, must stay http://127.0.0.1:8765)
+              app's saved settings, must stay fixed; default http://127.0.0.1:18765)
 * create_shortcuts() — Desktop + Start-menu '사진영상정리기.lnk' (WScript.Shell via PowerShell), icon generated with Pillow.
 * spawn_server() — detached new server process (restart from the app).
 * windowless() / message_box() — pythonw has no console: logs go to <app data>/server.log, problems to a message box.

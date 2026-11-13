@@ -525,7 +525,7 @@ module.exports = [
                 const bin = atob(value.replace(/-/g, '+').replace(/_/g, '/'));
                 return { url, payload: JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)))), ws: App.state.workspace };
             });
-            h.assert.ok(data.url.startsWith('http://127.0.0.1:8765/#fi-handoff='));
+            h.assert.ok(data.url.startsWith('http://127.0.0.1:18765/#fi-handoff='));
             h.assert.equal(data.payload.v, 1);
             h.assert.deepEqual(data.payload.workspace, { id: data.ws.id, name: data.ws.name });
             h.assert.equal(data.payload.cwd, 'trip');

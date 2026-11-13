@@ -1,9 +1,11 @@
 # Local server API (apiVersion 2)
 
 Optional Python companion (`server/`). Runs only on the user's PC, bound to `127.0.0.1`. It serves the app
-itself at `http://127.0.0.1:8765/` and unlocks what a browser can't do well: HEIC/TIFF/RAW-ish thumbnails, any
+itself at `http://127.0.0.1:18765/` and unlocks what a browser can't do well: HEIC/TIFF/RAW-ish thumbnails, any
 video codec, lossless trims/merges/rotations (ffmpeg), FAISS near-duplicate search, native folder picker,
 instant moves that keep timestamps, "show in Explorer".
+
+Changed 2026-11-13: the default port moved to 18765 because 8765 collided with another local tool; browser-side preferences saved under the old origin `http://127.0.0.1:8765` do not carry over, while library data remains in the workspace.
 
 Start: `server\start.bat` (creates `server\.venv`, installs `requirements.txt`, runs `python -m server`, opens the browser).
 After the first successful start it creates a desktop shortcut **사진영상정리기** (and a Start-menu entry); from then on
@@ -270,7 +272,7 @@ Picked roots are stored in `%APPDATA%\FluidIdentity\roots.json` (12 most recent)
 - Windows starts register per-user `HKCU\Software\Classes\fluid-organizer` (also from `install_shortcut_once`,
   even with an existing stamp). Values are compared before writing; `FI_DRY_SHELL=1` skips registration.
   The handler uses the venv's absolute `pythonw.exe` and an absolute module bootstrap, independent of cwd.
-- `--from-link URL` ignores the entire URL and starts only the loopback server on port 8765, without opening
+- `--from-link URL` ignores the entire URL and starts only the loopback server on the default port 18765, without opening
   a browser. A compatible running server is left alone; an older server follows the replacement handshake.
   `fluid-organizer://start` never accepts commands or file paths.
 - `App.server.launch()` fires the link in a hidden iframe, then polls health about every 500 ms for up to 20 s.
@@ -282,16 +284,16 @@ Picked roots are stored in `%APPDATA%\FluidIdentity\roots.json` (12 most recent)
   `%APPDATA%\FluidIdentity\app.ico`.
 - The shortcut runs `server\.venv\Scripts\pythonw.exe -m server --open --resume` in the app folder: no console window,
   logs go to `%APPDATA%\FluidIdentity\server.log`, problems are shown in a Windows message box.
-- Single instance + version handshake: before starting, the launcher calls `GET /api/health` on the fixed port 8765.
+- Single instance + version handshake: before starting, the launcher calls `GET /api/health` on the fixed port 18765.
   Same app and same apiVersion → it only opens the browser. An older apiVersion → it asks that server to shut down,
   waits for the port and starts the new one. Something else on the port → message box (no silent port hopping for the
-  launcher, so the browser origin — and its saved settings — stays `http://127.0.0.1:8765`).
+  launcher, so the browser origin — and its saved settings — stays `http://127.0.0.1:18765`).
 - `--resume` reopens the most recent workspace, so the app comes back exactly where the owner left it.
 
 ### file:// → server handoff (keeps the folder and the settings)
 The app opened from disk keeps its settings in the `file://` origin; the server origin has its own storage. The one-click
 switch carries them over once, in the URL fragment (never sent to the server, never logged):
-`http://127.0.0.1:8765/#fi-handoff=<base64url(JSON)>` with
+`http://127.0.0.1:18765/#fi-handoff=<base64url(JSON)>` with
 `{v: 1, at: <ms>, settings: {<App.settings without the server.* keys>}, workspace: {id, name} | null, cwd}`.
 The served app reads it once at start, removes it from the address bar (`history.replaceState`), imports the settings
 (the handoff wins over the server origin's values) and opens the recent server workspace whose `.fluid-organizer/workspace.json`
@@ -319,5 +321,5 @@ AVI then uses the existing `viewer.autoServerStream` setting. Missing or invalid
   - `isExternal(path)` → true for absolute refs
   - `waitJob(job, {pausable: true})` mirrors pause/resume of the status-bar job to `/api/jobs/<id>/pause|resume`.
   When the page is served by the server, opening a workspace uses `/api/workspace/pick` + `App.workspace.openBackend(new App.ServerBackend(...))`.
-  When opened from file://, ping `http://127.0.0.1:8765/api/health`; if it answers, show a status-bar hint "서버로 열기" linking there.
+  When opened from file://, ping `http://127.0.0.1:18765/api/health` by default (respecting the configured port override); if it answers, show a status-bar hint "서버로 열기" linking there.
   Status-bar item shows connection state; commands `server.connect`, `server.reveal` (Explorer).

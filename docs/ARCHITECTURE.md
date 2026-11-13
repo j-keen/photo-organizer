@@ -1,7 +1,7 @@
 # Fluid Identity v2 — Architecture & Team Contract
 
 Local photo/video organizer. Runs in Chrome/Edge directly from `사진영상정리기.html` (file://), from the
-local Python server (http://127.0.0.1:8765, unlocks heavy features), and in tests (http://127.0.0.1:<port>).
+local Python server (http://127.0.0.1:18765, unlocks heavy features), and in tests (http://127.0.0.1:<port>).
 v1 (single 5k-line file) is kept at `legacy/사진영상정리기-v1.html` for reference only.
 
 ## 1. Rules everyone follows

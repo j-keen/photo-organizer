@@ -246,7 +246,7 @@
                 icon: 'image',
                 title: `${(e.ext || '').toUpperCase()} 사진은 브라우저에서 바로 볼 수 없어요`,
                 text: server
-                    ? '서버 주소(http://127.0.0.1:8765)에서 작업 폴더를 열면 이 형식도 볼 수 있어요.'
+                    ? '서버 주소에서 작업 폴더를 열면 이 형식도 볼 수 있어요.'
                     : `로컬 서버를 켜면 HEIC·TIFF 같은 형식도 볼 수 있어요. <span class="faint">${escapeHtml(formatBytes(e.size))}</span>`,
             }));
             this.ctx.ready();

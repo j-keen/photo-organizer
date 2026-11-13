@@ -5,7 +5,7 @@
  *
  *   <workspace>/.fluid-organizer/lock.json = { tabId, origin, kind, heartbeatAt, since }   (heartbeat every 5 s)
  *   BroadcastChannel 'fluid-identity-lock' — instant hand-over between windows of the same origin
- *   (different origins, e.g. file:// and http://127.0.0.1:8765, see each other through lock.json).
+ *   (different origins, e.g. file:// and http://127.0.0.1:18765, see each other through lock.json).
  *
  *   App.lock.canWrite()   → false only while another live window owns the current workspace
  *   App.lock.state        → 'none' | 'owner' | 'readonly'

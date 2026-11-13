@@ -10,7 +10,7 @@ SERVER_DIR = Path(__file__).resolve().parent
 APP_ROOT = SERVER_DIR.parent  # the repo folder that holds 사진영상정리기.html
 ENTRY_HTML = '사진영상정리기.html'
 HOST = '127.0.0.1'
-DEFAULT_PORT = 8765
+DEFAULT_PORT = 18765
 
 # Top-level folders of APP_ROOT that are served as static files at "/<dir>/...". Everything else
 # (server/, .git, node_modules, docs, tests ...) is never served.

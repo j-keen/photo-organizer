@@ -353,7 +353,7 @@
                 text: canLaunch ? '버튼 한 번이면 로컬 서버가 켜지고 바로 재생돼요.<br>처음 한 번 ‘열기’를 눌러 주세요.' : (reason ? `${escapeHtml(reason)} ` : '') + (server
                     ? '로컬 서버가 ffmpeg로 바꿔서 재생해 줄 수 있어요.'
                     : App.server?.available
-                        ? '서버 주소(http://127.0.0.1:8765)에서 작업 폴더를 열면 AVI·WMV·HEVC 같은 형식도 재생돼요.'
+                        ? '서버 주소에서 작업 폴더를 열면 AVI·WMV·HEVC 같은 형식도 재생돼요.'
                         : '로컬 서버(<b>server\\start.bat</b>)를 켜고 서버 주소에서 열면 AVI·WMV·HEVC 같은 형식도 재생돼요.'),
                 actions,
             }));
