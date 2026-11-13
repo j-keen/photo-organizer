@@ -285,6 +285,7 @@ module.exports = [
             const py = python(h.ROOT);
             if (!py) { console.log('    skip: Python environment is unavailable'); return; }
             const app = await h.openApp({ seed: { 'x.heic': { bytes: [0, 0, 0, 24] }, 'a.png': { image: {} } } });
+            await app.page.evaluate(() => { App.server.health = async () => null; });
             await app.page.waitForSelector('.card[data-path="x.heic"] .srv-badge');
             h.assert.equal(await app.page.locator('.card[data-path="a.png"] .srv-badge').count(), 0);
             await app.page.locator('.srv-badge').click();
@@ -478,9 +479,10 @@ module.exports = [
                 try {
                     const fresh = await context.newPage();
                     const errors = collect(fresh);
-                    const payload = { v: 1, at: Date.now(), settings: { theme: 'light', 'handoff.test': 42, 'server.hintAt': 7 }, workspace: { id: ws.id, name: ws.name }, cwd: 'trip' };
+                    const payload = { v: 1, at: Date.now(), settings: { theme: 'light', 'handoff.test': 42, 'server.hintAt': 7 }, workspace: { id: ws.id, name: ws.name }, cwd: 'trip', open: 'trip/beach.png' };
                     await fresh.goto(`http://127.0.0.1:${port}/#fi-handoff=${encode(payload)}`);
                     await fresh.waitForFunction((id) => App.state.workspace?.id === id && App.state.cwd === 'trip', ws.id, { timeout: 15000 });
+                    await fresh.waitForFunction(() => App.viewer.current?.path === 'trip/beach.png');
                     h.assert.equal(await fresh.evaluate(() => App.settings.get('handoff.test')), 42);
                     h.assert.equal(await fresh.evaluate(() => App.settings.get('server.hintAt', null)), null, 'server.* settings are not carried');
                     h.assert.equal(await fresh.evaluate(() => document.documentElement.dataset.theme), 'light');

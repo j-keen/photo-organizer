@@ -23,7 +23,8 @@
  * Drag data type for internal drags: 'application/x-fi-paths' (JSON array of paths).
  * Events: 'gallery:zoom' {size}, 'gallery:mode' {mode}, 'gallery:fit' {fit}, 'gallery:folders' (folder stats refreshed).
  * Settings: gallery.size, gallery.mode, gallery.fit, gallery.scrub (hover preview on/off), gallery.hoverPlay (play vs. scrub).
- *   gallery.escapeUp (default true): Escape clears pending state before navigating up; holding jumps to root.
+ *   gallery.escapeUp (default true): Escape cancels cut, clears search/filters, then goes up regardless of selection in subfolders; at root, clears selection/focus before the root notice;
+ *   holding jumps to root. When disabled, Escape can still clear selection without navigating.
  * Command: nav.escape (main scope); select.clear remains available without a keyboard binding.
  */
 (() => {
@@ -2700,15 +2701,16 @@
             return;
         }
         if (await clearEscapeView()) return;
-        if (App.select.count || App.select.focus) {
-            App.select.clear();
+        if (!App.settings.get('gallery.escapeUp', true)) {
+            if (App.select.count || App.select.focus) App.select.clear();
             return;
         }
-        if (!App.settings.get('gallery.escapeUp', true)) return;
         if (App.nav.canUp()) {
             const child = App.state.cwd;
             await App.nav.goUp();
             if (App.state.cwd === P.parent(child)) App.bus.emit('nav:escape-up', { child });
+        } else if (App.select.count || App.select.focus) {
+            App.select.clear();
         } else {
             rootNotice?.close();
             rootNotice = ui.toast('최상위 폴더예요', {
@@ -2847,7 +2849,7 @@
 
     App.commands.register({ id: 'select.all', title: '모두 선택', group: '선택', icon: 'check-circle', keys: ['Mod+A'], when: () => App.view.visible.length > 0, run: () => App.select.all() });
     App.commands.register({ id: 'select.clear', title: '선택 해제', group: '선택', icon: 'x', when: hasSelection, run: () => App.select.clear() });
-    App.commands.register({ id: 'nav.escape', title: '선택·필터 해제 후 상위 폴더로', group: '이동', keys: ['Escape'], scope: 'main', when: escapeAllowed, run: runEscape });
+    App.commands.register({ id: 'nav.escape', title: '검색·필터 해제 후 상위 폴더로', group: '이동', keys: ['Escape'], scope: 'main', when: escapeAllowed, run: runEscape });
     App.commands.register({ id: 'gallery.zoomIn', title: '썸네일 크게', group: '보기', icon: 'zoom-in', keys: ['Mod+='], run: () => gallery.setZoom(gallery.zoom * 1.15) });
     App.commands.register({ id: 'gallery.zoomOut', title: '썸네일 작게', group: '보기', icon: 'zoom-out', keys: ['Mod+-'], run: () => gallery.setZoom(gallery.zoom / 1.15) });
     App.commands.register({

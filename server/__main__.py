@@ -94,12 +94,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog='python -m server', description='Fluid Identity 로컬 서버')
     parser.add_argument('--port', type=int, default=None, help=f'포트 번호 (기본 {DEFAULT_PORT})')
     parser.add_argument('--open', action='store_true', help='서버가 켜지면 브라우저로 앱을 열어요')
+    parser.add_argument('--from-link', metavar='URL', help='실행 링크로 서버만 켜요 (URL 내용은 무시해요)')
     parser.add_argument('--workspace', metavar='FOLDER', help='시작할 때 이 폴더를 작업 폴더로 열어요')
     parser.add_argument('--resume', action='store_true', help='마지막으로 쓴 작업 폴더를 다시 열어요 (바탕화면 아이콘)')
     parser.add_argument('--install-shortcut', action='store_true', help="처음 켜졌을 때 바탕화면에 '사진영상정리기' 아이콘을 만들어요")
     parser.add_argument('--wait-port', action='store_true', help='포트가 빌 때까지 기다렸다가 켜요 (다시 켜기)')
     parser.add_argument('--log-level', default=os.environ.get('FI_LOG_LEVEL', 'warning'), help='uvicorn 로그 수준 (기본 warning)')
     args = parser.parse_args(argv)
+    if args.from_link is not None:
+        args.open = False
+        args.workspace = None
+        args.resume = False
     windowless = launcher.windowless()
     if windowless:
         launcher.redirect_output()  # pythonw (desktop shortcut): no console
@@ -113,6 +118,13 @@ def main(argv: list[str] | None = None) -> int:
 
     explicit = args.port is not None or bool(os.environ.get('FI_PORT'))
     port = args.port or int(os.environ.get('FI_PORT') or DEFAULT_PORT)
+    if args.from_link is not None:
+        port = DEFAULT_PORT
+        explicit = True
+    try:
+        launcher.register_protocol()
+    except launcher.LauncherError as exc:
+        print(exc)
     if args.wait_port and not launcher.wait_port_free(port, 60):
         # Restart from the app: the old server never let go of the port. Don't fall into "already running" (it may
         # still exit later and leave nothing behind) — say so instead.

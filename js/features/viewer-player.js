@@ -76,6 +76,77 @@
         }, 250);
     }
 
+    // Keep the old PiP element attached until the next video's metadata is ready.
+    const pip = {
+        wanted: false,
+        retiring: null,
+        busy: false,
+        supported: () => !!document.pictureInPictureEnabled &&
+            typeof HTMLVideoElement.prototype.requestPictureInPicture === 'function',
+        release() {
+            const old = this.retiring;
+            this.retiring = null;
+            if (old) {
+                old.pipRetired = true;
+                old.destroy();
+                old.pipHost.remove();
+            }
+        },
+        async exit() {
+            this.wanted = false;
+            try {
+                if (document.pictureInPictureElement) await document.exitPictureInPicture();
+            } catch (_) { /* Browser may already have closed its window. */ }
+            if (!this.wanted) this.release();
+            if (bar.player) bar.update();
+        },
+        async enter(player) {
+            if (this.busy || !this.wanted || V.player !== player || !player.metaReady || player.failed) return;
+            this.busy = true;
+            try {
+                await player.video.requestPictureInPicture();
+                if (!this.wanted || V.player !== player || !V.isOpen) {
+                    if (!this.wanted || !V.isOpen) await this.exit();
+                }
+            } catch (_) {
+                this.wanted = false;
+                ui.toast('작은 창을 열지 못했어요. 영상을 재생한 뒤 다시 눌러 주세요.', { type: 'info' });
+                await this.exit();
+            } finally {
+                this.busy = false;
+                this.release();
+                if (bar.player) bar.update();
+                if (this.wanted && V.player && V.player !== player) this.enter(V.player);
+            }
+        },
+        async toggle() {
+            if (!this.supported()) {
+                ui.toast('이 브라우저에서는 작은 창 보기를 지원하지 않아요. Chrome이나 Edge에서 열어 주세요.', { type: 'info' });
+                return;
+            }
+            if (this.wanted || document.pictureInPictureElement) return this.exit();
+            const player = V.player;
+            if (!player?.metaReady) {
+                ui.toast('영상이 준비되면 작은 창으로 볼 수 있어요.', { type: 'info' });
+                return;
+            }
+            this.wanted = true;
+            return this.enter(player);
+        },
+    };
+
+    function mediaActions(player) {
+        if (!navigator.mediaSession) return;
+        const actions = {
+            previoustrack: () => V.step(-1), nexttrack: () => V.step(1),
+            play: () => V.player?.play(), pause: () => V.player?.pause(),
+        };
+        for (const [action, handler] of Object.entries(actions)) {
+            try { navigator.mediaSession.setActionHandler(action, player ? handler : null); }
+            catch (_) { /* Some browsers expose only a subset of actions. */ }
+        }
+    }
+
     // ---------- Player (one per video slot) ----------
     class Player {
         constructor(ctx) {
@@ -250,16 +321,36 @@
                 return;
             }
             this.failed = true;
+            if (pip.wanted) pip.exit();
             this.clearCard();
             this.video.hidden = true;
             this.setState('none');
             const server = serverStreamReady();
-            const actions = App.server?.externalButtons?.(e) || [];
+            const canLaunch = ['file', 'web'].includes(App.server?.mode);
+            const actions = App.server?.externalButtons?.(e, { compact: canLaunch }) || [];
+            if (canLaunch) actions.push(h('button', { class: 'btn primary sm', text: '바로 재생하기', onclick: async (event) => {
+                const button = event.currentTarget;
+                button.disabled = true;
+                try {
+                    let ready = await App.server.health();
+                    if (!ready) {
+                        button.replaceChildren(h('span', { class: 'spinner', 'aria-hidden': 'true' }), '로컬 서버를 켜는 중이에요…');
+                        ready = await App.server.launch();
+                    }
+                    if (ready) await App.server.openServerUrl({ open: this.path });
+                    else App.server.showSetup({ open: this.path });
+                } catch (_) {
+                    App.server.showSetup({ open: this.path });
+                } finally {
+                    button.disabled = false;
+                    button.textContent = '바로 재생하기';
+                }
+            } }));
             if (server) actions.push(h('button', { class: 'btn primary sm', html: `${ui.icon('server', { size: 14 })}<span>서버로 재생</span>`, onclick: () => this.useServerStream() }));
             this.slot.append(V.card({
                 icon: 'film',
                 title: `${(e.ext || '').toUpperCase()} 영상은 브라우저에서 바로 재생할 수 없어요`,
-                text: (reason ? `${escapeHtml(reason)} ` : '') + (server
+                text: canLaunch ? '버튼 한 번이면 로컬 서버가 켜지고 바로 재생돼요.<br>처음 한 번 ‘열기’를 눌러 주세요.' : (reason ? `${escapeHtml(reason)} ` : '') + (server
                     ? '로컬 서버가 ffmpeg로 바꿔서 재생해 줄 수 있어요.'
                     : App.server?.available
                         ? '서버 주소(http://127.0.0.1:8765)에서 작업 폴더를 열면 AVI·WMV·HEVC 같은 형식도 재생돼요.'
@@ -276,6 +367,7 @@
                 return;
             }
             this.failed = true;
+            if (pip.wanted) pip.exit();
             this.clearCard();
             this.video.hidden = true;
             this.setState('none');
@@ -292,6 +384,17 @@
         bindVideo() {
             const v = this.video;
             const isActive = () => V.player === this;
+            v.addEventListener('enterpictureinpicture', () => {
+                if (isActive()) bar.update();
+            });
+            v.addEventListener('leavepictureinpicture', () => {
+                // Switching elements also fires leave on the old element.
+                if (!pip.busy && !document.pictureInPictureElement) {
+                    pip.wanted = false;
+                    pip.release();
+                }
+                if (isActive()) bar.update();
+            });
             v.addEventListener('loadedmetadata', () => this.onMeta());
             v.addEventListener('durationchange', () => isActive() && bar.update());
             v.addEventListener('timeupdate', () => {
@@ -450,6 +553,7 @@
                 App.bus.emit('viewer:video-meta', { path: this.path, duration: d });
             }
             this.sampleFps();
+            if (V.player === this) pip.enter(this);
         }
 
         // Estimate the frame rate from presented frames (for frame stepping) when the server didn't tell us.
@@ -507,6 +611,8 @@
             V.player = this;
             bar.bind(this);
             App.bus.emit('viewer:player', { player: this });
+            mediaActions(this);
+            pip.enter(this);
         }
 
         // ----- state overlay (spinner / play / replay) -----
@@ -980,6 +1086,14 @@
         }
 
         destroy() {
+            if (!this.pipRetired && pip.wanted && document.pictureInPictureElement === this.video) {
+                pip.release();
+                pip.retiring = this;
+                this.pipHost = h('div', { hidden: true });
+                V.overlayEl.append(this.pipHost);
+                this.pipHost.append(this.video);
+                return;
+            }
             this.destroyed = true;
             this.deactivate();
             this.view.destroy();
@@ -1263,6 +1377,10 @@
             this.editBtn = B('scissors', '편집 단축키 (Q·W·Ctrl+B)', 'E', () => App.commands.run('video.editHelp'), 'vw-edit');
             // '편집됨' state + 편집본 미리보기 / 원래대로 (video-edit.js fills it)
             this.editState = h('div', { class: 'vw-ctl-group vw-edit-state', hidden: true });
+            this.pipBtn = B('vw-pip', '작은 창으로 보기 (PIP)', 'Alt+P', () => {
+                if (!pip.supported()) pip.toggle();
+                else App.commands.run('viewer.pip');
+            }, 'vw-pip');
             this.fsBtn = B('maximize', '전체 화면', 'F', () => App.commands.run('viewer.fullscreen'));
             this.frameBack = B('vw-frame-prev', '이전 프레임', ',', () => App.commands.run('video.frameBack'), 'vw-opt');
             this.frameFwd = B('vw-frame-next', '다음 프레임', '.', () => App.commands.run('video.frameForward'), 'vw-opt');
@@ -1280,7 +1398,7 @@
                     h('span', { class: 'vw-sep' }),
                     this.vol,
                     h('span', { class: 'vw-sep' }),
-                    h('div', { class: 'vw-ctl-group' }, this.editBtn, this.fsBtn)));
+                    h('div', { class: 'vw-ctl-group' }, this.editBtn, this.pipBtn, this.fsBtn)));
             this.idleFill = h('div', { class: 'vw-idle-progress-fill' });
             this.idleProgress = h('div', { class: 'vw-idle-progress', hidden: true, 'aria-hidden': 'true' }, this.idleFill);
             V.overlayEl.append(this.el, this.idleProgress);
@@ -1366,6 +1484,11 @@
             this.listCount.textContent = n ? String(n) : '';
             this.listBtn.classList.toggle('active', V.isPanelOpen('markers'));
             this.editBtn.classList.toggle('active', !!App.videoEdit?.hintMode);
+            const inPip = document.pictureInPictureElement === p.video;
+            this.pipBtn.classList.toggle('active', inPip);
+            this.pipBtn.setAttribute('aria-pressed', String(inPip));
+            this.pipBtn.setAttribute('aria-disabled', String(!pip.supported()));
+            this.pipBtn.dataset.tip = inPip ? '작은 창 닫기 (PIP)' : '작은 창으로 보기 (PIP)';
             const fs = !!document.fullscreenElement;
             set(this.fsBtn, '_html', V.icon(fs ? 'vw-minimize' : 'maximize'));
             this.fsBtn.dataset.tip = fs ? '전체 화면 끝내기' : '전체 화면';
@@ -1780,7 +1903,9 @@
         },
     });
 
+    App.bus.on('viewer:closing', () => { pip.exit(); mediaActions(null); });
     App.bus.on('viewer:entry', ({ entry }) => {
+        if (entry.type !== 'video') { pip.exit(); mediaActions(null); }
         if (entry.type !== 'video' && bar.el) {
             bar.el.hidden = true;
             bar.idleProgress.hidden = true;
@@ -1806,6 +1931,17 @@
     // ---------- Commands ----------
     const hasPlayer = () => V.isOpen && V.kind === 'video' && !!V.player && !V.player.failed;
     const reg = (cmd) => App.commands.register({ group: '영상', scope: 'viewer', when: hasPlayer, ...cmd });
+    reg({ id: 'viewer.pip', title: '작은 창으로 보기 (PIP)', icon: 'vw-pip', keys: ['Alt+P'],
+        when: () => hasPlayer() && pip.supported(), run: () => pip.toggle() });
+    // Disabled commands cannot run; provide the same friendly explanation for the shortcut.
+    document.addEventListener('keydown', (e) => {
+        if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey &&
+            (e.code === 'KeyP' || e.key.toLowerCase() === 'p') && hasPlayer() && !pip.supported() &&
+            !App.util.isTypingTarget(e.target)) {
+            e.preventDefault();
+            pip.toggle();
+        }
+    });
     reg({ id: 'video.playPause', title: '재생/일시정지', icon: 'play', keys: ['K'], run: () => V.player.toggle() });
     // ←/→ reach these through viewer.prev / viewer.next (they seek while a video plays, change file for photos)
     reg({ id: 'video.seekBack', title: '뒤로 건너뛰기', icon: 'vw-seek-back', run: () => V.player.seekStep(-1) });
@@ -1840,6 +1976,7 @@
         if (kind !== 'video' || !V.player) return [];
         const p = V.player;
         const items = [
+            { label: '작은 창으로 보기 (PIP)', icon: 'vw-pip', command: 'viewer.pip', checked: document.pictureInPictureElement === p.video },
             { label: p.playing ? '일시정지' : '재생', icon: p.playing ? 'pause' : 'play', command: 'viewer.playPause' },
             { label: '장면 캡처', icon: 'camera', command: 'video.capture' },
             { label: '이 장면을 썸네일로', icon: 'vw-poster', command: 'viewer.setPoster' },

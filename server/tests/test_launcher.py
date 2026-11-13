@@ -230,7 +230,7 @@ class ShortcutTests(unittest.TestCase):
 
     def test_shortcuts_are_created_once(self):
         stamp = Path(self.tmp) / 'shortcut.stamp'
-        with patch.object(launcher, 'STAMP', stamp):
+        with patch.object(launcher, 'STAMP', stamp), patch.object(launcher, 'register_protocol') as register:
             made = launcher.install_shortcut_once()
             self.assertEqual(len(made), 2)
             for p in made:
@@ -238,6 +238,7 @@ class ShortcutTests(unittest.TestCase):
                 self.assertTrue(os.path.isfile(p) and os.path.getsize(p) > 0, p)
             self.assertTrue(stamp.exists())
             self.assertIsNone(launcher.install_shortcut_once())  # second start.bat run: nothing
+            self.assertEqual(register.call_count, 2)  # protocol upgrades are independent of the shortcut stamp
         self.assertTrue(os.path.isfile(os.path.join(self.tmp, 'data', 'app.ico')))
         program, args = launcher.shortcut_target()
         self.assertIn('--resume', args)

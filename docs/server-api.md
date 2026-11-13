@@ -267,6 +267,15 @@ Picked roots are stored in `%APPDATA%\FluidIdentity\roots.json` (12 most recent)
 | `POST /api/server/shortcut` | `{created: [path]}` — (re)creates the desktop + Start-menu shortcut **사진영상정리기** |
 
 ### Launcher (one-click start)
+- Windows starts register per-user `HKCU\Software\Classes\fluid-organizer` (also from `install_shortcut_once`,
+  even with an existing stamp). Values are compared before writing; `FI_DRY_SHELL=1` skips registration.
+  The handler uses the venv's absolute `pythonw.exe` and an absolute module bootstrap, independent of cwd.
+- `--from-link URL` ignores the entire URL and starts only the loopback server on port 8765, without opening
+  a browser. A compatible running server is left alone; an older server follows the replacement handshake.
+  `fluid-organizer://start` never accepts commands or file paths.
+- `App.server.launch()` fires the link in a hidden iframe, then polls health about every 500 ms for up to 20 s.
+  `launchLink`, `health`, and `navigate` are injectable test hooks. Chrome may ask to open 사진영상정리기 once.
+  Unregistered links time out to the setup sheet.
 - `server\start.bat` sets everything up (venv, packages) and runs `python -m server --open --install-shortcut`.
   After the server is up the first time, it creates `바탕화면\사진영상정리기.lnk` and a Start-menu entry (once; the stamp
   is `server\.venv\shortcut.stamp`, the app can recreate them with `server.shortcut`). The icon is generated into
@@ -289,6 +298,9 @@ The served app reads it once at start, removes it from the address bar (`history
 id matches (`GET /api/workspace/recent` now returns `id` too; fallback: the only recent root with the same folder name),
 then goes to `cwd`. No match → the folder chooser opens with "이 폴더를 한 번만 골라 주세요" and the folder name.
 Handoffs older than 10 minutes are ignored.
+Optional payload field `open` is a workspace-relative file path. After navigating to `cwd`, the app validates
+its type, rejects absolute/traversal paths, checks the file exists, and calls `App.viewer.open`.
+AVI then uses the existing `viewer.autoServerStream` setting. Missing or invalid files are ignored.
 
 ## Client side (server team)
 - `js/core/fs-server.js` → `App.ServerBackend` implementing the backend interface in ARCHITECTURE.md §4

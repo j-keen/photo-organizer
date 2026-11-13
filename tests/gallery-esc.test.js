@@ -17,7 +17,7 @@ async function esc(page) {
 
 module.exports = [
     {
-        name: 'gallery Escape cancels cut, clears filters, clears selection, then goes up',
+        name: 'gallery Escape cancels cut, clears filters, then goes up regardless of selection',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: SEED });
             await folder(page, 'trip/day');
@@ -34,13 +34,16 @@ module.exports = [
             await page.waitForFunction(() => App.view.filters.size === 0 && App.view.source.type === 'folder');
             assert.equal(await page.evaluate(() => App.state.cwd), 'trip/day');
             await page.evaluate(() => App.select.set(['trip/day/b.png']));
-            await esc(page);
-            await page.waitForFunction(() => App.select.count === 0);
-            assert.equal(await page.evaluate(() => App.state.cwd), 'trip/day');
+            assert.equal(await page.evaluate(() => App.select.count), 1);
             await esc(page);
             await page.waitForFunction(() => App.view.source.path === 'trip' && App.select.focus === 'trip/day');
+            assert.equal(await page.evaluate(() => App.state.cwd), 'trip');
             await page.waitForSelector('.escape-trail');
             assert.equal(await page.textContent('.escape-trail'), 'day');
+            assert.equal(await page.evaluate(() => App.select.paths.has('trip/day')), true);
+            await esc(page);
+            await page.waitForFunction(() => App.view.source.path === '' && App.select.focus === 'trip');
+            assert.equal(await page.evaluate(() => App.state.cwd), '');
         },
     },
     {
@@ -64,15 +67,19 @@ module.exports = [
         },
     },
     {
-        name: 'gallery Escape root notice is unique and opens the workspace command',
+        name: 'gallery Escape at root clears selection first, then shows a unique notice and opens the workspace command',
         async run({ openApp, assert }) {
             const { page } = await openApp({ seed: SEED });
             await folder(page, '');
             await page.evaluate(() => {
-                App.select.clear();
+                App.select.set(['a.png'], { focus: 'a.png', anchor: 'a.png' });
                 window.__openCalls = 0;
                 App.commands.register({ id: 'workspace.open', run: () => { window.__openCalls++; } });
             });
+            await esc(page);
+            await page.waitForFunction(() => App.select.count === 0 && App.select.focus === null);
+            assert.equal(await page.evaluate(() => App.state.cwd), '');
+            assert.equal(await page.locator('.toast-action').count(), 0);
             await esc(page);
             await page.waitForSelector('.toast-action:text-is("작업 폴더 바꾸기")');
             await esc(page);
@@ -114,6 +121,8 @@ module.exports = [
             });
             await esc(page);
             await page.waitForFunction(() => App.select.count === 0);
+            assert.equal(await page.evaluate(() => App.select.focus), null);
+            assert.equal(await page.evaluate(() => App.state.cwd), 'trip/day');
             await page.evaluate(() => App.topbar.setTypeFilter('image'));
             await esc(page);
             await page.waitForFunction(() => App.view.filters.size === 0);

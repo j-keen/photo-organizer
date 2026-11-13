@@ -6,6 +6,7 @@ module.exports = [
         name: 'open-with: offline menus remain available and explain server setup',
         async run(h) {
             const { page } = await h.openApp({ seed: { 'broken.avi': { bytes: [1, 2, 3] }, 'folder/': null } });
+            await page.evaluate(() => { App.server.health = async () => null; });
             await page.locator('.card[data-path="broken.avi"]').click({ button: 'right' });
             await page.waitForFunction(() => document.body.textContent.includes('기본 앱으로 열기 · 로컬 서버를 켜면 돼요'));
             await page.getByText('기본 앱으로 열기 · 로컬 서버를 켜면 돼요', { exact: true }).click();
@@ -14,8 +15,9 @@ module.exports = [
             await page.evaluate(() => App.viewer.open('broken.avi'));
             await page.waitForSelector('#viewer .vw-card .srv-external');
             const buttons = page.locator('#viewer .vw-card .srv-external');
-            h.assert.ok((await buttons.allTextContents()).includes('다른 프로그램으로 열기 · 로컬 서버를 켜면 돼요'));
-            h.assert.equal(await buttons.first().evaluate((node) => node.style.opacity), '0.55');
+            h.assert.ok((await buttons.allTextContents()).includes('다른 프로그램으로 열기'));
+            h.assert.equal(await buttons.first().evaluate((node) => node.style.opacity), '');
+            h.assert.ok(await page.getByRole('button', { name: '바로 재생하기', exact: true }).isVisible());
             await buttons.first().click();
             await page.waitForSelector('.srv-setup');
         },

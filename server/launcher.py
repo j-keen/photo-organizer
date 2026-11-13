@@ -274,6 +274,7 @@ def create_shortcuts(*, port: int = DEFAULT_PORT, dry: bool = False) -> list[str
 
 def install_shortcut_once(port: int = DEFAULT_PORT) -> list[str] | None:
     """start.bat's first successful run: create the shortcuts unless that already happened (stamp in the venv)."""
+    register_protocol()
     if STAMP.exists():
         return None
     made = create_shortcuts(port=port)
@@ -283,3 +284,41 @@ def install_shortcut_once(port: int = DEFAULT_PORT) -> list[str] | None:
     except OSError:
         pass
     return made
+
+
+def protocol_command() -> str:
+    """Absolute bootstrap: protocol handlers have no reliable working directory. URL is data only."""
+    bootstrap = f'import sys,runpy;sys.path.insert(0,{str(APP_ROOT)!r});runpy.run_module("server",run_name="__main__")'
+    return subprocess.list2cmdline([str(SERVER_DIR / '.venv' / 'Scripts' / 'pythonw.exe'), '-c', bootstrap]) + ' --from-link "%1"'
+
+
+def register_protocol(*, registry=None, root=None) -> bool:
+    """Compare before writing HKCU; injected registry/root allow isolated tests."""
+    if os.environ.get('FI_DRY_SHELL') == '1' or (os.name != 'nt' and registry is None):
+        return False
+    if registry is None:
+        import winreg as registry
+    root = registry.HKEY_CURRENT_USER if root is None else root
+    base = r'Software\Classes\fluid-organizer'
+    icon = app_data_dir() / 'app.ico'
+    values = [(base, '', 'URL:사진영상정리기'), (base, 'URL Protocol', ''),
+              (base + r'\DefaultIcon', '', f'"{icon}",0'),
+              (base + r'\shell\open\command', '', protocol_command())]
+    changed = False
+    try:
+        if not icon.exists():
+            make_icon(icon)
+        for key, name, value in values:
+            try:
+                with registry.OpenKey(root, key) as handle:
+                    old, kind = registry.QueryValueEx(handle, name)
+            except FileNotFoundError:
+                old, kind = None, None
+            if old == value and kind == registry.REG_SZ:
+                continue
+            with registry.CreateKeyEx(root, key, 0, registry.KEY_SET_VALUE) as handle:
+                registry.SetValueEx(handle, name, 0, registry.REG_SZ, value)
+            changed = True
+    except OSError as exc:
+        raise LauncherError(f'바로 켜기 연결을 등록하지 못했어요 ({exc})') from exc
+    return changed

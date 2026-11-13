@@ -459,8 +459,9 @@ Everything about chips works without leaving the viewer, and a selected video pi
 
 ## 13. Escape navigation, viewer edges & external players
 
-- `nav.escape` handles one applicable gallery step per press: cancel cut → clear search/filters → clear selection →
-  go up and focus the folder just left. At workspace root, show '최상위 폴더예요' with '작업 폴더 바꾸기'.
+- `nav.escape` handles one applicable gallery step per press: cancel cut → clear search/filters →
+  go up regardless of selection/focus and focus the folder just left. With `gallery.escapeUp` off, it can still clear selection.
+  At workspace root, clear selection/focus first; with neither remaining, show '최상위 폴더예요' with '작업 폴더 바꾸기'.
   Holding Esc goes to workspace root; this behavior can be disabled in settings. Closing the viewer with Esc then
   pressing Esc again within 0.6 s goes up.
 - Viewer file navigation stops once at either edge; another press in the same direction within 3 s wraps to the
@@ -471,3 +472,16 @@ Everything about chips works without leaving the viewer, and a selected video pi
   `/api/fs/open-with` and `/api/apps/players`. File context menus expose reveal/default app/named player/other program;
   unplayable-video screens also offer external opening. These actions require the local server and show startup
   guidance when it is unavailable.
+
+
+### Viewer Picture-in-Picture
+
+- `viewer.pip` (Alt+P, viewer scope), video control button and viewer context menu toggle standard
+  `video.requestPictureInPicture()` (including server-streamed AVI). Gallery previews retain their PiP restrictions.
+- `viewer-player.js` retains the old PiP video attached until the current player's metadata is ready, then transfers
+  PiP to it. Manual navigation and autoplay-next share this path. Rejected requests show an `App.ui.toast` and exit cleanly.
+- Moving to a photo or closing the viewer exits PiP and uses normal player teardown; closing does not keep audio playing.
+  Existing timeupdate checkpoints and deactivate/destroy saving preserve `meta.resumeAt` in PiP.
+- Media Session play/pause and previous/next track handlers target the current player / `App.viewer.step`, and are
+  cleared for photos and on close. Browser support for individual Media Session actions varies.
+- Unsupported browsers disable the command/menu; the control button and Alt+P explain support via a friendly toast.

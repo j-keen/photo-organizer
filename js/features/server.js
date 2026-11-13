@@ -76,11 +76,12 @@
         },
     };
 
-    function handoffUrl() {
+    function handoffUrl({ open } = {}) {
         const settings = {};
         for (const [key, value] of Object.entries(App.settings.all?.() || {})) if (!key.startsWith('server.')) settings[key] = value;
         const ws = App.state.workspace;
         const payload = { v: 1, at: Date.now(), settings, workspace: ws ? { id: ws.id, name: ws.name } : null, cwd: ws ? App.state.cwd || '' : '' };
+        if (typeof open === 'string') payload.open = open;
         return `${serverUrl}#${HANDOFF_KEY}=${b64url.encode(JSON.stringify(payload))}`;
     }
 
@@ -162,9 +163,36 @@
     }
 
     /** Switch this page to the server address in one click, keeping the open folder and the settings (file/web mode). */
-    async function openServerUrl() {
+    async function openServerUrl(opts = {}) {
         await App.catalog?.flush?.();
-        location.href = mode === 'served' ? serverUrl : handoffUrl();
+        server.navigate(mode === 'served' ? serverUrl : handoffUrl(opts));
+    }
+
+    function launchLink() {
+        const frame = h('iframe', { hidden: true, src: 'fluid-organizer://start', title: '로컬 서버 켜기' });
+        document.body.append(frame);
+        setTimeout(() => frame.remove(), 20000);
+    }
+
+    let launching = null;
+    function launch({ timeout = 20000, interval = 500 } = {}) {
+        if (launching) return launching;
+        launching = (async () => {
+            const deadline = Date.now() + timeout;
+            try { server.launchLink(); } catch (_) { return false; }
+            do {
+                const ok = await server.health();
+                if (ok) {
+                    info = ok;
+                    if (mode !== 'served') setState('detected');
+                    return true;
+                }
+                if (disposed || Date.now() >= deadline) break;
+                await App.util.sleep(Math.min(interval, deadline - Date.now()));
+            } while (Date.now() < deadline);
+            return false;
+        })().finally(() => { launching = null; });
+        return launching;
     }
 
     const apiVersionOf = (data) => (Number.isInteger(data?.apiVersion) ? data.apiVersion : 1); // round-1 servers had none
@@ -623,16 +651,16 @@
         return items;
     }
 
-    function externalButtons(entry) {
+    function externalButtons(entry, { compact = false } = {}) {
         const items = externalItems(entry);
         const chosen = items.filter((item) => item.label.includes('로 열기') && !item.label.startsWith('기본 앱'));
         const more = items[items.length - 1];
         return [...chosen.filter((item) => item !== more), more, items[0]].filter(Boolean).map((item) => h('button', {
             type: 'button',
             class: 'btn sm srv-external',
-            style: externalHint(item !== items[0]) ? 'opacity:0.55' : '',
+            style: !compact && externalHint(item !== items[0]) ? 'opacity:0.55' : '',
             title: externalHint(item !== items[0]) || item.label,
-            text: item.label,
+            text: compact ? item.label.split(' · ')[0] : item.label,
             onclick: (event) => {
                 event.stopPropagation();
                 if (!externalReady(item !== items[0])) return item.action();
@@ -747,11 +775,17 @@
             if (named.length === 1) match = named[0];
         }
         if (!match) {
-            pickWorkspace({ hint: want.name });
+            pickWorkspace({ hint: want.name, onOpened: () => restoreHandoffLocation(data) });
             return true;
         }
         const active = await openRoot(match.root);
         if (!active) return false;
+        await restoreHandoffLocation(data);
+        ui.toast(`‘${active.name}’ 폴더를 서버로 이어서 열었어요`, { type: 'success', duration: 3200 });
+        return true;
+    }
+
+    async function restoreHandoffLocation(data) {
         if (data.cwd && typeof data.cwd === 'string') {
             try {
                 if (await App.fs.exists(data.cwd)) await App.nav.go(data.cwd);
@@ -759,8 +793,14 @@
                 /* the folder moved meanwhile: stay at the root */
             }
         }
-        ui.toast(`‘${active.name}’ 폴더를 서버로 이어서 열었어요`, { type: 'success', duration: 3200 });
-        return true;
+        if (typeof data.open === 'string' && data.open &&
+            !/[\\:\x00]/.test(data.open) && !data.open.startsWith('/') &&
+            !data.open.split('/').some((part) => part === '..' || part === '.')) {
+            try {
+                if (await App.fs.exists(data.open) && (await App.fs.stat(data.open)).kind === 'file')
+                    await App.viewer.open(data.open);
+            } catch (_) { /* removed or unreadable in the meantime */ }
+        }
     }
 
     function relativeTime(ms) {
@@ -810,6 +850,7 @@
             showError('');
             try {
                 await activateRoot(root);
+                if (typeof opts?.onOpened === 'function') await opts.onOpened();
                 close?.();
             } catch (err) {
                 if (alive) {
@@ -1365,7 +1406,7 @@
         ['folder-open', '탐색기 열기'],
     ];
 
-    function showSetup() {
+    function showSetup(opts = {}) {
         if (setupOpen) return setupOpen;
         statusPop?.close();
         let alive = true;
@@ -1380,7 +1421,16 @@
                 h('span', { class: 'srv-live-icon' }, h('span', { class: 'srv-pulse', 'aria-hidden': 'true' })),
                 h('div', { class: 'grow' },
                     h('div', { class: 'srv-strong', text: '아직 꺼져 있어요' }),
-                    h('div', { class: 'srv-muted', text: '켜지면 여기서 바로 이어서 열 수 있어요' })));
+                    h('div', { class: 'srv-muted', text: '처음 한 번 ‘열기’를 눌러 주세요' })),
+                h('button', { class: 'btn primary', text: '지금 켜기', onclick: async (event) => {
+                    const button = event.currentTarget;
+                    button.disabled = true;
+                    button.textContent = '켜는 중…';
+                    const ok = await server.launch();
+                    if (!alive) return;
+                    if (ok) renderReady(false);
+                    else renderWaiting();
+                } }));
         }
 
         function renderReady(alreadyServed) {
@@ -1399,7 +1449,7 @@
                     type: 'button',
                     'data-tip': '서버 주소(127.0.0.1)로 이 창을 바꿔요',
                     html: `<span>서버로 계속하기</span>${ui.icon('arrow-right', { size: 14 })}`,
-                    onclick: () => openServerUrl(),
+                    onclick: () => openServerUrl(opts),
                 }));
             }
             live.replaceChildren(...children);
@@ -1409,7 +1459,7 @@
         async function poll() {
             if (!alive) return;
             if (mode === 'served' && state === 'connected') return renderReady(true);
-            const ok = await health();
+            const ok = await server.health();
             if (!alive) return;
             if (ok) {
                 if (mode === 'served') {
@@ -1433,7 +1483,7 @@
                 h('li', null,
                     h('span', { class: 'srv-step-no', text: '1' }),
                     h('div', { class: 'grow' },
-                        h('div', null, h('code', { class: 'srv-code', text: 'server\\start.bat' }), '을 한 번 실행해요'),
+                        h('div', null, '맨 처음에만 ', h('code', { class: 'srv-code', text: 'server\\start.bat' }), '을 실행해요'),
                         h('div', { class: 'srv-muted', text: '처음에만 1~2분 준비해요. 끝나면 바탕화면에 아이콘이 생겨요.' }),
                         pathText
                             ? h('div', { class: 'srv-step-path' },
@@ -1443,7 +1493,7 @@
                 h('li', null,
                     h('span', { class: 'srv-step-no', text: '2' }),
                     h('div', { class: 'grow' },
-                        h('div', null, '다음부터는 바탕화면의 ', shortcutName, ' 아이콘만 누르면 돼요'),
+                        h('div', null, '다음부터는 ‘지금 켜기’ 또는 바탕화면의 ', shortcutName, ' 아이콘을 눌러 주세요'),
                         h('div', { class: 'srv-muted', text: '서버와 앱이 함께 켜지고, 마지막에 보던 폴더가 바로 열려요.' })))),
             live,
             h('div', { class: 'srv-setup-foot' }, h('button', { class: 'btn ghost', type: 'button', text: '닫기', onclick: () => close?.() })));
@@ -1488,6 +1538,12 @@
             return backend();
         },
         connect,
+        health,
+        launch,
+        launchLink,
+        openServerUrl,
+        continueHandoff,
+        navigate: (url) => { location.href = url; },
         request,
         job,
         waitJob,
