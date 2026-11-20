@@ -273,9 +273,9 @@ module.exports = [
             await page.waitForFunction(() => !document.querySelector('.tree-row[data-path="family/trip"]'));
             const src = await (await card(page, 'b.png')).boundingBox();
             const dst = await page.locator(`${row('family')} .tree-name`).boundingBox();
-            await page.mouse.move(src.x + 30, src.y + 30);
+            await page.mouse.move(src.x + src.width / 2, src.y + src.height / 2);
             await page.mouse.down();
-            await page.mouse.move(src.x + 60, src.y + 60, { steps: 4 });
+            await page.mouse.move(src.x + src.width / 2 + 30, src.y + src.height / 2 + 30, { steps: 4 });
             await page.mouse.move(dst.x + 10, dst.y + 8, { steps: 6 });
             await page.waitForTimeout(250);
             await page.mouse.move(dst.x + 14, dst.y + 9, { steps: 2 });

@@ -533,6 +533,10 @@
         const sel = App.select.has(p);
         el.classList.toggle('selected', sel);
         el.classList.toggle('focused', App.select.focus === p);
+        el.classList.toggle('is-anchor', mode === 'grid' && App.select.count > 0 && App.select.anchor === p);
+        const bounds = previewPath && mode === 'grid' ? App.select.rangeIndices(previewPath) : null;
+        const i = App.view.indexOf(p);
+        el.classList.toggle('range-preview', !!bounds && i >= bounds[0] && i <= bounds[1]);
         el.setAttribute('aria-selected', sel ? 'true' : 'false');
     }
 
@@ -1156,6 +1160,133 @@
         return t && t.closest ? t.closest('.card[data-path], .lrow[data-path]') : null;
     }
 
+    // ---------- Checkbox ranges and paint ----------
+    let previewPath = null;
+    let shiftHeld = false;
+    let rangeToast = null;
+    let pick = null;
+    let touchMenuUntil = 0;
+    let pickClickTimer = 0;
+
+    function rangeNotice(n, on) {
+        if (n < 2) return;
+        rangeToast?.close?.();
+        rangeToast = ui.toast(`${formatCount(n)}개를 ${on ? '골랐어요' : '뺐어요'}`, { type: 'info', duration: 1600, id: 'gallery-range' });
+    }
+
+    function checkboxRange(p) {
+        const on = !App.select.has(p);
+        rangeNotice(App.select.setRange(p, on), on);
+        clearNativeSelection();
+        preview(null);
+    }
+
+    function clearNativeSelection() {
+        window.getSelection()?.removeAllRanges();
+    }
+
+    function preview(p) {
+        p = mode === 'grid' ? p : null;
+        if (previewPath === p) return;
+        previewPath = p;
+        const bounds = previewPath ? App.select.rangeIndices(previewPath) : null;
+        gallery.forEachRendered((el, q) => {
+            const i = App.view.indexOf(q);
+            el.classList.toggle('range-preview', !!bounds && i >= bounds[0] && i <= bounds[1]);
+        });
+    }
+
+    function paintPick(p) {
+        if (!pick?.active || pick.last === p) return;
+        const a = App.view.indexOf(pick.path);
+        const b = App.view.indexOf(p);
+        if (a < 0 || b < 0) return;
+        pick.last = p;
+        const next = new Set(pick.base);
+        for (let i = Math.min(a, b); i <= Math.max(a, b); i++) {
+            const q = App.view.visible[i].path;
+            if (pick.on) next.add(q);
+            else next.delete(q);
+        }
+        App.select.set([...next], { focus: p, anchor: p });
+        clearNativeSelection();
+    }
+
+    function activatePick() {
+        if (!pick || pick.active) return;
+        pick.active = true;
+        if (press) press.moved = true;
+        pendingUp = null;
+        preview(null);
+        scroller.classList.add('is-picking');
+        pick.touchAction = scroller.style.touchAction;
+        scroller.style.touchAction = 'none';
+        try {
+            scroller.setPointerCapture(pick.id);
+        } catch (err) {
+            /* Synthetic events have no native pointer to capture. */
+        }
+        paintPick(pick.path);
+    }
+
+    function finishPick(cancel = false, restore = true) {
+        if (!pick) return;
+        const g = pick;
+        pick = null;
+        clearTimeout(g.timer);
+        if (!g.active) return;
+        scroller.classList.remove('is-picking');
+        scroller.style.touchAction = g.touchAction;
+        try {
+            scroller.releasePointerCapture(g.id);
+        } catch (err) {
+            /* Already released or synthetic pointer. */
+        }
+        if (cancel) {
+            if (restore) App.select.set([...g.base], { focus: g.focus, anchor: g.anchor });
+        } else {
+            let changed = 0;
+            for (const p of g.base) if (!App.select.has(p)) changed++;
+            for (const p of App.select.paths) if (!g.base.has(p)) changed++;
+            rangeNotice(changed, g.on);
+        }
+        if (press) press.clicked = press.moved = true;
+        pendingUp = null;
+        suppressClick = true;
+        if (g.touch) touchMenuUntil = performance.now() + 800;
+        clearTimeout(pickClickTimer);
+        pickClickTimer = setTimeout(() => (suppressClick = false), g.touch ? 800 : 0);
+        releasePointerLock();
+    }
+
+    function movePick(e) {
+        if (!pick || pick.id !== e.pointerId) return false;
+        const distance = Math.hypot(e.clientX - pick.x, e.clientY - pick.y);
+        if (!pick.active) {
+            if (pick.touch) {
+                if (distance >= 8) finishPick();
+                return false;
+            }
+            if (distance < 5) return true;
+            activatePick();
+        }
+        e.preventDefault();
+        const el = itemElFrom(document.elementFromPoint(e.clientX, e.clientY));
+        if (el?.classList.contains('card') && canvas.contains(el)) paintPick(el.dataset.path);
+        return true;
+    }
+
+    function shiftSpace(e) {
+        if (e.key !== ' ' && e.code !== 'Space') return;
+        if (!e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.isComposing
+            || App.layers.top() !== 'main' || !App.fs.ready || !App.select.focus
+            || App.util.isTypingTarget(e.target) || App.util.isTypingTarget(document.activeElement)
+            || e.target.closest?.('[role="tree"], .tree-row')) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (!e.repeat) App.commands.run('select.checkRange', { event: e });
+    }
+
     // ---------- Clicks ----------
     // The item under pointerdown is remembered. If the click then lands outside any item (its element changed between
     // down and up), and the pointer did not move, the click still goes to the item that was pressed.
@@ -1230,8 +1361,11 @@
             setRating([p], cur === star ? 0 : star);
             return;
         }
+        preview(null);
+        if (mods.shiftKey) clearNativeSelection();
         if (check) {
-            App.select.toggle(p);
+            if (mods.shiftKey) checkboxRange(p);
+            else App.select.toggle(p);
             return;
         }
         if (mods.shiftKey) App.select.range(p, { additive: mods.ctrlKey || mods.metaKey });
@@ -1304,10 +1438,27 @@
     }
 
     function onPointerDown(e) {
+        clearTimeout(pickClickTimer);
+        suppressClick = false;
         settlePendingUp(); // the previous click first, in order (Shift ranges depend on the anchor it sets)
         lastPointer = { x: e.clientX, y: e.clientY };
         notePress(e);
         endScrub();
+        const card = e.target.closest('.card[data-path]');
+        if (mode === 'grid' && card && canvas.contains(card) && e.button === 0
+            && !e.target.closest('input, textarea, select, button, a, [contenteditable]')
+            && (e.pointerType === 'touch' || e.target.closest('.card-check'))) {
+            finishPick();
+            const touch = e.pointerType === 'touch';
+            pick = {
+                id: e.pointerId, path: card.dataset.path, x: e.clientX, y: e.clientY,
+                touch, active: false, last: null, base: new Set(App.select.paths),
+                focus: App.select.focus, anchor: App.select.anchor,
+                on: !App.select.has(card.dataset.path), timer: 0,
+            };
+            if (touch) pick.timer = setTimeout(activatePick, 450);
+            return;
+        }
         if (!lassoCandidate(e)) return;
         const cr = canvas.getBoundingClientRect();
         lasso = {
@@ -1464,6 +1615,12 @@
         // card was detached by spring-loading and its dragend never reached us)
         if (dragActive && !e.buttons) endDrag();
         lastPointer = { x: e.clientX, y: e.clientY };
+        if (movePick(e)) return;
+        if (!e.buttons && e.pointerType !== 'touch') {
+            shiftHeld = e.shiftKey;
+            const card = itemElFrom(e.target);
+            preview(shiftHeld && card?.classList.contains('card') ? card.dataset.path : null);
+        }
         // Only moves while the button is still down count (input runs before timers: the next item's approach can
         // arrive before the previous click is settled)
         if (press && !press.moved && !press.released && e.pointerId === press.id && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 5) press.moved = true;
@@ -1498,6 +1655,10 @@
 
     // A press can end anywhere (outside the gallery, over a menu…): always release the pointer lock
     function onWindowPointerUp(e) {
+        if (pick && e.pointerId === pick.id) {
+            if (pick.active) e.preventDefault();
+            finishPick();
+        }
         if (press && e.pointerId === press.id) press.released = true;
         if (lock.pointer) setTimeout(releasePointerLock, 0); // after this task's click has seen the cards as they were
     }
@@ -1823,7 +1984,13 @@
         }));
     }
 
-    function buildContextMenu(entries) {
+    function localDay(entry) {
+        // No capture-date field is exposed by this module's catalog metadata contract.
+        const d = new Date(entry.mtime);
+        return Number.isFinite(d.getTime()) ? `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` : null;
+    }
+
+    function buildContextMenu(entries, clicked = null) {
         const items = [];
         const add = (...xs) => {
             for (const x of xs) if (x) items.push(x);
@@ -1845,6 +2012,19 @@
             const one = entries.length === 1 ? entries[0] : null;
             add(cmdItem('file.open', one && one.kind === 'dir' ? '열기' : '보기'));
             add(cmdItem('gallery.quicklook', '훑어보기'));
+            if (clicked && clicked.kind === 'file') {
+                const day = localDay(clicked);
+                add({
+                    label: '같은 날 찍은 것 모두 선택',
+                    icon: ui.ICONS?.calendar ? 'calendar' : 'check-circle',
+                    disabled: day === null,
+                    action: () => {
+                        const paths = App.view.visible.filter((e) => e.kind === 'file' && localDay(e) === day).map((e) => e.path);
+                        App.select.set(paths, { focus: clicked.path, anchor: clicked.path });
+                        ui.toast(`같은 날 ${formatCount(paths.length)}개를 골랐어요`, { type: 'info', duration: 1600 });
+                    },
+                });
+            }
             if (one && App.view.source.type !== 'folder') add({ label: '폴더에서 보기', icon: 'folder-open', action: () => revealInFolder(one.path) });
             sep();
             add(cmdItem('file.copy', '복사'), cmdItem('file.cut', '잘라내기'));
@@ -1872,6 +2052,10 @@
     }
 
     function onContextMenu(e) {
+        if (pick?.active || performance.now() < touchMenuUntil) {
+            e.preventDefault();
+            return;
+        }
         if (e.target.closest('.lhead')) {
             e.preventDefault();
             ui.menu([{ header: '정렬 기준' }, ...sortMenu(), '-', { header: '보기 방식' }, ...viewMenu().slice(0, 2)], { x: e.clientX, y: e.clientY });
@@ -1885,7 +2069,7 @@
         if (p && !App.select.has(p)) App.select.set([p]);
         if (!p && App.select.count && !e.ctrlKey) App.select.clear();
         const entries = p ? App.select.entries() : [];
-        const items = buildContextMenu(entries);
+        const items = buildContextMenu(entries, p ? App.view.get(p) : null);
         if (!items.length) return;
         ui.menu(items, { x: e.clientX, y: e.clientY });
         // Hold background re-layouts back while the menu is open, so its item doesn't jump away underneath it
@@ -2096,6 +2280,10 @@
     }
 
     function onDragStart(e) {
+        if (pick || e.target.closest('.card-check')) {
+            e.preventDefault();
+            return;
+        }
         if (lasso) {
             // A lasso started on a list row's empty area: don't turn it into a file drag
             e.preventDefault();
@@ -2849,6 +3037,8 @@
 
     App.commands.register({ id: 'select.all', title: '모두 선택', group: '선택', icon: 'check-circle', keys: ['Mod+A'], when: () => App.view.visible.length > 0, run: () => App.select.all() });
     App.commands.register({ id: 'select.clear', title: '선택 해제', group: '선택', icon: 'x', when: hasSelection, run: () => App.select.clear() });
+    App.commands.register({ id: 'select.checkRange', title: '기준점부터 여기까지 체크', group: '선택', keys: ['Shift+Space'], scope: 'main', when: () => hasItems() && App.view.indexOf(App.select.focus) >= 0, run: () => checkboxRange(App.select.focus) });
+    window.addEventListener('keydown', shiftSpace, true);
     App.commands.register({ id: 'nav.escape', title: '검색·필터 해제 후 상위 폴더로', group: '이동', keys: ['Escape'], scope: 'main', when: escapeAllowed, run: runEscape });
     App.commands.register({ id: 'gallery.zoomIn', title: '썸네일 크게', group: '보기', icon: 'zoom-in', keys: ['Mod+='], run: () => gallery.setZoom(gallery.zoom * 1.15) });
     App.commands.register({ id: 'gallery.zoomOut', title: '썸네일 작게', group: '보기', icon: 'zoom-out', keys: ['Mod+-'], run: () => gallery.setZoom(gallery.zoom / 1.15) });
@@ -2990,7 +3180,41 @@
             scroller.addEventListener('pointerdown', onPointerDown);
             scroller.addEventListener('pointermove', onPointerMove);
             scroller.addEventListener('pointerup', onPointerUp);
+            scroller.addEventListener('mousedown', (e) => {
+                if (!e.shiftKey || !canvas.contains(e.target)
+                    || e.target.closest('input, textarea, select, button, a, [contenteditable]')) return;
+                e.preventDefault();
+                clearNativeSelection();
+            });
+            scroller.addEventListener('touchmove', (e) => {
+                if (pick?.active && pick.touch) e.preventDefault();
+            }, { passive: false });
+            window.addEventListener('pointermove', (e) => {
+                if (pick && !scroller.contains(e.target)) movePick(e);
+            }, { passive: false });
+            window.addEventListener('keydown', (e) => {
+                if (e.key !== 'Shift') return;
+                shiftHeld = true;
+                if (!lastPointer) return;
+                const card = itemElFrom(document.elementFromPoint(lastPointer.x, lastPointer.y));
+                preview(card?.classList.contains('card') ? card.dataset.path : null);
+            });
+            window.addEventListener('keyup', (e) => {
+                if (e.key !== 'Shift') return;
+                shiftHeld = false;
+                preview(null);
+            });
+            window.addEventListener('blur', () => {
+                shiftHeld = false;
+                preview(null);
+                finishPick(true);
+            });
+            App.bus.on('gallery:mode', () => {
+                preview(null);
+                finishPick(true);
+            });
             scroller.addEventListener('pointercancel', () => {
+                finishPick(true);
                 endLasso(false);
                 if (press) press.moved = true;
                 releasePointerLock();
@@ -2999,6 +3223,7 @@
             // A re-sort is "background" (thumbs filling in resolution/duration…) unless the user just did something
             for (const type of ['pointerdown', 'keydown', 'wheel']) window.addEventListener(type, () => (lastInputAt = performance.now()), { capture: true, passive: true });
             scroller.addEventListener('pointerleave', () => {
+                preview(null);
                 lastPointer = null;
                 if (!lasso) endScrub();
             });
@@ -3029,6 +3254,10 @@
 
             App.topbar?.addViewbarItem?.(viewbarControls);
 
+            App.bus.on('view:changed', () => {
+                finishPick(true, false);
+                preview(null);
+            });
             App.bus.on('view:changed', onViewChanged);
             App.bus.on('selection:changed', () => {
                 if (sortPill.shownFor && App.select.focus !== sortPill.shownFor) hideSortPill();
@@ -3069,6 +3298,8 @@
                 lastSource = null;
             });
             App.bus.on('workspace:closed', () => {
+                finishPick(true, false);
+                preview(null);
                 emptyEl.hidden = true;
                 showLoading(false);
                 releaseScrubSource();

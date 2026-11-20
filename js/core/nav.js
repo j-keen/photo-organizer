@@ -8,6 +8,8 @@
  *     setHider(id, predicate | null) recomputes without changing user filters or emitting 'view:filters'.
  *     clearFilters() leaves hiders intact. Recomputes prune only items that are no longer visible.
  *   App.select — selection of paths within the visible list (+ anchor/focus for keyboard & shift-click).
+ *     rangeIndices(p): visible range with anchor/focus/nearest-selected/index fallbacks.
+ *     setRange(p, on): set that range without changing outside items; return changed count and anchor at p.
  *
  * Events: 'folder:loading' {path}, 'folder:loaded' {path, entries}, 'view:changed' {reason},
  *         'selection:changed' {paths, focus}
@@ -181,9 +183,9 @@
          * When the anchor is gone (refreshed list, file moved away) the range starts at the focus, else the selected
          * item nearest to p, else the place where the anchor used to be — never a silent single select.
          */
-        range(p, { additive = false } = {}) {
+        rangeIndices(p) {
             const b = view.indexOf(p);
-            if (b < 0) return select.set([p]);
+            if (b < 0) return null;
             let a = view.indexOf(select.anchor);
             if (a < 0) a = view.indexOf(select.focus);
             if (a < 0 && select.paths.size) {
@@ -196,11 +198,36 @@
             }
             if (a < 0 && select.anchorIndex >= 0 && view.visible.length) a = Math.min(select.anchorIndex, view.visible.length - 1);
             if (a < 0) a = b;
-            if (view.visible[a].path !== select.anchor) {
-                select.anchor = view.visible[a].path;
-                select.anchorIndex = a;
+            return a < b ? [a, b] : [b, a];
+        },
+
+        setRange(p, on) {
+            const bounds = select.rangeIndices(p);
+            if (!bounds) return 0;
+            let changed = 0;
+            for (let i = bounds[0]; i <= bounds[1]; i++) {
+                const q = view.visible[i].path;
+                if (select.has(q) === on) continue;
+                if (on) select.paths.add(q);
+                else select.paths.delete(q);
+                changed++;
             }
-            const [from, to] = a < b ? [a, b] : [b, a];
+            select.anchor = p;
+            select.focus = p;
+            select.noteAnchor();
+            select.emit();
+            return changed;
+        },
+
+        range(p, { additive = false } = {}) {
+            const bounds = select.rangeIndices(p);
+            if (!bounds) return select.set([p]);
+            const [from, to] = bounds;
+            const b = view.indexOf(p);
+            if (view.indexOf(select.anchor) < 0) {
+                select.anchor = view.visible[b === from ? to : from].path;
+                select.noteAnchor();
+            }
             const next = additive ? new Set(select.paths) : new Set();
             for (let i = from; i <= to; i++) next.add(view.visible[i].path);
             select.paths = next;
