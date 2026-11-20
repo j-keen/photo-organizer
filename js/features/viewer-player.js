@@ -442,7 +442,7 @@
                 if (isActive()) bar.update();
                 this.setState('ended');
                 this.resumeEnded = true;
-                this.saveResume(true);
+                this.saveResume(true, true);
                 App.bus.emit('viewer:video-ended', { path: this.path });
             });
             v.addEventListener('ratechange', () => isActive() && bar.update());
@@ -520,11 +520,12 @@
             const opts = this.ctx.opts || {};
             if (opts.time != null && isFinite(opts.time)) this.seek(opts.time);
             if (opts.segment) this.setSegment(opts.segment);
-            const savedRate = App.settings.get('viewer.rateByFolder', {})?.[P.parent(this.path)];
-            if (App.settings.get('viewer.rememberFolderRate', true) !== false && Number.isFinite(savedRate) && savedRate >= 0.0625 && savedRate <= 16) {
+            const carriedRate = opts.playbackRate;
+            const savedRate = carriedRate ?? App.settings.get('viewer.rateByFolder', {})?.[P.parent(this.path)];
+            if ((carriedRate != null || App.settings.get('viewer.rememberFolderRate', true) !== false) && Number.isFinite(savedRate) && savedRate >= 0.0625 && savedRate <= 16) {
                 v.playbackRate = savedRate;
                 v.defaultPlaybackRate = savedRate;
-                if (this.ctx.active) V.osd(`${savedRate}배속 (이 폴더)`, { duration: 1200 });
+                if (this.ctx.active && carriedRate == null) V.osd(`${savedRate}배속 (이 폴더)`, { duration: 1200 });
             }
             const resumeAt = Number(App.catalog.peek(this.path)?.meta?.resumeAt);
             if (opts.time == null && !opts.segment && !V.segment && !V.sequence &&
@@ -1056,7 +1057,7 @@
             ];
         }
 
-        saveResume(clear = false) {
+        saveResume(clear = false, watched = false) {
             if (!this.metaReady || this.failed || !this.ctx.shown) return;
             if (!clear && App.settings.get('viewer.rememberResume', true) === false) return;
             this.resumeSavedAt = performance.now();
@@ -1066,8 +1067,10 @@
                 ? Math.round(t * 1000) / 1000 : null;
             const resumeDur = resumeAt === null ? null : d;
             const meta = App.catalog.peek(this.path)?.meta || {};
-            if ((meta.resumeAt ?? null) === resumeAt && (meta.resumeDur ?? null) === resumeDur) return;
-            App.catalog.setMeta(this.path, { resumeAt, resumeDur });
+            const watchedAt = watched ? Date.now() : (meta.watchedAt ?? null);
+            if ((meta.resumeAt ?? null) === resumeAt && (meta.resumeDur ?? null) === resumeDur &&
+                (meta.watchedAt ?? null) === watchedAt) return;
+            App.catalog.setMeta(this.path, { resumeAt, resumeDur, watchedAt });
             refreshResumeCard(this.path);
         }
 

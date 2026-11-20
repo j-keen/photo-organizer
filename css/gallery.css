@@ -50,6 +50,31 @@
     box-shadow: 0 0 0 1px var(--sel-line);
 }
 
+.card > .card-watch-progress {
+    position: absolute;
+    inset-inline: 0;
+    bottom: 0;
+    height: calc(var(--r-xs) / 2);
+    background: var(--line-2);
+    pointer-events: none;
+}
+
+.card-watch-progress > i {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+}
+
+.card > .card-watch-progress.is-watched {
+    inset-inline: auto var(--r-xs);
+    bottom: var(--r-xs);
+    height: auto;
+    padding: var(--r-xs) var(--r);
+    border-radius: var(--r-xs);
+    color: var(--accent);
+    background: var(--bg-2);
+}
+
 .card-media {
     position: relative;
     flex: 1;

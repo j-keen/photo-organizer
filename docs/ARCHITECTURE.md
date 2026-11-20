@@ -485,3 +485,23 @@ Everything about chips works without leaving the viewer, and a selected video pi
 - Media Session play/pause and previous/next track handlers target the current player / `App.viewer.step`, and are
   cleared for photos and on close. Browser support for individual Media Session actions varies.
 - Unsupported browsers disable the command/menu; the control button and Alt+P explain support via a friendly toast.
+
+## 14. Lists across folders: auto-next, up next, saved lists (2026-11-20, owner: '검색해서 나온 영상들도 자동넘김이 다른 폴더로 넘어가야 함')
+The viewer list is always `App.view.visible` files — folder, topbar search, smart view, recursive view, with type/chip/length filters. Every
+navigation (arrows, wheel, buttons, slideshow, auto-next) follows that list across folders. "Multi-folder list" = source `search`/`smart` or `recursive`.
+- Bug fixed: opening a file from the command palette navigated to its folder, so the viewer list was one folder. `palette.js revealFile` now shows
+  the palette's file matches as a search view (`source.paletteOrder` = ordered paths, temporary sort key `paletteOrder`) and opens the file there.
+  Alt/Shift keeps '열지 않고 폴더에서 보기'. The topbar count follows the palette list.
+- Auto-next settings: `viewer.autoNextLoop` (false), `viewer.autoNextShuffle` (false; auto-next only, arrows keep sort order),
+  `viewer.autoNextDelay` (0 = immediate, 3/5/10 s countdown card), `viewer.autoNextAsk` (0 = off, 5/10/20 files → '계속 보실래요?').
+  Unreadable files reached by auto-next are skipped with a toast (one pass max). Sleep timer in the viewer menu (session only).
+  Commands `viewer.autoNext.{toggle(Alt+Shift+A),loop,shuffle,now,cancel,continue,stop}`, `viewer.sleepTimer`.
+- In multi-folder lists: edge notice has no '다음 폴더로' and counts the list ('검색 결과 n개 다 봤어요'); counter reads '검색 결과 3 / 20',
+  '필터 3 / 20' or '목록 3 / 20'; moving to another folder shows the folder name in the OSD; folder playback rate is not re-applied (current rate kept).
+- API: `App.viewer.upNext(n=10)` (what auto-next would show, respects shuffle/loop; Infinity = all / one cycle), `App.viewer.goPath(path, opts)`.
+  Events `viewer:upnext-changed`, `viewer:navigating`, `viewer:load-error`; `viewer:entry` carries `opts`, `previous`, `folderChanged`.
+- '다음 재생' dock panel (`viewer-upnext.js`, Alt+N, videos only). Closing a panel that the new file kind lacks also clears the dock head/tabs.
+- Saved lists (`nav-lists.js`): '지금 목록 저장' → `<workspace>/.fluid-organizer/lists.json`, reopened as smart view `list:<id>`, rename/delete undoable,
+  in the palette ('목록: 이름') and a '저장한 목록' sidebar section. Event `lists:changed`. API `App.navLists`.
+- Length filter (topbar): `App.topbar.setLengthFilter()`, `view.length.{all,short,medium,long}` (1분 이하 / 1~10분 / 10분 이상); unknown durations only under 전체.
+- Gallery cards: watched progress bar from `meta.resumeAt/resumeDur`; `meta.watchedAt` (natural end) shows '다 봄' when no resume position exists.

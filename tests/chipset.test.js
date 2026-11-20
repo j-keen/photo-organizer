@@ -572,7 +572,7 @@ module.exports = [
             assert.equal(await page.locator('.vw-dock').isVisible(), false);
             await page.keyboard.press('Shift+B');
             await page.waitForSelector('.vw-dock-body[data-panel="markers"]');
-            assert.deepEqual(await tabs(), ['chips', 'markers*']);
+            assert.deepEqual(await tabs(), ['chips', 'upnext', 'markers*']);
             await page.click('.vw-dock-tab[data-panel="chips"]');
             await page.waitForSelector('.vw-dock .chip-dock');
             assert.equal(await page.evaluate(() => App.settings.get('chips.drawer')), true, 'opened from the tab → remembered');

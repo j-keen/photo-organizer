@@ -689,7 +689,73 @@
                 console.error('[gallery] decorator failed', e);
             }
         }
+        addWatchProgress(card, entry, cat);
         return card;
+    }
+
+    function addWatchProgress(card, entry, cat) {
+        // Keep a held card unchanged until a later refresh.
+        if (card.matches(':active')) return;
+        const setShown = (node, shown) => {
+            if (!node) return;
+            const display = shown ? '' : 'none';
+            if (node.style.display !== display) node.style.display = display;
+        };
+        const existing = card.querySelector('.card-watch-progress');
+        if (entry.type !== 'video' || App.settings.get('viewer.rememberResume', true) === false) {
+            setShown(existing, false);
+            return;
+        }
+        const at = Number(cat?.meta?.resumeAt);
+        const savedDuration = Number(cat?.meta?.resumeDur);
+        const duration = Number.isFinite(savedDuration) && savedDuration > 0 ? savedDuration : Number(cat?.meta?.duration);
+        const finished = !!cat?.meta?.watchedAt && !(Number.isFinite(at) && at > 0);
+        if (!finished && (!Number.isFinite(at) || !Number.isFinite(duration) || at <= 0 || duration <= at)) {
+            setShown(existing, false);
+            return;
+        }
+        // Retain the decorator and its children across refreshes and state changes.
+        const bar = existing || card.querySelector('.vw-resume-progress') || h('div');
+        const setAttr = (name, value) => {
+            if (value === null) {
+                if (bar.hasAttribute(name)) bar.removeAttribute(name);
+            } else if (bar.getAttribute(name) !== value) {
+                bar.setAttribute(name, value);
+            }
+        };
+        if (!bar.classList.contains('card-watch-progress')) bar.classList.add('card-watch-progress');
+        if (bar.classList.contains('is-watched') !== finished) bar.classList.toggle('is-watched', finished);
+        setShown(bar, true);
+        if (finished) {
+            setAttr('role', 'status');
+            setAttr('aria-label', '다 봄');
+            for (const attr of ['aria-valuemin', 'aria-valuemax', 'aria-valuenow']) setAttr(attr, null);
+            let label = bar.querySelector('span');
+            if (!label) {
+                label = h('span', { text: '다 봄' });
+                bar.append(label);
+            } else if (label.textContent !== '다 봄') {
+                label.textContent = '다 봄';
+            }
+            setShown(label, true);
+            setShown(bar.querySelector('i'), false);
+        } else {
+            setAttr('role', 'progressbar');
+            setAttr('aria-label', `${formatDuration(at)}까지 봤어요`);
+            setAttr('aria-valuemin', '0');
+            setAttr('aria-valuemax', String(duration));
+            setAttr('aria-valuenow', String(at));
+            let fill = bar.querySelector('i');
+            if (!fill) {
+                fill = h('i');
+                bar.append(fill);
+            }
+            setShown(fill, true);
+            setShown(bar.querySelector('span'), false);
+            const width = `${Number((clamp(at / duration, 0, 1) * 100).toFixed(4))}%`;
+            if (fill.style.width !== width) fill.style.width = width;
+        }
+        if (!bar.parentElement) card.append(bar);
     }
 
     function fillFileMedia(card, media, entry) {

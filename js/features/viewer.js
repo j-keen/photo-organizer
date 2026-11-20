@@ -200,6 +200,8 @@
     let edge = null;
     let escapeClosedAt = null;
     let sessionId = 0;
+    let lastEntryPath = null;
+    let folderNotice = '';
     const openedPaths = new Set();
 
     const renderers = new Map();
@@ -267,9 +269,11 @@
         /** Open a file. opts: { time (seconds, videos), play (bool) } */
         open(p, opts = {}) {
             if (!root) return;
+            App.bus.emit('viewer:navigating', { opts });
             if (!viewer.isOpen) {
                 sessionId++;
                 openedPaths.clear();
+                lastEntryPath = null;
             }
             escapeClosedAt = null;
             edge = null;
@@ -335,6 +339,8 @@
         },
 
         step(delta, opts = {}) {
+            opts = { ...opts, step: true };
+            App.bus.emit('viewer:navigating', { opts });
             if (!files.length || !delta) return;
             const direction = delta < 0 ? -1 : 1;
             const next = index + delta;
@@ -359,12 +365,21 @@
         },
 
         go(i, opts = {}) {
+            App.bus.emit('viewer:navigating', { opts });
             edge = null;
             if (!files.length) return;
             const next = clamp(i, 0, files.length - 1);
             lastDirection = next < index ? -1 : 1;
             index = next;
             show(opts);
+        },
+
+        /** Jump within the current gallery list; never change its source. */
+        goPath(path, opts = {}) {
+            const i = files.findIndex((entry) => entry.path === path);
+            if (i < 0 || !viewer.isOpen) return false;
+            viewer.go(i, opts);
+            return true;
         },
 
         /** Re-read the current file from disk and show it again (after its content changed). */
@@ -476,6 +491,8 @@
 
     // Rebuild the list from the gallery's visible entries, keeping the current file selected.
     function syncList() {
+        // List consumers run after this synchronous rebuild has completed.
+        queueMicrotask(() => App.bus.emit('viewer:upnext-changed', {}));
         const cur = files[index];
         const next = viewFiles();
         if (cur) {
@@ -502,6 +519,7 @@
     // ---------- Showing an entry ----------
     function destroyRec(rec) {
         if (!rec) return;
+        rec.errorObserver?.disconnect();
         try {
             rec.inst?.destroy?.();
         } catch (e) {
@@ -515,6 +533,16 @@
         for (const gesture of arrowGestures.values()) gesture.seek = null;
         const entry = files[index];
         if (!entry) return;
+        const previous = lastEntryPath;
+        lastEntryPath = entry.path;
+        const folderChanged = previous != null && P.parent(previous) !== P.parent(entry.path);
+        folderNotice = folderChanged ? P.base(P.parent(entry.path)) || App.state.workspace?.name || '' : '';
+        const source = App.view.source;
+        if ((opts.autoNext || opts.step) && folderChanged && entry.type === 'video' &&
+            viewer.player && P.parent(viewer.player.path) === P.parent(previous) &&
+            (source?.type === 'search' || source?.type === 'smart' || source?.recursive)) {
+            opts = { ...opts, playbackRate: viewer.player.rate };
+        }
         const token = ++loadToken;
         openedPaths.add(entry.path);
         osdVersion++;
@@ -525,7 +553,9 @@
         App.select.set([entry.path]);
         // a panel made for another kind of file (메모 목록 → a photo) steps out; another panel may take the dock
         if (openPanel && openPanel.def.kinds && !openPanel.def.kinds.includes(entry.type)) closePanel({ reason: 'kind' });
-        App.bus.emit('viewer:entry', { entry, index, count: files.length });
+        if (folderChanged) osd(`다음 파일 · ${entry.name}`, { detail: P.base(P.parent(entry.path)) || App.state.workspace?.name || '', duration: 1800 });
+        App.bus.emit('viewer:entry', { entry, index, count: files.length, opts, previous, folderChanged });
+        App.bus.emit('viewer:upnext-changed', {});
 
         if (pending) destroyRec(pending);
         pending = null;
@@ -542,6 +572,16 @@
         if (opts.transition === 'fade' && visible) slot.classList.add('vw-fade-in');
         stage.append(slot);
         const rec = { slot, entry, inst: null, token, ready: false, mounting: true, readyQueued: false };
+        // Images may show a cached thumbnail before their full decode fails. Observe
+        // their renderer's error card as well as errors known at the first promotion.
+        const reportError = () => {
+            if (token !== loadToken || rec.failed || !slot.querySelector('.vw-card')) return;
+            if (!rec.inst?.failed && entry.type !== 'image' && !slot.querySelector('.vw-card.is-error')) return;
+            rec.failed = true;
+            App.bus.emit('viewer:load-error', { path: entry.path });
+        };
+        rec.errorObserver = new MutationObserver(reportError);
+        rec.errorObserver.observe(slot, { childList: true, subtree: true });
         pending = rec;
         const renderer = renderers.get(entry.type) || renderers.get('other');
         const ctx = {
@@ -668,7 +708,10 @@
         titleEl.title = entry.path;
         const folder = P.parent(entry.path);
         subEl.textContent = folder ? folder.replace(/\//g, ' › ') : App.state.workspace?.name || '';
-        counterEl.textContent = `${App.util.formatCount(index + 1)} / ${App.util.formatCount(files.length)}`;
+        const source = App.view.source;
+        const prefix = source?.type === 'search' ? '검색 결과 ' : source?.type === 'smart' ? '목록 ' :
+            App.view.filters?.size ? '필터 ' : '';
+        counterEl.textContent = `${prefix}${App.util.formatCount(index + 1)} / ${App.util.formatCount(files.length)}`;
         toolsEl.innerHTML = '';
         for (const fn of viewer.toolbarItems) {
             try {
@@ -927,6 +970,8 @@
         }
         openPanel = null;
         dock.hidden = true;
+        dockTitle.innerHTML = '';
+        dockTitle.classList.remove('has-tabs');
         dockBody.innerHTML = '';
         root.classList.remove('vw-has-dock');
         if (!silent) {
@@ -945,7 +990,7 @@
     }
 
     // ---------- On-screen display (feedback bubble) ----------
-    function osd(text, { icon: ic = null, duration = 750, actions = [], detail = '' } = {}) {
+    function osd(text, { icon: ic = null, duration = 750, actions = [], detail = folderNotice } = {}) {
         if (!osdEl) return;
         osdVersion++;
         osdEl.innerHTML = `${ic ? icon(ic, { size: 22 }) : ''}<span>${escapeHtml(text)}</span>`;
@@ -974,15 +1019,17 @@
         const session = sessionId;
         const warning = edge;
         const text = direction > 0 ? '마지막 파일이에요 · 한 번 더 누르면 처음으로' : '첫 파일이에요 · 한 번 더 누르면 마지막으로';
-        const folderFiles = files.filter((entry) => P.parent(entry.path) === folder);
+        const source = App.view.source;
+        const multi = source?.type === 'search' || source?.type === 'smart' || source?.recursive;
+        const folderFiles = multi ? files : files.filter((entry) => P.parent(entry.path) === folder);
         const detail = direction > 0 && folderFiles.length && folderFiles.every((entry) => openedPaths.has(entry.path))
-            ? `이 폴더 ${folderFiles.length}개 다 봤어요` : '';
+            ? `${multi ? source.type === 'search' ? '검색 결과' : '목록' : '이 폴더'} ${folderFiles.length}개 다 봤어요` : '';
         osd(text, { duration: 3000, detail });
         const version = osdVersion;
         stage.classList.remove('vw-edge-left', 'vw-edge-right');
         void stage.offsetWidth;
         stage.classList.add(direction > 0 ? 'vw-edge-right' : 'vw-edge-left');
-        if (direction < 0) return;
+        if (direction < 0 || multi) return;
         nextSibling(folder).then((sibling) => {
             if (!sibling || !viewer.isOpen || session !== sessionId || edge !== warning || version !== osdVersion) return;
             const button = h('button', {

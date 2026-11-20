@@ -1,0 +1,6 @@
+.lists-body { display: flex; flex-direction: column; gap: var(--r-xs); }
+.lists-row { display: flex; align-items: center; gap: var(--r-xs); }
+.lists-open { display: flex; flex: 1; justify-content: flex-start; min-width: 0; gap: var(--r-sm); }
+.lists-open > span:first-child { display: flex; flex-shrink: 0; color: var(--text-3); }
+.lists-empty { color: var(--text-3); font-size: var(--fs-sm); padding: var(--r-sm); }
+.lists-menu-button { flex-shrink: 0; }

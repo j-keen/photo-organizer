@@ -1090,3 +1090,29 @@
         transition-duration: 1ms !important;
     }
 }
+/* Auto-next waiting / inactivity card; all dimensions and surfaces share theme tokens. */
+.vw-autonext {
+    position: absolute;
+    right: var(--fs-xl);
+    bottom: var(--fs-xl);
+    max-width: calc(100% - var(--fs-xl) * 2);
+    padding: var(--fs-lg);
+    border: thin solid var(--line-2);
+    border-radius: var(--r-lg);
+    background: var(--bg-2);
+    color: var(--text);
+    box-shadow: var(--sh-2);
+    font-size: var(--fs);
+    pointer-events: auto;
+    z-index: 4;
+}
+#viewer[data-kind="video"] .vw-autonext {
+    bottom: calc(var(--vw-controls-height, var(--topbar-h)) + var(--fs-xl) * 2);
+}
+.vw-autonext-title { overflow-wrap: anywhere; }
+.vw-autonext-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--r);
+    margin-top: var(--fs-sm);
+}

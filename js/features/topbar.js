@@ -401,17 +401,27 @@
             return;
         }
         searchCount.hidden = false;
-        if (indexing || (!App.index.ready && lastCount == null)) searchCount.innerHTML = '<span class="spinner"></span>';
-        else if (lastCount == null) searchCount.textContent = '';
-        else searchCount.textContent = lastCount >= SEARCH_LIMIT ? `${formatCount(SEARCH_LIMIT)}+` : `${formatCount(lastCount)}개`;
-        searchCount.dataset.tip = lastCount == null ? '색인 중이에요' : `찾은 사진·영상 ${formatCount(lastCount)}개 · ${searchScope === 'folder' && App.state.cwd ? '현재 폴더 안' : '작업 폴더 전체'}`;
+        const paletteOrder = App.view.source.paletteOrder;
+        const fromPalette = Array.isArray(paletteOrder);
+        const count = fromPalette ? paletteOrder.length : lastCount;
+        if (!fromPalette && (indexing || (!App.index.ready && count == null))) searchCount.innerHTML = '<span class="spinner"></span>';
+        else if (count == null) searchCount.textContent = '';
+        else searchCount.textContent = !fromPalette && count >= SEARCH_LIMIT ? `${formatCount(SEARCH_LIMIT)}+` : `${formatCount(count)}개`;
+        const scopeLabel = fromPalette ? '팔레트 검색 결과' : searchScope === 'folder' && App.state.cwd ? '현재 폴더 안' : '작업 폴더 전체';
+        searchCount.dataset.tip = count == null ? '색인 중이에요' : `찾은 사진·영상 ${formatCount(count)}개 · ${scopeLabel}`;
     }
 
-    function clearSearch() {
+    App.bus.on('view:changed', () => updateSearchMeta());
+
+    function clearSearch({ reload = true } = {}) {
         if (!searchInput || !searchInput.value) return false;
         searchInput.value = '';
         lastCount = null;
-        runSearch.flush();
+        if (reload) runSearch.flush();
+        else {
+            searchToken++;
+            runSearch.cancel();
+        }
         updateSearchMeta();
         closeSuggest();
         return true;
@@ -710,6 +720,34 @@
         App.settings.set('view.type', id);
     }
 
+    const LENGTH_FILTERS = [
+        { id: 'all', label: '전체' },
+        { id: 'short', label: '1분 이하', test: (seconds) => seconds <= 60 },
+        { id: 'medium', label: '1~10분', test: (seconds) => seconds > 60 && seconds < 600 },
+        { id: 'long', label: '10분 이상', test: (seconds) => seconds >= 600 },
+    ];
+    const LENGTH_TIP = '캐시된 영상 길이로 골라요. 길이를 아직 모르는 영상은 전체에만 보여요. 1분은 1분 이하, 10분은 10분 이상에 포함돼요.';
+
+    function setLengthFilter(id) {
+        const option = LENGTH_FILTERS.find((item) => item.id === id);
+        if (!option) return;
+        const before = App.view.filters.get('length') || null;
+        if ((before?.id || 'all') === id) return;
+        const after = id === 'all' ? null : { id, label: `영상 ${option.label}`, includeDirs: true, test: (entry) => {
+            const seconds = App.catalog.peek(entry.path)?.meta?.duration;
+            return entry.type === 'video' && Number.isFinite(seconds) && seconds > 0 && option.test(seconds);
+        } };
+        App.view.setFilter('length', after);
+        App.undo.push({ label: `영상 길이: ${option.label}`, undo: () => App.view.setFilter('length', before), redo: () => App.view.setFilter('length', after) });
+    }
+
+    function lengthMenu(anchor) {
+        const active = App.view.filters.get('length')?.id || 'all';
+        ui.menu([{ header: '영상 길이' }, ...LENGTH_FILTERS.map((item) => ({
+            label: item.label, checked: active === item.id, command: 'view.length.' + item.id,
+        })), { label: '길이를 모르는 영상은 전체에만 보여요', disabled: true }], { anchor, align: 'end' });
+    }
+
     function renderViewbar() {
         if (!viewbar) return;
         viewbar.innerHTML = '';
@@ -771,6 +809,9 @@
             h('div', { class: 'grow' }),
             ...extras,
             seg,
+            h('button', { type: 'button', class: 'btn ghost sm vb-length', 'aria-label': '영상 길이', 'data-tip': LENGTH_TIP,
+                text: `길이: ${LENGTH_FILTERS.find((item) => item.id === (App.view.filters.get('length')?.id || 'all'))?.label || '전체'}`,
+                onclick: (event) => App.commands.run('view.lengthMenu', { anchor: event.currentTarget }) }),
             sortBtn,
             h('span', { class: 'vb-zoom', html: ui.icon('image', { size: 12 }) }, zoom),
         );
@@ -784,7 +825,7 @@
         host.innerHTML = '';
         for (const [id, f] of App.view.filters) {
             if (id === 'type') continue;
-            host.append(h('button', { class: 'filter-chip', type: 'button', 'data-tip': '필터 끄기', html: `${escapeHtml(f.label || id)}${ui.icon('x', { size: 12 })}`, onclick: () => App.view.setFilter(id, null) }));
+            host.append(h('button', { class: 'filter-chip', type: 'button', 'data-tip': '필터 끄기', html: `${escapeHtml(f.label || id)}${ui.icon('x', { size: 12 })}`, onclick: () => id === 'length' ? App.commands.run('view.length.all') : App.view.setFilter(id, null) }));
         }
     }
 
@@ -840,6 +881,10 @@
     App.commands.register({ id: 'view.filterAll', title: '전체 보기', group: '보기', keys: ['Alt+1'], allowInInput: true, when: () => App.fs.ready, run: () => setTypeFilter('all') });
     App.commands.register({ id: 'view.filterImages', title: '사진만 보기', group: '보기', icon: 'image', keys: ['Alt+2'], allowInInput: true, when: () => App.fs.ready, run: () => setTypeFilter('image') });
     App.commands.register({ id: 'view.filterVideos', title: '영상만 보기', group: '보기', icon: 'video', keys: ['Alt+3'], allowInInput: true, when: () => App.fs.ready, run: () => setTypeFilter('video') });
+    App.commands.register({ id: 'view.lengthMenu', title: '영상 길이로 골라 보기', group: '보기', icon: 'clock', when: () => App.fs.ready,
+        run: (args) => lengthMenu(args?.anchor || viewbar.querySelector('.vb-length')) });
+    for (const item of LENGTH_FILTERS) App.commands.register({ id: 'view.length.' + item.id, title: '영상 길이: ' + item.label,
+        group: '보기', icon: 'clock', when: () => App.fs.ready, run: () => setLengthFilter(item.id) });
 
     App.register('topbar', {
         init() {
@@ -949,6 +994,12 @@
                 renderViewbar();
             });
             App.bus.on('view:filters', renderFilterChips);
+            const refreshLength = App.util.debounce(() => {
+                if (App.view.filters.has('length')) App.view.recompute('filter');
+            }, 120);
+            App.bus.on('thumbs:meta', refreshLength);
+            App.bus.on('catalog:changed', refreshLength);
+            App.bus.on('catalog:loaded', refreshLength);
             App.bus.on('gallery:zoom', ({ size }) => {
                 const z = viewbar.querySelector('.zoom-slider');
                 if (z && Number(z.value) !== size) z.value = String(size);
@@ -990,6 +1041,7 @@
     App.topbar = {
         clearSearch,
         setTypeFilter,
+        setLengthFilter,
         setSearchScope,
         /** search(text) — run a workspace search as if typed into the box */
         search(text) {

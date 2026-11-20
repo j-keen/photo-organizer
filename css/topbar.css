@@ -454,6 +454,8 @@ span.crumb.current:hover {
     color: var(--text-4);
 }
 
+.vb-length { flex-shrink: 0; white-space: nowrap; font-size: var(--fs-sm); }
+
 .zoom-slider {
     width: 96px;
     accent-color: var(--accent);

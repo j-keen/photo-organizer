@@ -819,13 +819,43 @@
             icon: e.type === 'video' ? 'film' : 'image',
             badge: e.ext ? e.ext.toUpperCase() : '',
             altLabel: '열지 않고 폴더에서 보기',
-            run: ({ alt } = {}) => revealFile(e.path, { open: !alt }),
+            run: ({ alt, query, files } = {}) => revealFile(e.path, { open: !alt, query, files }),
         };
     }
 
-    async function revealFile(p, { open = true } = {}) {
-        App.topbar?.clearSearch?.();
-        await App.nav.go(P.parent(p), { focus: p });
+    // A palette list has a relevance order of its own. Keep it through the normal view API, without
+    // saving that temporary order as the user's preferred folder sort.
+    let searchOrder = null;
+    App.view.registerSortKey('paletteOrder', '검색 결과 순서', (entry) => searchOrder?.ranks.get(entry.path) ?? 0);
+    App.bus.on('view:changed', ({ reason }) => {
+        if (!searchOrder) return;
+        if (App.view.sort.key !== 'paletteOrder') {
+            searchOrder = null; // a manual sort choice wins
+        } else if (App.view.source.paletteOrder !== searchOrder.paths) {
+            const previous = searchOrder.previous;
+            searchOrder = null;
+            App.view.setSort(previous.key, previous.dir);
+        } else if (reason === 'sort') {
+            App.settings.set('view.sort', searchOrder.previous);
+        }
+    });
+
+    async function revealFile(p, { open = true, query = '', files = [] } = {}) {
+        if (open && query && files.some((e) => e.path === p)) {
+            // Run topbar search first so clear-search/Esc retain their usual return-to-folder behavior.
+            // Fuzzy palette matches can be absent there (or outside the current search scope).
+            await App.topbar?.search?.(query);
+            const normal = App.view.source.type === 'search' && App.view.source.query === query && App.view.entries.some((e) => e.path === p);
+            const source = normal ? App.view.source : { type: 'search', path: null, title: `“${query}” 검색 결과`, query };
+            const previous = searchOrder?.previous || { ...App.view.sort };
+            const paths = files.map((e) => e.path);
+            App.view.setEntries(files, { ...source, paletteOrder: paths });
+            searchOrder = { paths, previous, ranks: new Map(paths.map((path, i) => [path, i])) };
+            App.view.setSort('paletteOrder', 'asc');
+        } else {
+            App.topbar?.clearSearch?.();
+            await App.nav.go(P.parent(p), { focus: p });
+        }
         if (!App.view.index.has(p) && App.view.entries.some((e) => e.path === p)) {
             // hidden by a filter: show everything so the file can be selected
             App.topbar?.setTypeFilter?.('all');
@@ -1206,11 +1236,17 @@
             return;
         }
         const it = row.item;
+        // Capture before close() clears state and record() changes relevance scores.
+        const query = state?.input.value.trim() || '';
+        const files = (state?.rows || [])
+            .filter((r) => r.type === 'item' && r.item.kind === 'file' &&
+                (r.item.entry?.type === 'image' || r.item.entry?.type === 'video'))
+            .map((r) => r.item.entry);
         if (!it.noRecord) record(it.key);
         close();
         await App.util.nextFrame();
         try {
-            await it.run({ alt });
+            await it.run({ alt, query, files });
         } catch (e) {
             console.error('[palette] run failed', e);
             ui.toast(`실행하지 못했어요: ${e.message || e}`, { type: 'error' });
@@ -1310,7 +1346,7 @@
             case 'Enter':
                 if (e.isComposing) return;
                 e.preventDefault();
-                runRow(state.rows[state.active], { alt: e.shiftKey });
+                runRow(state.rows[state.active], { alt: e.shiftKey || e.altKey });
                 break;
             case 'Tab':
                 e.preventDefault();
@@ -1383,7 +1419,7 @@
         list.addEventListener('click', (e) => {
             const item = e.target.closest('.pal-item');
             if (!item || !state) return;
-            runRow(state.rows[Number(item.dataset.idx)], { alt: e.shiftKey });
+            runRow(state.rows[Number(item.dataset.idx)], { alt: e.shiftKey || e.altKey });
         });
         input.addEventListener('keydown', onKey);
         input.addEventListener('input', onInput);
